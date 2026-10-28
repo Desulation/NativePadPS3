@@ -1,0 +1,30 @@
+*.o
+*.sym
+*.log
+*.prx
+*.bak*
+*.tmp
+obj/
+src/obj/
+.DS_Store
+Thumbs.db
+ds45pad_boot*.txt
+sdk_doc_chm/
+
+# Proprietary / non-redistributable material must never be committed
+# (enforced by tools/check_no_proprietary.ps1 and .githooks/pre-commit)
+*.sprx
+*.prx
+*.self
+*.elf
+*.a
+*.bin
+*.pup
+tools/dumps/
+kernel_cache.txt
+
+# Tooling
+__pycache__/
+.pytest_cache/
+tests/bin/
+tools/.venv/

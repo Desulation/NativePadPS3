@@ -1,0 +1,2 @@
+#!/bin/sh
+exec pwsh -NoProfile -File tools/check_no_proprietary.ps1 -Staged
