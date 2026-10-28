@@ -2,6 +2,11 @@
 #define DS45_TEST_PAD_H
 #include <stdint.h>
 #define CELL_PAD_OK 0
+#define CELL_PAD_MAX_CODES 64
+typedef struct {
+    int32_t len;
+    uint16_t button[CELL_PAD_MAX_CODES];
+} CellPadData;
 typedef struct {
     uint32_t max_connect, now_connect, info;
     uint16_t vendor_id[127], product_id[127];
