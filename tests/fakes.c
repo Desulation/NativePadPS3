@@ -110,11 +110,11 @@ FAKE_WEAK void ds45_boot_mark_hex(const char *stage, uint32_t value)
 
 #define FAKE_FILES      32
 #define FAKE_PATH_MAX   128
-#define FAKE_FILE_MAX   4096
+#define FAKE_FILE_MAX   (32 * 1024 * 1024)  /* loud failure above this */
 
 static struct {
 	char path[FAKE_PATH_MAX];
-	char data[FAKE_FILE_MAX + 1];
+	char *data;       /* heap, len bytes + a trailing NUL */
 	int  len;
 	int  present;
 	int  deleted;
@@ -135,15 +135,24 @@ static int file_slot(const char *path, int create)
 	return free_slot;
 }
 
-static void file_store(int i, const void *data, int len)
+/* Returns 0, or -1 (nothing stored) if len is invalid or too large. */
+static int file_store(int i, const void *data, int len)
 {
-	if (len > FAKE_FILE_MAX)
-		len = FAKE_FILE_MAX;
-	memcpy(files[i].data, data, (size_t)len);
-	files[i].data[len] = '\0';
+	char *p;
+	if (len < 0 || len > FAKE_FILE_MAX)
+		return -1;
+	p = malloc((size_t)len + 1);
+	if (!p)
+		return -1;
+	if (len)
+		memcpy(p, data, (size_t)len);
+	p[len] = 0;
+	free(files[i].data);
+	files[i].data = p;
 	files[i].len = len;
 	files[i].present = 1;
 	files[i].deleted = 0;
+	return 0;
 }
 
 void fake_file_set(const char *path, const char *text)
@@ -153,7 +162,27 @@ void fake_file_set(const char *path, const char *text)
 		fputs("fakes: file table full\n", stderr);
 		exit(2);
 	}
-	file_store(i, text, (int)strlen(text));
+	if (file_store(i, text, (int)strlen(text)) < 0) {
+		fputs("fakes: fake_file_set: file too large\n", stderr);
+		exit(2);
+	}
+}
+
+/* Binary-safe variant for tests that need embedded zeros. */
+void fake_file_set_bytes(const char *path, const void *data, int len)
+{
+	int i = file_slot(path, 1);
+	if (i < 0 || file_store(i, data, len) < 0) {
+		fputs("fakes: fake_file_set_bytes failed\n", stderr);
+		exit(2);
+	}
+}
+
+/* Size in bytes, or -1 if the file is absent. */
+int fake_file_size(const char *path)
+{
+	int i = file_slot(path, 0);
+	return (i >= 0 && files[i].present) ? files[i].len : -1;
 }
 
 const char *fake_file_get(const char *path)
@@ -188,8 +217,7 @@ FAKE_WEAK int ds45_write_file(const char *path, const void *data, int len)
 	int i = file_slot(path, 1);
 	if (i < 0)
 		return -1;
-	file_store(i, data, len);
-	return 0;
+	return file_store(i, data, len);
 }
 
 FAKE_WEAK int ds45_delete_file(const char *path)
@@ -200,7 +228,8 @@ FAKE_WEAK int ds45_delete_file(const char *path)
 	files[i].present = 0;
 	files[i].deleted = 1;
 	files[i].len = 0;
-	files[i].data[0] = '\0';
+	free(files[i].data);
+	files[i].data = NULL;
 	return 0;
 }
 
@@ -234,8 +263,10 @@ void fake_reset_all(void)
 	fake_lv2_reset();
 	fake_toasts = 0;
 	fake_last_toast[0] = '\0';
-	for (i = 0; i < FAKE_FILES; i++)
+	for (i = 0; i < FAKE_FILES; i++) {
+		free(files[i].data);
 		memset(&files[i], 0, sizeof(files[i]));
+	}
 	fake_ldd_registers = 0;
 }
 

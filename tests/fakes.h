@@ -29,9 +29,15 @@ uint64_t fake_syscall(int n, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4)
 extern int fake_toasts;
 extern char fake_last_toast[128];
 
-/* In-memory file system behind ds45_read_file() and friends. */
+/* In-memory file system behind ds45_read_file() and friends. Files are
+ * heap-allocated (up to 32 MiB each); writes that cannot be stored fail
+ * with -1 rather than truncating. */
 void        fake_file_set(const char *path, const char *text);
-const char *fake_file_get(const char *path);   /* NULL if absent */
+/* Contents (binary-safe: use fake_file_size() for the length; also NUL-
+ * terminated for text). NULL if absent. Valid until the next write/reset. */
+const char *fake_file_get(const char *path);
+int         fake_file_size(const char *path);  /* bytes, -1 if absent */
+void        fake_file_set_bytes(const char *path, const void *data, int len);
 int         fake_file_deleted(const char *path); /* 1 if ds45_delete_file()d */
 
 int ds45_write_file(const char *path, const void *data, int len);

@@ -70,6 +70,36 @@ int run_tests(void)
 	CHECK(fake_file_deleted("/y") == 1);
 	CHECK(fake_file_get("/y") == NULL);
 
+	/* binary-safe files: embedded zeros, and larger than 64 KiB */
+	{
+		static const char z[6] = { 'a', 0, 'b', 0, 0, 'c' };
+		static char big[(8u << 20)];
+		static char back[(8u << 20)];
+		size_t k;
+
+		CHECK(ds45_write_file("/z", z, sizeof(z)) == 0);
+		CHECK(fake_file_size("/z") == 6);
+		CHECK(memcmp(fake_file_get("/z"), z, sizeof(z)) == 0);
+		CHECK(fake_file_size("/absent") == -1);
+
+		for (k = 0; k < sizeof(big); k++)
+			big[k] = (char)((k * 31u + (k >> 16)) & 0xFF);   /* includes zeros */
+		CHECK(ds45_write_file("/big", big, 70000) == 0);
+		CHECK(fake_file_size("/big") == 70000);
+		CHECK(memcmp(fake_file_get("/big"), big, 70000) == 0);
+
+		CHECK(ds45_write_file("/big", big, (int)sizeof(big)) == 0);   /* 8 MiB */
+		CHECK(fake_file_size("/big") == (int)sizeof(big));
+		CHECK(memcmp(fake_file_get("/big"), big, sizeof(big)) == 0);
+		CHECK(ds45_read_file("/big", back, sizeof(back)) == (int)sizeof(back) - 1);
+		CHECK(memcmp(back, big, sizeof(back) - 1) == 0);
+
+		CHECK(ds45_write_file("/huge", big, 64 * 1024 * 1024) == -1);  /* loud */
+		CHECK(ds45_file_exists("/huge") == 0);
+		fake_reset_all();
+		CHECK(fake_file_size("/big") == -1);
+	}
+
 	fake_now_us = 12345;
 	fake_reset_all();
 	CHECK(fake_now_us == 0);
