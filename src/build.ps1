@@ -1,5 +1,6 @@
 param(
     [ValidateSet('vsh', 'game')][string]$Variant = 'vsh',
+    [switch]$Debug,
     [string]$Sdk = $env:CELL_SDK,
     [string]$Tools = $env:DS45_TOOLS
 )
@@ -26,13 +27,16 @@ $flags = @('-mprx','-Os','-ffunction-sections','-fdata-sections','-fno-builtin-p
 if (Test-Path -LiteralPath $compat) {
     $flags = @('-include', $compat) + $flags
 }
+# -Debug defines DS45_DEBUG (boot trace, LV2 dumper) and tags the output name.
+$suffix = ''
+if ($Debug) { $flags += '-DDS45_DEBUG'; $suffix = '_debug' }
 if ($Variant -eq 'game') {
     $sources += 'gamehook'; $flags += '-DDS45_GAME'; $auth = '1010000001000003'
 } else {
-    $sources += @('ds4','dualsense','padldd','usb','passthru')
+    $sources += @('ds4','dualsense','padldd','usb','passthru','lv2')
     $libs = @('-lusbd_stub') + $libs; $auth = '1070000052000001'
 }
-$objdir = Join-Path $PSScriptRoot "obj/$Variant"
+$objdir = Join-Path $PSScriptRoot "obj/$Variant$suffix"
 New-Item -ItemType Directory -Force -Path $objdir | Out-Null
 $objects = @()
 foreach ($name in $sources) {
@@ -43,7 +47,7 @@ foreach ($name in $sources) {
 $sym = Join-Path $objdir 'ds45pad.sym'
 $prx = Join-Path $objdir 'ds45pad.prx'
 $signed = Join-Path $objdir 'ds45pad.signed.tmp'
-$output = Join-Path $PSScriptRoot "ds45pad_$Variant.sprx"
+$output = Join-Path $PSScriptRoot "ds45pad_$Variant$suffix.sprx"
 Invoke-BuildTool $gcc (@('-mprx','-zgenprx','-zgenstub','-ffunction-sections','-fdata-sections') + $objects + @('-L',$lib) + $libs + @('-o',$sym))
 Invoke-BuildTool $strip @('--strip-debug','--strip-section-header',$sym,'-o',$prx)
 $oldPS3 = $env:PS3

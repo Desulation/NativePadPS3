@@ -7,6 +7,8 @@
 #   make game       -> ds45pad_game.sprx (optional in-game build)
 #   make all-builds -> both
 #   make clean
+#   make DEBUG=1 ... -> same targets with -DDS45_DEBUG (boot trace, LV2 dumper),
+#                       output named ds45pad_<variant>_debug.sprx
 
 CELL_MK_DIR = $(CELL_SDK)/samples/mk
 include $(CELL_MK_DIR)/sdk.makedef.mk
@@ -36,6 +38,15 @@ PPU_PRX_LDFLAGS += -mprx -ffunction-sections -fdata-sections -Wl,--strip-unused-
 
 PPU_PRX_STRIPFLAGS += --strip-debug --strip-section-header
 
+# DEBUG=1 defines DS45_DEBUG for either variant and tags the output name.
+# DEBUG is a make command-line variable, so it reaches the recursive makes.
+ifeq ($(DEBUG),1)
+PPU_PRX_FLAGS += -DDS45_DEBUG
+DEBUG_SUFFIX = _debug
+else
+DEBUG_SUFFIX =
+endif
+
 # The two builds do NOT share a source list or a library list.
 #
 # A game process loads libio and libfs but *not* libusbd. A single reference to
@@ -44,7 +55,7 @@ PPU_PRX_STRIPFLAGS += --strip-debug --strip-section-header
 # VSH-only anyway, must be absent from the in-game build rather than merely
 # unused by it.
 SRCS_VSH  = libc.c util.c hook.c config.c ds4.c dualsense.c sticks.c padldd.c \
-            usb.c passthru.c diag.c main.c
+            usb.c passthru.c lv2.c diag.c main.c
 SRCS_GAME = libc.c util.c hook.c config.c sticks.c gamehook.c diag.c main.c
 
 LIBS_VSH  = -lusbd_stub -lio_stub -lfs_stub -llv2_stub
@@ -75,8 +86,8 @@ SCETOOL_FLAGS = -0 SELF -1 TRUE -s FALSE -2 0A \
 AUTH_VSH  = 1070000052000001
 AUTH_GAME = 1010000001000003
 
-SPRX_VSH  = ds45pad_vsh.sprx
-SPRX_GAME = ds45pad_game.sprx
+SPRX_VSH  = ds45pad_vsh$(DEBUG_SUFFIX).sprx
+SPRX_GAME = ds45pad_game$(DEBUG_SUFFIX).sprx
 
 all: vsh
 
@@ -115,6 +126,7 @@ all-builds:
 clean-obj:
 	-rm -f *.o $(PPU_PRX_TARGET)
 
-CLEANFILES = $(SPRX_VSH) $(SPRX_GAME) $(PPU_PRX_TARGET)
+CLEANFILES = ds45pad_vsh.sprx ds45pad_game.sprx ds45pad_vsh_debug.sprx \
+             ds45pad_game_debug.sprx $(PPU_PRX_TARGET)
 
 include $(CELL_MK_DIR)/sdk.target.mk

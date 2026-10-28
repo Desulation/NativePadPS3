@@ -17,7 +17,11 @@
 #include <stddef.h>
 #include "report_queue.h"
 
+#ifdef DS45_DEBUG
+#define DS45PAD_VERSION "1.0.1-ps-usb-candidate-debug"
+#else
 #define DS45PAD_VERSION "1.0.1-ps-usb-candidate"
+#endif
 
 /* Where the plugin looks for its data files. */
 #define DS45_DIR          "/dev_hdd0/plugins/ds45pad"
@@ -501,6 +505,19 @@ void  ds45_boot_mark(const char *stage);
 void  ds45_boot_mark_hex(const char *stage, uint32_t value);
 uint32_t ds45_crc32(uint32_t crc, const uint8_t *data, int len);
 int   ds45_read_file(const char *path, char *out, int cap);
+int   ds45_write_file(const char *path, const void *data, int len);  /* create/truncate; 0 ok, -1 fail */
+int   ds45_delete_file(const char *path);                            /* 0 ok, -1 fail */
+int   ds45_file_exists(const char *path);                            /* 1 yes, 0 no */
+
+/* Debug-build-only boot trace. Compiles to nothing (and the tag strings are
+ * not emitted) unless built with -DDS45_DEBUG. */
+#ifdef DS45_DEBUG
+#define DS45_TRACE(tag)         ds45_boot_mark(tag)
+#define DS45_TRACE_HEX(tag, v)  ds45_boot_mark_hex((tag), (uint32_t)(v))
+#else
+#define DS45_TRACE(tag)         ((void)0)
+#define DS45_TRACE_HEX(tag, v)  ((void)0)
+#endif
 ds45_map_t ds45_parse_map(const char *name);
 void  ds45_apply_map(ds45_map_t m, uint16_t *button);
 
