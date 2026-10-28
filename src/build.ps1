@@ -33,7 +33,7 @@ if ($Debug) { $flags += '-DDS45_DEBUG'; $suffix = '_debug' }
 if ($Variant -eq 'game') {
     $sources += 'gamehook'; $flags += '-DDS45_GAME'; $auth = '1010000001000003'
 } else {
-    $sources += @('ds4','dualsense','padldd','usb','passthru','lv2')
+    $sources += @('ds4','dualsense','padldd','usb','passthru','lv2','kernel')
     $libs = @('-lusbd_stub') + $libs; $auth = '1070000052000001'
 }
 $objdir = Join-Path $PSScriptRoot "obj/$Variant$suffix"

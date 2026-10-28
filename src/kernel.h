@@ -1,0 +1,53 @@
+/*
+ * DS45PAD - where a given kernel keeps its Bluetooth HID report pointer.
+ *
+ * A record names the slot (an LV2 address holding a pointer) and the offset
+ * of the report inside the object it points to. Records are only trusted
+ * when a 32-byte fingerprint of the running kernel matches, so a record for
+ * one firmware is never applied to another. Fingerprints are FNV-1a 64
+ * hashes; no kernel bytes are stored anywhere.
+ */
+#ifndef DS45_KERNEL_H
+#define DS45_KERNEL_H
+
+#include <stdint.h>
+#include <cell/pad.h>   /* CellPadData, needed by ds45pad.h */
+#include "ds45pad.h"
+
+typedef struct {
+	const char *name;
+	uint64_t    fp_addr;     /* 0 = no fingerprint (legacy entry) */
+	uint64_t    fp_hash;     /* FNV-1a 64 of the 32 bytes at fp_addr */
+	uint64_t    slot_addr;
+	uint32_t    report_off;
+} ds45_kernel_t;
+
+typedef enum {
+	DS45_KMATCH_NONE = 0, DS45_KMATCH_TABLE, DS45_KMATCH_CACHE,
+	DS45_KMATCH_SCAN, DS45_KMATCH_LEGACY
+} ds45_kmatch_t;
+
+#define DS45_FP_LEN 32
+#define DS45_KERNEL_CACHE_FILE DS45_DIR "/kernel_cache.txt"
+
+/* 1 if the DS45_FP_LEN bytes at fp_addr hash to fp_hash. 0 for fp_addr == 0,
+ * and for an unaligned/out-of-window fp_addr (no peek is issued). */
+int  kernel_fingerprint_matches(uint64_t fp_addr, uint64_t fp_hash);
+
+/* First entry with a fingerprint (fp_addr != 0) that matches the running
+ * kernel, or NULL. Legacy entries are never returned from here. */
+const ds45_kernel_t *kernel_match_table(const ds45_kernel_t *tab, int n);
+
+/* Cache file: one line "DS45K1 <fp_addr> <fp_hash> <slot_addr> <report_off>\n",
+ * values 0x-prefixed lowercase hex. Returns 0 only if the line parses AND the
+ * fingerprint re-matches the running kernel; out->name is "cached". *out is
+ * untouched on failure. */
+int  kernel_cache_load(ds45_kernel_t *out);
+/* -1 if k has no fingerprint (fp_addr == 0) or the write fails. */
+int  kernel_cache_store(const ds45_kernel_t *k);
+void kernel_cache_delete(void);
+
+extern const ds45_kernel_t ds45_kernel_table[];
+extern const int           ds45_kernel_table_count;
+
+#endif /* DS45_KERNEL_H */

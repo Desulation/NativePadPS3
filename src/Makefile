@@ -55,7 +55,7 @@ endif
 # VSH-only anyway, must be absent from the in-game build rather than merely
 # unused by it.
 SRCS_VSH  = libc.c util.c hook.c config.c ds4.c dualsense.c sticks.c padldd.c \
-            usb.c passthru.c lv2.c diag.c main.c
+            usb.c passthru.c lv2.c kernel.c diag.c main.c
 SRCS_GAME = libc.c util.c hook.c config.c sticks.c gamehook.c diag.c main.c
 
 LIBS_VSH  = -lusbd_stub -lio_stub -lfs_stub -llv2_stub
