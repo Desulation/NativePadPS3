@@ -163,6 +163,8 @@ int ds45_write_file(const char *path, const void *data, int len)
 	return rc;
 }
 
+/* VSH-only: the game build must not gain cellFsUnlink/cellFsStat imports. */
+#ifndef DS45_GAME
 int ds45_delete_file(const char *path)
 {
 	return cellFsUnlink(path) == CELL_FS_SUCCEEDED ? 0 : -1;
@@ -174,6 +176,7 @@ int ds45_file_exists(const char *path)
 
 	return cellFsStat(path, &st) == CELL_FS_SUCCEEDED ? 1 : 0;
 }
+#endif /* !DS45_GAME */
 
 /* ------------------------------------------------------------------------ */
 /* Remapping                                                                 */

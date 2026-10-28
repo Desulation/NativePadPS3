@@ -506,8 +506,10 @@ void  ds45_boot_mark_hex(const char *stage, uint32_t value);
 uint32_t ds45_crc32(uint32_t crc, const uint8_t *data, int len);
 int   ds45_read_file(const char *path, char *out, int cap);
 int   ds45_write_file(const char *path, const void *data, int len);  /* create/truncate; 0 ok, -1 fail */
+#ifndef DS45_GAME   /* VSH-only: would add libfs imports to the game build */
 int   ds45_delete_file(const char *path);                            /* 0 ok, -1 fail */
 int   ds45_file_exists(const char *path);                            /* 1 yes, 0 no */
+#endif
 
 /* Debug-build-only boot trace. Compiles to nothing (and the tag strings are
  * not emitted) unless built with -DDS45_DEBUG. */
