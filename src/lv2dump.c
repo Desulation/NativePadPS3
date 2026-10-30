@@ -36,8 +36,8 @@
 #define CHUNK      65536
 
 /* Time to read the toast before each dump. */
-#define DELAY_A_MS 5000
-#define DELAY_B_MS 10000
+#define DELAY_A_MS 20000
+#define DELAY_B_MS 30000
 
 enum { PH_WAIT_PAD = 0, PH_COUNT_A, PH_COUNT_B, PH_DONE };
 
@@ -191,7 +191,7 @@ static int dump_one(const char *bin, const char *txt, const char *pad)
 
 static void start_b(lv2dump_t *st, uint32_t now_ms)
 {
-	say("LV2 dump B in 10 s: hold Cross, left stick fully left");
+	say("LV2 dump B in 30 s: hold Cross, left stick fully left");
 	st->due_ms = now_ms + DELAY_B_MS;
 	st->phase = PH_COUNT_B;
 }
@@ -239,7 +239,7 @@ void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
 			start_b(st, now_ms);
 			return;
 		}
-		say("LV2 dump A in 5 s: leave the pad untouched");
+		say("LV2 dump A in 20 s: leave the pad untouched");
 		st->due_ms = now_ms + DELAY_A_MS;
 		st->phase = PH_COUNT_A;
 		return;

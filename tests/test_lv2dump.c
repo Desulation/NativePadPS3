@@ -15,8 +15,8 @@
 #define WINDOW  ((int)(DS45_LV2_BOUND - DS45_LV2_BASE))
 #define CHUNK   65536
 
-#define T_A     5000u     /* dump A is due 5 s after the pad shows up */
-#define T_B     15000u    /* dump B 10 s after dump A */
+#define T_A     20000u    /* dump A is due 20 s after the pad shows up */
+#define T_B     50000u    /* dump B 30 s after dump A */
 
 static const uint8_t Q_FIRST[8] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
 static const uint8_t Q_LAST[8]  = { 0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18 };
@@ -127,14 +127,14 @@ static int test_two_dumps_with_countdown(void)
 
 	setup();
 	lv2dump_poll(&st, 0);
-	CHECK(strcmp(fake_last_toast, "LV2 dump A in 5 s: leave the pad untouched") == 0);
+	CHECK(strcmp(fake_last_toast, "LV2 dump A in 20 s: leave the pad untouched") == 0);
 	lv2dump_poll(&st, T_A - 1);
 	CHECK(fake_lv2_peek_count == 0);                     /* not yet */
 
 	lv2dump_poll(&st, T_A);
 	CHECK(bin_ok(A_BIN));
 	CHECK(fake_file_size(B_BIN) == -1);
-	CHECK(strcmp(fake_last_toast, "LV2 dump B in 10 s: hold Cross, left stick fully left") == 0);
+	CHECK(strcmp(fake_last_toast, "LV2 dump B in 30 s: hold Cross, left stick fully left") == 0);
 	lv2dump_poll(&st, T_B - 1);
 	CHECK(fake_file_size(B_BIN) == -1);                  /* not yet */
 
@@ -158,10 +158,10 @@ static int test_two_dumps_with_countdown(void)
 
 	/* Toasts are easy to miss; every step also goes to the TTY. */
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dump A in 5 s: leave the pad untouched\n"
+	             "ds45pad: LV2 dump A in 20 s: leave the pad untouched\n"
 	             "ds45pad: LV2 dump started: " A_BIN "\n"
 	             "ds45pad: LV2 dump written: " A_BIN " (8388608 bytes) and " A_TXT "\n"
-	             "ds45pad: LV2 dump B in 10 s: hold Cross, left stick fully left\n"
+	             "ds45pad: LV2 dump B in 30 s: hold Cross, left stick fully left\n"
 	             "ds45pad: LV2 dump started: " B_BIN "\n"
 	             "ds45pad: LV2 dump written: " B_BIN " (8388608 bytes) and " B_TXT "\n"
 	             "ds45pad: LV2 dumps written: release the pad\n") == 0);
@@ -201,11 +201,11 @@ static int test_existing_a_goes_straight_to_b(void)
 	setup();
 	fake_file_set(A_BIN, "old");
 	lv2dump_poll(&st, 0);
-	CHECK(strcmp(fake_last_toast, "LV2 dump B in 10 s: hold Cross, left stick fully left") == 0);
+	CHECK(strcmp(fake_last_toast, "LV2 dump B in 30 s: hold Cross, left stick fully left") == 0);
 	CHECK(fake_toasts == 1);
-	lv2dump_poll(&st, 9999);
+	lv2dump_poll(&st, T_B - T_A - 1);
 	CHECK(fake_file_size(B_BIN) == -1);
-	lv2dump_poll(&st, 10000);
+	lv2dump_poll(&st, T_B - T_A);
 
 	CHECK(fake_file_size(A_BIN) == 3);
 	CHECK(bin_ok(B_BIN));
@@ -230,11 +230,11 @@ static int test_pad_lost_restarts_countdown(void)
 	CHECK(fake_lv2_peek_count == 0);
 
 	pad_on = 1;
-	lv2dump_poll(&st, 20000);
-	CHECK(strcmp(fake_last_toast, "LV2 dump A in 5 s: leave the pad untouched") == 0);
-	lv2dump_poll(&st, 20000 + T_A - 1);
+	lv2dump_poll(&st, 60000);
+	CHECK(strcmp(fake_last_toast, "LV2 dump A in 20 s: leave the pad untouched") == 0);
+	lv2dump_poll(&st, 60000 + T_A - 1);
 	CHECK(fake_lv2_peek_count == 0);
-	lv2dump_poll(&st, 20000 + T_A);
+	lv2dump_poll(&st, 60000 + T_A);
 	CHECK(bin_ok(A_BIN));
 	return 0;
 }
@@ -252,11 +252,11 @@ static int test_pad_lost_during_b(void)
 	CHECK(strcmp(fake_last_toast, "LV2 dump: pad disconnected, waiting for it") == 0);
 
 	pad_on = 1;
-	lv2dump_poll(&st, 30000);
-	CHECK(strcmp(fake_last_toast, "LV2 dump B in 10 s: hold Cross, left stick fully left") == 0);
-	lv2dump_poll(&st, 39999);
+	lv2dump_poll(&st, 100000);
+	CHECK(strcmp(fake_last_toast, "LV2 dump B in 30 s: hold Cross, left stick fully left") == 0);
+	lv2dump_poll(&st, 100000 + (T_B - T_A) - 1);
 	CHECK(fake_file_size(B_BIN) == -1);
-	lv2dump_poll(&st, 40000);
+	lv2dump_poll(&st, 100000 + (T_B - T_A));
 	CHECK(bin_ok(B_BIN));
 	CHECK(fake_lv2_peek_count == 2 * (WINDOW / 8));      /* A not dumped twice */
 	return 0;
@@ -323,7 +323,7 @@ static int test_dump_failure_deletes_partial(void)
 	CHECK(strcmp(fake_last_toast, "LV2 dump failed: see the TTY, release the pad") == 0);
 	/* 1 write + 5 appends succeeded: the 7th chunk (offset 6 * 64 KiB) failed */
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dump A in 5 s: leave the pad untouched\n"
+	             "ds45pad: LV2 dump A in 20 s: leave the pad untouched\n"
 	             "ds45pad: LV2 dump started: " A_BIN "\n"
 	             "ds45pad: LV2 dump failed at offset 0x00060000, partial .bin deleted\n"
 	             "ds45pad: LV2 dump failed: see the TTY, release the pad\n") == 0);
