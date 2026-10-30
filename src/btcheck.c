@@ -1,7 +1,7 @@
 /*
  * DS45PAD - passive raw-report cross-check. See btcheck.h.
  *
- * Everything is file-static state; the plugin polls from one thread.
+ * Everything is file-static state; callers serialise access (passthru.c).
  */
 #include "btcheck.h"
 
@@ -38,7 +38,8 @@ static struct {
 
 int bt_report_decode(uint64_t w0, uint64_t w1, ds45_btraw_t *out)
 {
-	/* Same layout and mapping as ds45_inject_bt_pad in passthru.c */
+	/* The one copy of the layout and mapping: ds45_inject_bt_pad in
+	 * passthru.c consumes this output. */
 	uint8_t b0, b1, b2, hat;
 	uint16_t d1 = 0, d2 = 0;
 

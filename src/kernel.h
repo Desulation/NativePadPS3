@@ -85,4 +85,40 @@ typedef struct {
 int kernel_scan(const ds45_scan_pattern_t *pat, ds45_kernel_t *out);
 extern const ds45_scan_pattern_t ds45_scan_pattern;   /* count == 0 until Task 11 */
 
+/* ------------------------------------------------------------------------ */
+/* Resolution (once at load, before the poll loop)                            */
+/* ------------------------------------------------------------------------ */
+
+/* Largest usable report offset: a positive 16-bit immediate, with room for
+ * the 16 report bytes that are read. */
+#define DS45_REPORT_OFF_MAX 0x7FF0u
+
+/* 1 if a record can be used for reads: slot_addr 8-aligned inside
+ * [DS45_LV2_BASE, DS45_LV2_BOUND - 8], report_off 8-aligned and at most
+ * DS45_REPORT_OFF_MAX. Every source is checked with this before it becomes
+ * active; a cached record that fails it is deleted. */
+int kernel_record_usable(const ds45_kernel_t *k);
+
+/* table -> cache -> scan (stores cache) -> legacy -> NONE, over the built-in
+ * table and scan pattern. Sets the active record (NULL for NONE) and copies
+ * it to *out when out is non-NULL; *out is untouched for NONE. */
+ds45_kmatch_t kernel_resolve(ds45_kernel_t *out);
+/* The same chain over a given table and pattern (tab may be NULL, pat may be
+ * NULL or invalid). Legacy = first table entry with fp_addr == 0. */
+ds45_kmatch_t kernel_resolve_from(const ds45_kernel_t *tab, int n,
+                                  const ds45_scan_pattern_t *pat,
+                                  ds45_kernel_t *out);
+
+const ds45_kernel_t *kernel_active(void);   /* NULL until resolved, or for NONE */
+ds45_kmatch_t kernel_active_source(void);   /* NONE while kernel_active() is NULL */
+/* The cross-check failed: delete the cache file, active = NULL (source NONE).
+ * Nothing re-resolves afterwards. */
+void kernel_reject_active(void);
+
+/* Debug builds: DS45_TRACE of PS3MAPI (syscall 8, 0x7777) GET_FW_TYPE
+ * (0x0013) and GET_FW_VERSION (0x0014). Logging only: never affects
+ * resolution, and a kernel without PS3MAPI just logs the error. Release
+ * builds make no call at all. */
+void kernel_log_fw(void);
+
 #endif /* DS45_KERNEL_H */

@@ -4,6 +4,8 @@
 #include <string.h>
 
 #include <cell/pad.h>
+#include <sys/synchronization.h>
+#include <sys/sys_time.h>
 #include "ds45pad.h"
 #include "lv2.h"
 #include "fakes.h"
@@ -57,7 +59,9 @@ void fake_lv2_set(uint64_t addr, const uint8_t *bytes, int len)
 	}
 }
 
-static uint64_t lv2_peek(uint64_t addr)
+void (*fake_lv2_on_peek)(uint64_t addr);
+
+static uint64_t lv2_peek_raw(uint64_t addr)
 {
 	const uint8_t *pg;
 	uint64_t off, v = 0;
@@ -78,13 +82,100 @@ static uint64_t lv2_peek(uint64_t addr)
 	return v;
 }
 
+static uint64_t lv2_peek(uint64_t addr)
+{
+	uint64_t v = lv2_peek_raw(addr);
+	if (fake_lv2_on_peek)
+		fake_lv2_on_peek(addr);
+	return v;
+}
+
+uint64_t (*fake_syscall8)(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
+int      fake_sc8_calls;
+uint64_t fake_sc8_a1[FAKE_SC8_LOG];
+uint64_t fake_sc8_a2[FAKE_SC8_LOG];
+
 uint64_t fake_syscall(int n, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4)
 {
-	(void)a2; (void)a3; (void)a4;
 	switch (n) {
-	case 6:  return lv2_peek(a1);
-	default: return (uint64_t)-1;     /* syscall 8 etc.: error */
+	case 6:
+		return lv2_peek(a1);
+	case 8:
+		if (fake_sc8_calls < FAKE_SC8_LOG) {
+			fake_sc8_a1[fake_sc8_calls] = a1;
+			fake_sc8_a2[fake_sc8_calls] = a2;
+		}
+		fake_sc8_calls++;
+		return fake_syscall8 ? fake_syscall8(a1, a2, a3, a4) : (uint64_t)-1;
+	default:
+		return (uint64_t)-1;
 	}
+}
+
+/* ---------------------------------------------------------------------- */
+/* sys_mutex_*, system clock                                                */
+/* ---------------------------------------------------------------------- */
+
+#define FAKE_EBUSY 0x8001000A
+
+int fake_mutex_busy;
+int fake_mutex_depth;
+int fake_mutex_errors;
+int fake_mutex_live;
+
+int sys_mutex_create(sys_mutex_t *mutex_id, sys_mutex_attribute_t *attr)
+{
+	(void)attr;
+	if (!mutex_id)
+		return -1;
+	*mutex_id = 1;
+	fake_mutex_live++;
+	return CELL_OK;
+}
+
+int sys_mutex_destroy(sys_mutex_t mutex_id)
+{
+	(void)mutex_id;
+	if (fake_mutex_live <= 0 || fake_mutex_depth)
+		fake_mutex_errors++;
+	fake_mutex_live--;
+	return CELL_OK;
+}
+
+int sys_mutex_lock(sys_mutex_t mutex_id, usecond_t timeout)
+{
+	(void)mutex_id; (void)timeout;
+	if (fake_mutex_live <= 0 || fake_mutex_depth)
+		fake_mutex_errors++;      /* non-recursive: a second lock deadlocks */
+	fake_mutex_depth++;
+	return CELL_OK;
+}
+
+int sys_mutex_trylock(sys_mutex_t mutex_id)
+{
+	(void)mutex_id;
+	if (fake_mutex_live <= 0)
+		fake_mutex_errors++;
+	if (fake_mutex_busy || fake_mutex_depth)
+		return FAKE_EBUSY;
+	fake_mutex_depth++;
+	return CELL_OK;
+}
+
+int sys_mutex_unlock(sys_mutex_t mutex_id)
+{
+	(void)mutex_id;
+	if (fake_mutex_depth <= 0) {
+		fake_mutex_errors++;
+		return -1;
+	}
+	fake_mutex_depth--;
+	return CELL_OK;
+}
+
+system_time_t sys_time_get_system_time(void)
+{
+	return (system_time_t)fake_now_us;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -247,15 +338,63 @@ FAKE_WEAK int ds45_file_exists(const char *path)
 /* ---------------------------------------------------------------------- */
 
 int fake_ldd_registers;
+int fake_ldd_unregisters;
 
 FAKE_WEAK int ldd_register(ds45_pad_t *pad)
 {
-	(void)pad;
 	fake_ldd_registers++;
+	if (pad) {
+		pad->handle = 100 + fake_ldd_registers;
+		pad->port = 0;
+	}
 	return 0;
 }
 
-FAKE_WEAK void ldd_unregister(ds45_pad_t *pad) { (void)pad; }
+FAKE_WEAK void ldd_unregister(ds45_pad_t *pad)
+{
+	fake_ldd_unregisters++;
+	if (pad)
+		pad->handle = -1;
+}
+
+FAKE_WEAK int ldd_set_insert_into_game(ds45_pad_t *pad, int on)
+{
+	(void)pad; (void)on;
+	return 0;
+}
+
+/* ---------------------------------------------------------------------- */
+/* cellPad                                                                  */
+/* ---------------------------------------------------------------------- */
+
+CellPadInfo2 fake_pad_info;
+int          fake_pad_info_rc;
+int          fake_ldd_inserts;
+CellPadData  fake_last_insert;
+
+FAKE_WEAK int cellPadGetInfo2(CellPadInfo2 *info)
+{
+	if (fake_pad_info_rc != CELL_PAD_OK)
+		return fake_pad_info_rc;
+	if (info)
+		*info = fake_pad_info;
+	return CELL_PAD_OK;
+}
+
+FAKE_WEAK int cellPadSetPortSetting(uint32_t port_no, uint32_t port_setting)
+{
+	(void)port_no; (void)port_setting;
+	return CELL_PAD_OK;
+}
+
+FAKE_WEAK int cellPadLddDataInsert(int32_t handle, CellPadData *data)
+{
+	(void)handle;
+	fake_ldd_inserts++;
+	if (data)
+		fake_last_insert = *data;
+	return CELL_PAD_OK;
+}
 
 /* ---------------------------------------------------------------------- */
 
@@ -264,6 +403,15 @@ void fake_reset_all(void)
 	int i;
 	fake_now_us = 0;
 	fake_lv2_reset();
+	fake_lv2_on_peek = NULL;
+	fake_syscall8 = NULL;
+	fake_sc8_calls = 0;
+	memset(fake_sc8_a1, 0, sizeof(fake_sc8_a1));
+	memset(fake_sc8_a2, 0, sizeof(fake_sc8_a2));
+	fake_mutex_busy = 0;
+	fake_mutex_depth = 0;
+	fake_mutex_errors = 0;
+	fake_mutex_live = 0;
 	fake_toasts = 0;
 	fake_last_toast[0] = '\0';
 	for (i = 0; i < FAKE_FILES; i++) {
@@ -271,6 +419,11 @@ void fake_reset_all(void)
 		memset(&files[i], 0, sizeof(files[i]));
 	}
 	fake_ldd_registers = 0;
+	fake_ldd_unregisters = 0;
+	memset(&fake_pad_info, 0, sizeof(fake_pad_info));
+	fake_pad_info_rc = CELL_PAD_OK;
+	fake_ldd_inserts = 0;
+	memset(&fake_last_insert, 0, sizeof(fake_last_insert));
 }
 
 int main(int argc, char **argv)

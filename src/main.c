@@ -22,6 +22,10 @@
 
 #include "ds45pad.h"
 #include "hook.h"
+#ifndef DS45_GAME
+#include "kernel.h"
+#include "btcheck.h"
+#endif
 
 int ds45_start(uint64_t arg);
 int ds45_stop(void);
@@ -154,8 +158,11 @@ static int vsh_getdata_hook(uint32_t port_no, CellPadData *data)
 		return CELL_PAD_ERROR_UNINITIALIZED;
 
 	r = orig(port_no, data);
-	if (r == CELL_PAD_OK && data && data->len > 0) {
-		if (port_no > 0 && is_bt_source_port(port_no))
+	if (r == CELL_PAD_OK && data) {
+		/* The cross-check's ground truth: what VSH itself read, before
+		 * any masking of ours. */
+		passthru_observe_vsh(port_no, data);
+		if (data->len > 0 && port_no > 0 && is_bt_source_port(port_no))
 			silence_pad_data(data);
 	}
 
@@ -173,8 +180,9 @@ static int vsh_getdataextra_hook(uint32_t port_no, uint32_t *device_type,
 		return CELL_PAD_ERROR_UNINITIALIZED;
 
 	r = orig(port_no, device_type, data);
-	if (r == CELL_PAD_OK && data && data->len > 0) {
-		if (port_no > 0 && is_bt_source_port(port_no))
+	if (r == CELL_PAD_OK && data) {
+		passthru_observe_vsh(port_no, data);
+		if (data->len > 0 && port_no > 0 && is_bt_source_port(port_no))
 			silence_pad_data(data);
 	}
 
@@ -298,6 +306,22 @@ static void dump_ports_once(void)
 	}
 }
 
+/* ------------------------------------------------------------------------ */
+/* Bluetooth kernel support                                                  */
+/* ------------------------------------------------------------------------ */
+
+#define TOAST_BT_UNSUPPORTED "DS45Pad: Bluetooth not supported on this kernel"
+
+/* No usable kernel record, or the cross-check rejected the one we had. USB
+ * mode never reads the Bluetooth report, so it never reports this. */
+static int bt_unsupported(void)
+{
+	if (g_cfg.mode == DS45_MODE_USB)
+		return 0;
+	return kernel_active_source() == DS45_KMATCH_NONE ||
+	       passthru_btcheck_state() == BTCHECK_FAILED;
+}
+
 #endif /* !DS45_GAME */
 
 static void pads_reset(void)
@@ -325,6 +349,8 @@ static void ds45_thread(uint64_t arg)
 	uint32_t since_diag = 0;
 	uint32_t uptime = 0;
 	int announced = 0;
+	int bt_toast_shown = 0;
+	int last_btcheck = -1;
 	int usb_ok;
 #endif
 
@@ -412,7 +438,22 @@ static void ds45_thread(uint64_t arg)
 	rumble_install();
 	ds45_boot_mark("rumble");
 
+	/* The cross-check lock must exist before the detours can call in. */
+	passthru_init();
 	vsh_hooks_install();
+
+	/* Where this kernel keeps the Bluetooth report: once, before the loop.
+	 * A pad that connects meanwhile is adopted on the first rescan after. */
+	kernel_log_fw();
+	if (g_cfg.mode != DS45_MODE_USB) {
+		ds45_kmatch_t kmatch;
+
+		ds45_boot_mark("kernel_resolve");
+		kmatch = kernel_resolve(NULL);
+		ds45_boot_mark("kernel_resolve_done");
+		DS45_TRACE_HEX("kmatch", kmatch);
+		(void)kmatch;                /* release: the trace compiles away */
+	}
 
 	if (g_cfg.diag) {
 		diag_msg("=== DS45PAD " DS45PAD_VERSION " ===");
@@ -438,7 +479,12 @@ static void ds45_thread(uint64_t arg)
 			announced = 1;
 			if (g_cfg.notify) {
 				ds45_boot_mark("notify");
-				ds45_notify("DS45Pad Caricato / Loaded");
+				if (bt_unsupported()) {
+					bt_toast_shown = 1;
+					ds45_notify(TOAST_BT_UNSUPPORTED);
+				} else {
+					ds45_notify("DS45Pad Caricato / Loaded");
+				}
 				ds45_boot_mark("notify_ok");
 			}
 		}
@@ -468,10 +514,30 @@ static void ds45_thread(uint64_t arg)
 				sticks_save_if_dirty(0);
 
 			/* In AUTO mode a cabled controller always wins: only look for
-			 * Bluetooth pads when nothing is attached over USB and capacity remains. */
+			 * Bluetooth pads when nothing is attached over USB. Not gated on
+			 * capacity: a bound source pad waits here for the cross-check
+			 * before it is registered, and passthru_scan binds at most one. */
 			if (g_cfg.mode == DS45_MODE_BT ||
-			    (g_cfg.mode == DS45_MODE_AUTO && ds45_usb_pads_active() == 0 && ds45_bt_pads_active() < (int)g_cfg.max_pads))
+			    (g_cfg.mode == DS45_MODE_AUTO && ds45_usb_pads_active() == 0))
 				passthru_scan();
+
+			if (g_cfg.mode != DS45_MODE_USB) {
+				int st = passthru_btcheck_state();
+
+				DS45_TRACE_HEX("btcheck_vsh_samples",
+				               passthru_btcheck_vsh_samples());
+				if (st != last_btcheck) {
+					last_btcheck = st;
+					DS45_TRACE_HEX("btcheck", st);
+				}
+				/* A cross-check that fails after the announcement still
+				 * gets its toast, once. */
+				if (announced && !bt_toast_shown && g_cfg.notify &&
+				    bt_unsupported()) {
+					bt_toast_shown = 1;
+					ds45_notify(TOAST_BT_UNSUPPORTED);
+				}
+			}
 		}
 	}
 
@@ -481,6 +547,7 @@ static void ds45_thread(uint64_t arg)
 	vsh_hooks_remove();
 	rumble_remove();
 	passthru_release();
+	passthru_shutdown();
 	if (usb_ok)
 		usb_shutdown();
 	diag_flush();

@@ -14,8 +14,10 @@
  * build does not link it.
  *
  * Contract for callers:
- *  - Single instance, no locking: btcheck_feed_raw and btcheck_observe_vsh
- *    (and reset/state/samples_seen) must all be called from the same context.
+ *  - Single instance, no locking of its own: calls to btcheck_feed_raw,
+ *    btcheck_observe_vsh, reset, state and samples_seen must never overlap.
+ *    The plugin serialises them with one mutex in passthru.c (VSH detours
+ *    trylock and drop the sample; the plugin thread locks).
  *  - btcheck_observe_vsh needs CellPadData.len to be set (as cellPadGetData
  *    does; len == 0 means "no data this poll"). len >= 8 is required, since
  *    button[7] (DS45_BTN_ANALOG_LEFT_Y) is the highest word read; a shorter

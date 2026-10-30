@@ -19,4 +19,6 @@ typedef struct {
 } CellPadInfo2;
 int cellPadGetInfo(CellPadInfo *);
 int cellPadGetInfo2(CellPadInfo2 *);
+int cellPadSetPortSetting(uint32_t port_no, uint32_t port_setting);
+int cellPadLddDataInsert(int32_t handle, CellPadData *data);
 #endif

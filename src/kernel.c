@@ -3,6 +3,10 @@
  */
 
 #include <stddef.h>
+#ifdef DS45_DEBUG
+#include <sys/process.h>   /* system_call_N: PS3MAPI firmware query */
+#include <sys/sys_time.h>  /* scan timing */
+#endif
 
 #include "lv2.h"
 #include "kernel.h"
@@ -352,4 +356,162 @@ int kernel_scan(const ds45_scan_pattern_t *pat, ds45_kernel_t *out)
 	out->slot_addr  = r_slot;
 	out->report_off = r_off;
 	return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* resolution                                                                */
+/* ------------------------------------------------------------------------ */
+
+static ds45_kernel_t        g_active_rec;
+static const ds45_kernel_t *g_active;
+static ds45_kmatch_t        g_active_src = DS45_KMATCH_NONE;
+
+int kernel_record_usable(const ds45_kernel_t *k)
+{
+	return k && (k->slot_addr & 7) == 0 &&
+	       k->slot_addr >= DS45_LV2_BASE && k->slot_addr <= DS45_LV2_BOUND - 8 &&
+	       (k->report_off & 7) == 0 && k->report_off <= DS45_REPORT_OFF_MAX;
+}
+
+static ds45_kmatch_t activate(const ds45_kernel_t *k, ds45_kmatch_t src,
+                              ds45_kernel_t *out)
+{
+	g_active_rec = *k;
+	g_active     = &g_active_rec;
+	g_active_src = src;
+	if (out)
+		*out = *k;
+	DS45_TRACE_HEX("kernel_slot_lo", k->slot_addr);
+	DS45_TRACE_HEX("kernel_report_off", k->report_off);
+	return src;
+}
+
+#ifdef DS45_DEBUG
+static uint64_t now_us(void)
+{
+	return (uint64_t)sys_time_get_system_time();
+}
+#endif
+
+ds45_kmatch_t kernel_resolve_from(const ds45_kernel_t *tab, int n,
+                                  const ds45_scan_pattern_t *pat,
+                                  ds45_kernel_t *out)
+{
+	const ds45_kernel_t *hit;
+	ds45_kernel_t rec;
+	int i, r;
+#ifdef DS45_DEBUG
+	uint64_t t0;
+#endif
+
+	g_active     = NULL;
+	g_active_src = DS45_KMATCH_NONE;
+
+	/* 1. a verified fingerprint */
+	hit = kernel_match_table(tab, n);
+	if (hit && kernel_record_usable(hit))
+		return activate(hit, DS45_KMATCH_TABLE, out);
+
+	/* 2. the cache: its fingerprint was re-checked by the loader; a record
+	 * that still cannot be read from is a miss and is not kept */
+	if (kernel_cache_load(&rec) == 0) {
+		if (kernel_record_usable(&rec))
+			return activate(&rec, DS45_KMATCH_CACHE, out);
+		DS45_TRACE("kernel_cache_unusable_deleted");
+		kernel_cache_delete();
+	}
+
+	/* 3. the scan; only a usable result is cached */
+#ifdef DS45_DEBUG
+	t0 = now_us();
+#endif
+	r = kernel_scan(pat, &rec);
+#ifdef DS45_DEBUG
+	DS45_TRACE_HEX("kernel_scan_ms", (now_us() - t0) / 1000);
+#endif
+	if (r == 0 && kernel_record_usable(&rec)) {
+		if (kernel_cache_store(&rec) != 0)
+			DS45_TRACE("kernel_cache_store_FAILED");
+		return activate(&rec, DS45_KMATCH_SCAN, out);
+	}
+
+	/* 4. the unverified legacy entry, left to the cross-check */
+	if (tab)
+		for (i = 0; i < n; i++)
+			if (tab[i].fp_addr == 0 && kernel_record_usable(&tab[i]))
+				return activate(&tab[i], DS45_KMATCH_LEGACY, out);
+
+	return DS45_KMATCH_NONE;
+}
+
+ds45_kmatch_t kernel_resolve(ds45_kernel_t *out)
+{
+	return kernel_resolve_from(ds45_kernel_table, ds45_kernel_table_count,
+	                           &ds45_scan_pattern, out);
+}
+
+const ds45_kernel_t *kernel_active(void)
+{
+	return g_active;
+}
+
+ds45_kmatch_t kernel_active_source(void)
+{
+	return g_active ? g_active_src : DS45_KMATCH_NONE;
+}
+
+void kernel_reject_active(void)
+{
+	kernel_cache_delete();
+	g_active     = NULL;
+	g_active_src = DS45_KMATCH_NONE;
+	DS45_TRACE("kernel_rejected");
+}
+
+/* ------------------------------------------------------------------------ */
+/* firmware identification (trace only)                                      */
+/* ------------------------------------------------------------------------ */
+
+#define PS3MAPI_SYSCALL8_OPCODE     0x7777
+#define PS3MAPI_OPCODE_GET_FW_TYPE  0x0013
+#define PS3MAPI_OPCODE_GET_FW_VER   0x0014
+
+void kernel_log_fw(void)
+{
+#ifdef DS45_DEBUG
+	/* Generous: Cobra copies a short string ("CEX", "DEX", ...). */
+	char type[64];
+	char tag[32];
+	const char prefix[] = "fw_type=";
+	int32_t rc;
+	uint32_t ver;
+	int i, j;
+
+	for (i = 0; i < (int)sizeof(type); i++)
+		type[i] = 0;
+	{
+		system_call_3(8, PS3MAPI_SYSCALL8_OPCODE, PS3MAPI_OPCODE_GET_FW_TYPE,
+		              (uint64_t)(uintptr_t)type);
+		rc = (int32_t)p1;
+	}
+	if (rc != 0) {
+		DS45_TRACE_HEX("fw_type_err", rc);
+	} else {
+		for (i = 0; prefix[i]; i++)
+			tag[i] = prefix[i];
+		/* printable characters only, and never past the end of either */
+		for (j = 0; j < (int)sizeof(type) && type[j] &&
+		            i < (int)sizeof(tag) - 1; j++)
+			if (type[j] >= 0x20 && type[j] < 0x7F)
+				tag[i++] = type[j];
+		tag[i] = 0;
+		DS45_TRACE(tag);
+	}
+
+	{
+		system_call_2(8, PS3MAPI_SYSCALL8_OPCODE, PS3MAPI_OPCODE_GET_FW_VER);
+		ver = (uint32_t)p1;
+	}
+	DS45_TRACE_HEX("fw_version", ver);
+#endif
 }

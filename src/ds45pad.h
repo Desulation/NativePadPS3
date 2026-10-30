@@ -479,9 +479,22 @@ void usb_shutdown(void);
 void usb_send_output(ds45_pad_t *pad);
 
 /* passthru.c - internal Bluetooth passthrough */
-int  passthru_scan(void);
+int  passthru_scan(void);   /* rescan tick: virtual pads registered by this call */
 void passthru_poll(void);
 void passthru_release(void);
+/* Before the VSH detours are installed: cross-check lock and state. -1 if the
+ * lock could not be created (the cross-check then never sees VSH samples, so
+ * it never passes). passthru_shutdown() after the detours are removed. */
+int  passthru_init(void);
+void passthru_shutdown(void);
+/* From the VSH pad-read detours, before any masking. Never blocks: the sample
+ * is dropped if the plugin thread holds the lock. */
+void passthru_observe_vsh(uint32_t port_no, const CellPadData *data);
+/* Plugin thread only (they take the lock): btcheck_state() as an int,
+ * btcheck_vsh_samples_seen(), and raw samples fed since passthru_init(). */
+int  passthru_btcheck_state(void);
+int  passthru_btcheck_vsh_samples(void);
+int  passthru_raw_samples(void);
 void ds45_process_bt_input(uint32_t port_no, CellPadData *data);
 void ds45_trigger_bt_ps(int pressed);
 

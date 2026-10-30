@@ -11,41 +11,164 @@
  * code/mask can forward a bit the firmware does expose. Legacy substitution
  * combos are opt-in and are not evidence of reading the physical PS button.
  * Raw USB is a separate path and requires successful device acquisition.
+ *
+ * The raw Bluetooth report is read from the kernel object a slot points to;
+ * where that slot is comes from kernel_active() (kernel.c), never from an
+ * address in this file. A source pad is bound as soon as one shows up, but
+ * its virtual pad is only registered once the passive cross-check
+ * (btcheck.c) has PASSED. If the check FAILS the record is rejected, every
+ * Bluetooth pad is released and nothing more is adopted: the console's own
+ * driver keeps the controller.
  */
 
 #include <string.h>
 #include <sys/process.h>
+#include <sys/synchronization.h>
+#include <sys/sys_time.h>
 #include <cell/pad.h>
 
 #include "ds45pad.h"
+#include "lv2.h"
+#include "kernel.h"
+#include "btcheck.h"
 
-/* Syscall 6 (sys_cfw_peek): passive 64-bit kernel memory read */
-static inline uint64_t peekq(uint64_t addr)
+/* ------------------------------------------------------------------------ */
+/* Cross-check state and its lock                                            */
+/*                                                                           */
+/* btcheck is a single instance without locking of its own. Its VSH side is   */
+/* fed from the cellPadGetData detours, on VSH's thread; its raw side from    */
+/* passthru_poll on the plugin thread. bc_mutex serialises every btcheck_*    */
+/* call. The VSH side only ever trylocks and drops the sample when the lock   */
+/* is taken (a dropped VSH sample is neutral), so VSH is never blocked.       */
+/* ------------------------------------------------------------------------ */
+
+static sys_mutex_t bc_mutex;
+static int         bc_ready;
+
+/* Port the cross-check watches; -1 = none. Written by the plugin thread,
+ * read without the lock by the VSH detours only as a cheap pre-filter. */
+static volatile int s_src_port = -1;
+static uint64_t s_bt_work;         /* object holding the report; 0 = not usable */
+static int      s_raw_samples;     /* raw samples fed to the cross-check */
+
+/* Without the mutex (creation failed) the VSH side never touches btcheck, so
+ * the plugin thread is its only user and needs no lock. */
+static void bc_lock(void)   { if (bc_ready) sys_mutex_lock(bc_mutex, 0); }
+static void bc_unlock(void) { if (bc_ready) sys_mutex_unlock(bc_mutex); }
+
+int passthru_init(void)
 {
-	system_call_1(6, addr);
-	return_to_user_prog(uint64_t);
+	sys_mutex_attribute_t attr;
+
+	s_src_port    = -1;
+	s_bt_work     = 0;
+	s_raw_samples = 0;
+
+	bc_ready = 0;
+	sys_mutex_attribute_initialize(attr);
+	if (sys_mutex_create(&bc_mutex, &attr) == 0)   /* CELL_OK */
+		bc_ready = 1;
+	else
+		ds45_boot_mark("btcheck_mutex_FAILED");
+
+	/* Watch nothing until a source pad is bound. */
+	btcheck_reset(-1);
+	return bc_ready ? 0 : -1;
 }
 
-static void ds45_boot_mark_u64(const char *tag, uint64_t val)
+void passthru_shutdown(void)
 {
-	char tag_hi[64];
-	char tag_lo[64];
-	int i = 0;
-	while (tag[i] && i < 48) {
-		tag_hi[i] = tag[i];
-		tag_lo[i] = tag[i];
-		i++;
+	if (bc_ready) {
+		bc_ready = 0;
+		sys_mutex_destroy(bc_mutex);
 	}
-	tag_hi[i] = '_'; tag_hi[i+1] = 'H'; tag_hi[i+2] = 'I'; tag_hi[i+3] = '\0';
-	tag_lo[i] = '_'; tag_lo[i+1] = 'L'; tag_lo[i+2] = 'O'; tag_lo[i+3] = '\0';
-
-	ds45_boot_mark_hex(tag_hi, (uint32_t)(val >> 32));
-	ds45_boot_mark_hex(tag_lo, (uint32_t)(val & 0xFFFFFFFFULL));
 }
 
-/* Consecutive failed reads of the source port before the virtual pad is torn
- * down. At a 10 ms poll this is a fifth of a second of silence. */
-#define PASSTHRU_MAX_READ_FAILS 20
+void passthru_observe_vsh(uint32_t port_no, const CellPadData *data)
+{
+	/* VSH reads every port at frame rate; only the watched one is worth a
+	 * lock (btcheck ignores the others anyway). */
+	if (!bc_ready || !data || (int)port_no != s_src_port)
+		return;
+	if (sys_mutex_trylock(bc_mutex) != 0)   /* CELL_OK */
+		return;                         /* plugin thread busy: drop it */
+	btcheck_observe_vsh(port_no, data);
+	sys_mutex_unlock(bc_mutex);
+}
+
+int passthru_btcheck_state(void)
+{
+	int s;
+
+	bc_lock();
+	s = (int)btcheck_state();
+	bc_unlock();
+	return s;
+}
+
+int passthru_btcheck_vsh_samples(void)
+{
+	int n;
+
+	bc_lock();
+	n = btcheck_vsh_samples_seen();
+	bc_unlock();
+	return n;
+}
+
+int passthru_raw_samples(void)
+{
+	return s_raw_samples;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Raw report                                                                */
+/* ------------------------------------------------------------------------ */
+
+/* The slot's pointer must lie inside the LV2 window, and the 16 report bytes
+ * at pointer + report_off must be two aligned, in-window qwords. */
+static int bt_work_usable(uint64_t v, uint32_t report_off)
+{
+	uint64_t r;
+
+	if (v < DS45_LV2_BASE || v >= DS45_LV2_BOUND)
+		return 0;
+	r = v + report_off;            /* report_off <= DS45_REPORT_OFF_MAX */
+	return (r & 7) == 0 && r <= DS45_LV2_BOUND - 16;
+}
+
+/* The slot is NULL until the Bluetooth stack is up, and may be repointed if
+ * it restarts: re-read on every rescan tick. A bad value is never kept or
+ * cached; the next tick simply tries again. */
+static void refresh_bt_work(const ds45_kernel_t *k)
+{
+	uint64_t v;
+
+	if (ds45_lv2_read(k->slot_addr, &v) != 0 || !bt_work_usable(v, k->report_off))
+		v = 0;
+	if (v != s_bt_work)
+		DS45_TRACE_HEX("bt_work_lo", v);
+	s_bt_work = v;
+}
+
+/* w0, w1, then w0 again: if w0 changed, the kernel was rewriting the report
+ * while we read it and the sample is dropped. 0 and *out set on a sample
+ * that decodes (header A1 01, hat <= 8). */
+static int read_raw(ds45_btraw_t *out)
+{
+	const ds45_kernel_t *k = kernel_active();
+	uint64_t a, w0, w1, w0_again;
+
+	if (!k || !s_bt_work)
+		return -1;
+	a = s_bt_work + k->report_off;
+	if (ds45_lv2_read(a, &w0) != 0 || ds45_lv2_read(a + 8, &w1) != 0 ||
+	    ds45_lv2_read(a, &w0_again) != 0)
+		return -1;
+	if (w0 != w0_again)
+		return -1;
+	return bt_report_decode(w0, w1, out);
+}
 
 /* Ports occupied by pads we created ourselves.
  *
@@ -104,13 +227,27 @@ static ds45_pad_t *alloc_slot(void)
 	return NULL;
 }
 
-int passthru_scan(void)
+static ds45_pad_t *bound_pad(void)
+{
+	int i;
+
+	for (i = 0; i < DS45_MAX_PADS; i++)
+		if (g_pads[i].in_use && g_pads[i].link == DS45_LINK_BT)
+			return &g_pads[i];
+
+	return NULL;
+}
+
+/* Bind the source pad: claim a slot for it and point the cross-check at its
+ * port, without registering a virtual pad yet. One at a time: there is one
+ * raw report and one cross-check. */
+static ds45_pad_t *bind_source(void)
 {
 	CellPadInfo2 info;
-	int port, bound = 0;
+	int port;
 
 	if (cellPadGetInfo2(&info) != CELL_PAD_OK)
-		return 0;
+		return NULL;
 
 	/* Walk downwards: users are told to park the Bluetooth pad on the last
 	 * port so the virtual one can take port 1, so the highest matching port
@@ -125,7 +262,7 @@ int passthru_scan(void)
 
 		pad = alloc_slot();
 		if (!pad)
-			break;
+			return NULL;
 
 		/* Same as the USB path: keep the calibration across the clear. */
 		{
@@ -161,18 +298,59 @@ int passthru_scan(void)
 				cellPadSetPortSetting((uint32_t)port, want);
 		}
 
-		if (ldd_register(pad) < 0) {
-			pad->in_use = 0;
-			continue;
-		}
-
-		if (g_cfg.notify)
-			ds45_notify("DS45Pad Bluetooth Attivo / Active");
-
-		bound++;
+		/* A pass survives the same pad coming back on the same port;
+		 * anything else starts the cross-check over. */
+		bc_lock();
+		if (!(btcheck_state() == BTCHECK_PASSED && port == s_src_port))
+			btcheck_reset(port);
+		bc_unlock();
+		s_src_port = port;
+		ds45_boot_mark_hex("passthru_bound_port", (uint32_t)port);
+		return pad;
 	}
 
-	return bound;
+	return NULL;
+}
+
+/* Rescan tick. Returns the number of virtual pads registered by this call.
+ * Nothing at all happens without a resolved kernel record. */
+int passthru_scan(void)
+{
+	const ds45_kernel_t *k = kernel_active();
+	ds45_pad_t *pad;
+
+	if (!k)
+		return 0;
+
+	refresh_bt_work(k);
+
+	if (passthru_btcheck_state() == BTCHECK_FAILED) {
+		/* Not a live report: drop the record (and its cache entry), let go
+		 * of every Bluetooth pad and stop adopting new ones - with no
+		 * active record, every later call returns above. */
+		ds45_boot_mark("btcheck_FAILED_stepping_aside");
+		kernel_reject_active();
+		passthru_release();
+		s_bt_work = 0;
+		return 0;
+	}
+
+	pad = bound_pad();
+	if (!pad)
+		pad = bind_source();
+	if (!pad || pad->handle >= 0)
+		return 0;
+
+	/* Bound, but no virtual pad before the cross-check has passed. */
+	if (passthru_btcheck_state() != BTCHECK_PASSED)
+		return 0;
+	if (ldd_register(pad) < 0)
+		return 0;                    /* stays bound; retried next tick */
+
+	if (g_cfg.notify)
+		ds45_notify("DS45Pad Bluetooth Attivo / Active");
+
+	return 1;
 }
 
 
@@ -260,7 +438,9 @@ static inline uint8_t deadzone8(uint8_t val)
 	return val;
 }
 
-void ds45_inject_bt_pad(uint64_t r_w0, uint64_t r_w1)
+/* Forward one decoded raw report (bt_report_decode in btcheck.c owns the
+ * byte layout and the button mapping) to every registered Bluetooth pad. */
+static void ds45_inject_bt_pad(const ds45_btraw_t *r)
 {
 	static int s_last_ps = 0;
 	static int s_ps_grace = 0;
@@ -281,21 +461,13 @@ void ds45_inject_bt_pad(uint64_t r_w0, uint64_t r_w1)
 	int circle_pressed = 0;
 	int i;
 
-	/* Extract bytes from raw report in kernel bt_work */
-	uint8_t lx = (uint8_t)(r_w0 >> 40);
-	uint8_t ly = (uint8_t)(r_w0 >> 32);
-	uint8_t rx = (uint8_t)(r_w0 >> 24);
-	uint8_t ry = (uint8_t)(r_w0 >> 16);
-	uint8_t b0 = (uint8_t)(r_w0 >> 8);  /* D-pad hat + Square/Cross/Circle/Triangle */
-	uint8_t b1 = (uint8_t)(r_w0);       /* L1/R1/L2/R2/Create/Options/L3/R3 */
-	uint8_t b2 = (uint8_t)(r_w1 >> 56); /* PS/Touchpad/Mute */
-	uint8_t l2_analog = (uint8_t)(r_w1 >> 48);
-	uint8_t r2_analog = (uint8_t)(r_w1 >> 40);
-
-	int ps_phys = (b2 & 0x01) ? 1 : 0;
-	uint16_t d1 = 0;
-	uint16_t d2 = 0;
-	uint16_t ldd = 0;
+	const uint8_t lx = r->lx, ly = r->ly, rx = r->rx, ry = r->ry;
+	const uint8_t l2_analog = r->l2, r2_analog = r->r2;
+	const int ps_phys = r->ps ? 1 : 0;
+	/* d1 already carries DS45_CTRL_PS when the PS button is down */
+	const uint16_t d1 = r->d1;
+	const uint16_t d2 = r->d2;
+	const uint16_t ldd = ps_phys ? DS45_CTRL_LDD_PS : 0;
 
 	/* Check if the system is intercepting pad inputs (in-game XMB active over a running title) */
 	if (cellPadGetInfo2(&pinfo) == CELL_PAD_OK) {
@@ -338,8 +510,6 @@ void ds45_inject_bt_pad(uint64_t r_w0, uint64_t r_w1)
 
 	/* Physical PS button */
 	if (ps_phys) {
-		ldd |= DS45_CTRL_LDD_PS;
-		d1  |= DS45_CTRL_PS;
 		s_ps_held_ticks++;
 		if (!in_game && s_ps_held_ticks >= 25 && !s_vsh_menu_open) {
 			s_vsh_menu_open = 1;
@@ -367,29 +537,6 @@ void ds45_inject_bt_pad(uint64_t r_w0, uint64_t r_w1)
 			}
 		}
 	}
-
-	/* D-pad Hat decode (b0 low 4 bits: 0=Up, 1=UR, 2=R, 3=DR, 4=D, 5=DL, 6=L, 7=UL, 8=neutral) */
-	uint8_t hat = b0 & 0x0F;
-	if (hat == 0 || hat == 1 || hat == 7) d1 |= DS45_CTRL_UP;
-	if (hat == 1 || hat == 2 || hat == 3) d1 |= DS45_CTRL_RIGHT;
-	if (hat == 3 || hat == 4 || hat == 5) d1 |= DS45_CTRL_DOWN;
-	if (hat == 5 || hat == 6 || hat == 7) d1 |= DS45_CTRL_LEFT;
-
-	/* Action buttons (b0 high 4 bits) */
-	if (b0 & 0x10) d2 |= DS45_CTRL_SQUARE;
-	if (b0 & 0x20) d2 |= DS45_CTRL_CROSS;
-	if (b0 & 0x40) d2 |= DS45_CTRL_CIRCLE;
-	if (b0 & 0x80) d2 |= DS45_CTRL_TRIANGLE;
-
-	/* Shoulder / System buttons (b1) */
-	if (b1 & 0x01) d2 |= DS45_CTRL_L1;
-	if (b1 & 0x02) d2 |= DS45_CTRL_R1;
-	if (b1 & 0x04) d2 |= DS45_CTRL_L2;
-	if (b1 & 0x08) d2 |= DS45_CTRL_R2;
-	if (b1 & 0x10) d1 |= DS45_CTRL_SELECT; /* Share / Create */
-	if (b1 & 0x20) d1 |= DS45_CTRL_START;  /* Options */
-	if (b1 & 0x40) d1 |= DS45_CTRL_L3;
-	if (b1 & 0x80) d1 |= DS45_CTRL_R3;
 
 	circle_pressed = (d2 & DS45_CTRL_CIRCLE) ? 1 : 0;
 
@@ -566,48 +713,42 @@ void ds45_process_bt_input(uint32_t port_no, CellPadData *data)
 	(void)port_no;
 }
 
+/* Every poll: one raw sample into the cross-check, and - only once it has
+ * PASSED - into the virtual pad. The cross-check keeps being fed after the
+ * source pad disconnects, since a report that still changes then is not a
+ * live one (btcheck's freeze rule). */
 void passthru_poll(void)
 {
-	int i;
+	ds45_btraw_t raw;
+	int i, connected, state;
 
-	for (i = 0; i < DS45_MAX_PADS; i++) {
-		ds45_pad_t *pad = &g_pads[i];
+	if (!kernel_active() || s_src_port < 0)
+		return;
 
-		if (!pad->in_use || pad->link != DS45_LINK_BT)
-			continue;
+	connected = source_still_connected(s_src_port);
+	if (!connected) {
+		for (i = 0; i < DS45_MAX_PADS; i++) {
+			ds45_pad_t *pad = &g_pads[i];
 
-		if (!source_still_connected(pad->src_port)) {
+			if (!pad->in_use || pad->link != DS45_LINK_BT)
+				continue;
 			ds45_boot_mark("passthru_source_disconnected");
 			ldd_unregister(pad);
 			pad->in_use = 0;
-			continue;
-		}
-
-		/* Internal Bluetooth: Live Kernel Memory Monitoring via Syscall 6 (sys_cfw_peek) */
-		{
-			static int s_bt_init_done = 0;
-			static uint64_t s_bt_work_addr = 0;
-
-			if (!s_bt_init_done) {
-				s_bt_init_done = 1;
-				/* FW 4.93 TOC = 0x34FBB0, bt_rtoc_entry_1 = -0x3680 */
-				s_bt_work_addr = peekq(0x800000000034FBB0ULL - 0x3680ULL);
-				ds45_boot_mark_u64("PEEK_BT_WORK", s_bt_work_addr);
-			}
-
-			if ((s_bt_work_addr & 0xFFFFFFFF00000000ULL) == 0x8000000000000000ULL &&
-			    s_bt_work_addr > 0x8000000000010000ULL) {
-				uint64_t r_w0 = peekq(s_bt_work_addr + 0xE8);
-				uint64_t r_w1 = peekq(s_bt_work_addr + 0xF0);
-
-				/* Verify Bluetooth HID input report (0xA1 prefix) */
-				if ((r_w0 >> 56) == 0xA1) {
-					/* Forward complete controller report (including physical PS button) to LDD pad */
-					ds45_inject_bt_pad(r_w0, r_w1);
-				}
-			}
 		}
 	}
+
+	if (read_raw(&raw) != 0)
+		return;
+
+	s_raw_samples++;
+	bc_lock();
+	state = (int)btcheck_feed_raw(&raw, connected,
+	                              (uint64_t)sys_time_get_system_time());
+	bc_unlock();
+
+	if (connected && state == BTCHECK_PASSED)
+		ds45_inject_bt_pad(&raw);
 }
 
 void passthru_release(void)

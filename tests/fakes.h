@@ -4,6 +4,7 @@
 #define DS45_TEST_FAKES_H
 
 #include <stdint.h>
+#include <cell/pad.h>
 
 /* Return the failing line from run_tests(); 0 means pass. */
 #define CHECK(e) do { if (!(e)) return __LINE__; } while (0)
@@ -24,8 +25,33 @@ extern int fake_lv2_out_of_bounds;
 /* Count of all syscall-6 reads, in or out of bounds. */
 extern int fake_lv2_peek_count;
 
-/* Syscall dispatcher behind system_call_N. 6 = peek, anything else = -1. */
+/* Called after every syscall-6 read (in or out of bounds) when set; a test
+ * can change the image from here to simulate a concurrent kernel write.
+ * Cleared by fake_reset_all(). */
+extern void (*fake_lv2_on_peek)(uint64_t addr);
+
+/* Syscall dispatcher behind system_call_N. 6 = peek; 8 = fake_syscall8 if
+ * set, else -1 (every syscall-8 call is logged either way); anything else
+ * = -1. */
 uint64_t fake_syscall(int n, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
+
+/* Syscall 8 (PS3MAPI etc.). The handler, when set, supplies the result; a3
+ * is often a user pointer, cast back with (void *)(uintptr_t)a3. The first
+ * FAKE_SC8_LOG calls are logged. Cleared by fake_reset_all(). */
+#define FAKE_SC8_LOG 16
+extern uint64_t (*fake_syscall8)(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
+extern int      fake_sc8_calls;
+extern uint64_t fake_sc8_a1[FAKE_SC8_LOG];
+extern uint64_t fake_sc8_a2[FAKE_SC8_LOG];
+
+/* sys_mutex_* fakes (tests/stubs/sys/synchronization.h). trylock fails
+ * while fake_mutex_busy is set. fake_mutex_errors counts a lock taken while
+ * already held (a real deadlock), an unlock of an unheld mutex, and
+ * operations before create. */
+extern int fake_mutex_busy;
+extern int fake_mutex_depth;
+extern int fake_mutex_errors;
+extern int fake_mutex_live;     /* created and not destroyed */
 
 /* ds45_notify() records here. */
 extern int fake_toasts;
@@ -46,8 +72,18 @@ int ds45_write_file(const char *path, const void *data, int len);
 int ds45_delete_file(const char *path);
 int ds45_file_exists(const char *path);
 
-/* ldd_register() fake counter. */
+/* ldd_register() fake counter. A registered pad gets handle 100 + n, port 0;
+ * ldd_unregister() sets the handle back to -1. */
 extern int fake_ldd_registers;
+extern int fake_ldd_unregisters;
+
+/* cellPad fakes: cellPadGetInfo2 returns fake_pad_info_rc and, when that is
+ * CELL_PAD_OK, a copy of fake_pad_info. cellPadLddDataInsert counts and keeps
+ * the last sample. */
+extern CellPadInfo2 fake_pad_info;
+extern int          fake_pad_info_rc;
+extern int          fake_ldd_inserts;
+extern CellPadData  fake_last_insert;
 
 /* Reset every fake above to its initial state. */
 void fake_reset_all(void);
