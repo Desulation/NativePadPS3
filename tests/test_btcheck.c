@@ -131,12 +131,16 @@ static int test_tolerance_2(void)
 	CellPadData  d;
 	int i, k;
 
-	/* off by exactly 2 on every stick, either direction: all match */
+	/* off by exactly 2 on every stick, either direction: all match. The
+	 * raw side alternates between two states so it is live. */
 	btcheck_reset(PORT);
-	btcheck_feed_raw(&r, 1, 1000);
 	for (i = 0; i < 50; i++) {
-		d = (i & 1) ? mk_vsh(98, 102, 98, 102, 0, 0)
+		ds45_btraw_t ri = (i & 1) ? mk_raw(110, 110, 110, 110, 0, 0) : r;
+		btcheck_feed_raw(&ri, 1, 1000 + (uint64_t)i);
+		d = (i & 1) ? mk_vsh(108, 112, 108, 112, 0, 0)
 			    : mk_vsh(102, 98, 102, 98, 0, 0);
+		if (i & 2) d = (i & 1) ? mk_vsh(112, 108, 112, 108, 0, 0)
+				       : mk_vsh(98, 102, 98, 102, 0, 0);
 		btcheck_observe_vsh(PORT, &d);
 	}
 	CHECK(btcheck_state() == BTCHECK_PASSED);
@@ -184,31 +188,24 @@ static int test_buttons_must_match(void)
 
 static int test_ps_bit_ignored(void)
 {
-	int i;
-	ds45_btraw_t r = mk_raw(0x80, 0x80, 0x80, 0x80, DS45_CTRL_PS | DS45_CTRL_UP, 0);
-	r.ps = 1;
+	int i, pass;
 
-	/* raw has PS, VSH does not */
-	btcheck_reset(PORT);
-	btcheck_feed_raw(&r, 1, 1000);
-	for (i = 0; i < 50; i++) {
-		/* wiggle within tolerance so each observation is a change */
-		CellPadData d = mk_vsh((uint16_t)(0x80 + (i & 1)), 0x80, 0x80, 0x80,
-				       DS45_CTRL_UP, 0);
-		btcheck_observe_vsh(PORT, &d);
+	/* pass 0: raw has PS, VSH does not. pass 1: VSH has PS, raw does not.
+	 * The raw side alternates between two states so it is live. */
+	for (pass = 0; pass < 2; pass++) {
+		btcheck_reset(PORT);
+		for (i = 0; i < 50; i++) {
+			uint8_t x = (i & 1) ? 0x90 : 0x80;
+			ds45_btraw_t r = mk_raw(x, 0x80, 0x80, 0x80,
+				(uint16_t)(DS45_CTRL_UP | (pass == 0 ? DS45_CTRL_PS : 0)), 0);
+			CellPadData d = mk_vsh(x, 0x80, 0x80, 0x80,
+				(uint16_t)(DS45_CTRL_UP | (pass == 1 ? DS45_CTRL_PS : 0)), 0);
+			r.ps = (pass == 0);
+			btcheck_feed_raw(&r, 1, 1000 + (uint64_t)i);
+			btcheck_observe_vsh(PORT, &d);
+		}
+		CHECK(btcheck_state() == BTCHECK_PASSED);
 	}
-	CHECK(btcheck_state() == BTCHECK_PASSED);
-
-	/* VSH has PS, raw does not */
-	btcheck_reset(PORT);
-	r = mk_raw(0x80, 0x80, 0x80, 0x80, DS45_CTRL_UP, 0);
-	btcheck_feed_raw(&r, 1, 1000);
-	for (i = 0; i < 50; i++) {
-		CellPadData d = mk_vsh((uint16_t)(0x80 + (i & 1)), 0x80, 0x80, 0x80,
-				       DS45_CTRL_UP | DS45_CTRL_PS, 0);
-		btcheck_observe_vsh(PORT, &d);
-	}
-	CHECK(btcheck_state() == BTCHECK_PASSED);
 	return 0;
 }
 
@@ -316,19 +313,120 @@ static int test_repeated_raw_does_not_evict_history(void)
 	}
 	CHECK(btcheck_state() == BTCHECK_PENDING);
 
-	/* the same through to PASSED: 50 lagging reads of `a` match */
-	btcheck_reset(PORT);
-	btcheck_feed_raw(&a, 1, 1000);
-	for (i = 0; i < 20; i++)
-		btcheck_feed_raw(&b, 1, 2000 + (uint64_t)i * 10000);
-	for (i = 0; i < 50; i++) {
-		d = mk_vsh((uint16_t)(10 + (i & 1)), 10, 10, 10, 0, 0);
-		btcheck_observe_vsh(PORT, &d);
-	}
-	CHECK(btcheck_state() == BTCHECK_PASSED);
 	return 0;
 }
 
+/* Review fix: a static raw buffer must never earn PASSED. */
+static int test_static_raw_never_passes(void)
+{
+	int i;
+	ds45_btraw_t r = mk_raw(128, 128, 128, 128, 0, 0);
+	CellPadData d;
+	btcheck_reset(PORT);
+	btcheck_feed_raw(&r, 1, 1000);
+	for (i = 0; i < 60; i++) {
+		/* idle stick jitter, every value within +-2 of the raw 128 and
+		 * different from the previous one: 60 counted VSH changes */
+		d = mk_vsh((uint16_t)(126 + (i % 5)), 128, 128, 128, 0, 0);
+		btcheck_observe_vsh(PORT, &d);
+	}
+	CHECK(btcheck_vsh_samples_seen() == 60);
+	CHECK(btcheck_state() == BTCHECK_PENDING);
+	/* only the first change was a match; the rest were neutral, so they
+	 * cost nothing against the mismatch limit either */
+	for (i = 0; i < 10; i++) {
+		d = mk_vsh(10, 128, 128, 128, 0, (uint16_t)i);
+		btcheck_observe_vsh(PORT, &d);
+	}
+	CHECK(btcheck_state() == BTCHECK_PENDING);
+	d = mk_vsh(10, 128, 128, 128, 0, 99);
+	btcheck_observe_vsh(PORT, &d);
+	CHECK(btcheck_state() == BTCHECK_FAILED);
+	return 0;
+}
+
+static int test_live_raw_passes_at_50(void)
+{
+	int i;
+	btcheck_reset(PORT);
+	for (i = 0; i < 49; i++) {
+		round_match(i, 1000 + (uint64_t)i);
+		CHECK(btcheck_state() == BTCHECK_PENDING);
+	}
+	round_match(49, 2000);
+	CHECK(btcheck_state() == BTCHECK_PASSED);
+
+	return 0;
+}
+
+static int test_old_entry_match_is_neutral(void)
+{
+	int i;
+	CellPadData d;
+	ds45_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
+	ds45_btraw_t b = mk_raw(50, 50, 50, 50, 0, 0);
+
+	btcheck_reset(PORT);
+	btcheck_feed_raw(&a, 1, 1000);
+	btcheck_feed_raw(&b, 1, 2000);
+	d = mk_vsh(50, 50, 50, 50, 0, 0);          /* newest entry: a match */
+	btcheck_observe_vsh(PORT, &d);
+	/* VSH now agrees only with the older entry `a`: neutral. 30 of them
+	 * (alternating so each is a change) must not count as mismatches ... */
+	for (i = 0; i < 30; i++) {
+		d = mk_vsh((uint16_t)(10 + (i & 1)), 10, 10, 10, 0, 0);
+		btcheck_observe_vsh(PORT, &d);
+	}
+	CHECK(btcheck_state() == BTCHECK_PENDING);
+	/* ... so the full ten real mismatches are still available */
+	for (i = 0; i < 10; i++) {
+		d = mk_vsh(200, 200, 200, 200, 0, (uint16_t)i);
+		btcheck_observe_vsh(PORT, &d);
+	}
+	CHECK(btcheck_state() == BTCHECK_PENDING);
+	d = mk_vsh(200, 200, 200, 200, 0, 99);
+	btcheck_observe_vsh(PORT, &d);
+	CHECK(btcheck_state() == BTCHECK_FAILED);
+	return 0;
+}
+
+static int test_last_match_resets_on_disconnect_and_reset(void)
+{
+	int i;
+	CellPadData d;
+	ds45_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
+
+	/* match, disconnect while pending, reconnect with the same raw state:
+	 * the new history entry is a fresh match again */
+	btcheck_reset(PORT);
+	btcheck_feed_raw(&a, 1, 1000);
+	d = mk_vsh(10, 10, 10, 10, 0, 0);
+	btcheck_observe_vsh(PORT, &d);
+	btcheck_feed_raw(&a, 0, 2000);
+	btcheck_feed_raw(&a, 1, 3000);
+	d = mk_vsh(11, 10, 10, 10, 0, 0);
+	btcheck_observe_vsh(PORT, &d);
+	/* it was a match, not neutral: ten mismatches then stay PENDING and an
+	 * eleventh would fail either way, so probe the match itself via 49
+	 * further live rounds reaching PASSED at exactly 50 total (1 + 49). */
+	for (i = 0; i < 48; i++) round_match(i, 4000 + (uint64_t)i);
+	CHECK(btcheck_state() == BTCHECK_PENDING);
+	round_match(48, 5000);
+	CHECK(btcheck_state() == BTCHECK_PASSED);
+
+	/* btcheck_reset clears it as well: 1 match, reset, then 49 live rounds
+	 * are only 49 matches; the 50th passes */
+	btcheck_reset(PORT);
+	btcheck_feed_raw(&a, 1, 1000);
+	d = mk_vsh(10, 10, 10, 10, 0, 0);
+	btcheck_observe_vsh(PORT, &d);
+	btcheck_reset(PORT);
+	for (i = 0; i < 49; i++) round_match(i, 4000 + (uint64_t)i);
+	CHECK(btcheck_state() == BTCHECK_PENDING);
+	round_match(49, 5000);
+	CHECK(btcheck_state() == BTCHECK_PASSED);
+	return 0;
+}
 static int test_unchanged_vsh_samples_not_counted(void)
 {
 	int i;
@@ -568,6 +666,33 @@ static int test_vsh_counter_survives_failure(void)
 	return 0;
 }
 
+static int test_len_boundary(void)
+{
+	CellPadData d = mk_vsh(1, 2, 3, 4, 0, 0);
+	btcheck_reset(PORT);
+	d.len = DS45_BTN_ANALOG_LEFT_Y;              /* 7: index 7 not covered */
+	btcheck_observe_vsh(PORT, &d);
+	CHECK(btcheck_vsh_samples_seen() == 0);
+	d.len = DS45_BTN_ANALOG_LEFT_Y + 1;          /* 8: counted */
+	btcheck_observe_vsh(PORT, &d);
+	CHECK(btcheck_vsh_samples_seen() == 1);
+	return 0;
+}
+
+static int test_src_port_range(void)
+{
+	CellPadData d = mk_vsh(1, 2, 3, 4, 0, 0);
+	btcheck_reset(-1);
+	btcheck_observe_vsh(0, &d);
+	btcheck_observe_vsh(0xFFFFFFFFu, &d);
+	btcheck_reset(8);
+	btcheck_observe_vsh(8, &d);
+	btcheck_reset(7);
+	btcheck_observe_vsh(7, &d);
+	CHECK(btcheck_vsh_samples_seen() == 1);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int r;
@@ -583,6 +708,12 @@ int run_tests(void)
 	RUN(test_mismatch_after_pass_ignored);
 	RUN(test_history_window);
 	RUN(test_repeated_raw_does_not_evict_history);
+	RUN(test_static_raw_never_passes);
+	RUN(test_live_raw_passes_at_50);
+	RUN(test_old_entry_match_is_neutral);
+	RUN(test_last_match_resets_on_disconnect_and_reset);
+	RUN(test_len_boundary);
+	RUN(test_src_port_range);
 	RUN(test_unchanged_vsh_samples_not_counted);
 	RUN(test_other_ports_and_empty_ignored);
 	RUN(test_no_raw_yet_is_not_a_mismatch);

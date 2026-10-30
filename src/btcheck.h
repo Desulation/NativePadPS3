@@ -17,8 +17,20 @@
  *  - Single instance, no locking: btcheck_feed_raw and btcheck_observe_vsh
  *    (and reset/state/samples_seen) must all be called from the same context.
  *  - btcheck_observe_vsh needs CellPadData.len to be set (as cellPadGetData
- *    does; len == 0 means "no data this poll"). A short len is ignored, so a
- *    caller that leaves len unset is never counted.
+ *    does; len == 0 means "no data this poll"). len >= 8 is required, since
+ *    button[7] (DS45_BTN_ANALOG_LEFT_Y) is the highest word read; a shorter
+ *    len is ignored, so a caller that leaves len unset is never counted.
+ *  - src_port must be 0..7. Any other value (negative, or 8 and up) means
+ *    nothing is ever observed: every VSH read is ignored.
+ *  - A match must be fresh evidence. Each history entry has a sequence number
+ *    assigned when it is pushed. A counted VSH change is a MATCH only if the
+ *    NEWEST history entry it agrees with is newer than the entry used by the
+ *    previous counted match. Agreeing only with an entry that is not newer is
+ *    NEUTRAL (neither match nor mismatch); agreeing with nothing is a
+ *    mismatch. So a static raw buffer (e.g. a stale neutral A1 01 report)
+ *    can never reach PASSED however much the VSH side jitters: the raw side
+ *    must be changing too. btcheck_reset and a disconnect while PENDING
+ *    forget the previous match.
  *  - The raw history holds the last BTCHECK_RAW_HISTORY DISTINCT raw states
  *    (a sample equal to the newest entry is not pushed), so a high raw feed
  *    rate does not push an older state out from under a lagging VSH read.

@@ -20,6 +20,10 @@ static struct {
 	vsh_sample_t prev_vsh[BTCHECK_PORTS];
 
 	ds45_btraw_t hist[BTCHECK_RAW_HISTORY];
+	uint32_t hist_seq[BTCHECK_RAW_HISTORY]; /* push order of each entry */
+	uint32_t next_seq;                  /* sequence of the next push (wraps; compared by difference) */
+	int      have_match;                /* a match has been counted since the last reset */
+	uint32_t last_match_seq;            /* seq of the entry the last counted match used */
 	int      hist_count, hist_head;     /* ring of connected raw samples */
 
 	ds45_btraw_t last_raw;              /* previous raw sample, any connection */
@@ -119,6 +123,7 @@ void btcheck_observe_vsh(uint32_t port, const CellPadData *d)
 {
 	vsh_sample_t cur, *prev;
 	int i, matched = 0;
+	uint32_t newest = 0;
 
 	if (!d || (int)port != g_bc.src_port || port >= BTCHECK_PORTS)
 		return;
@@ -145,13 +150,23 @@ void btcheck_observe_vsh(uint32_t port, const CellPadData *d)
 	if (g_bc.state != BTCHECK_PENDING || !g_bc.connected || g_bc.hist_count == 0)
 		return;
 
+	/* newest (highest seq) history entry this VSH change agrees with */
 	for (i = 0; i < g_bc.hist_count; i++) {
-		if (matches_raw(&cur, &g_bc.hist[i])) {
+		if (matches_raw(&cur, &g_bc.hist[i]) &&
+		    (!matched || (int32_t)(g_bc.hist_seq[i] - newest) > 0)) {
 			matched = 1;
-			break;
+			newest = g_bc.hist_seq[i];
 		}
 	}
 	if (matched) {
+		/* A match must be fresh evidence: the raw side has to have moved
+		 * on since the previous counted match. Agreeing only with an
+		 * entry that is not newer is neutral (neither match nor
+		 * mismatch), so a static raw buffer can never earn PASSED. */
+		if (g_bc.have_match && (int32_t)(newest - g_bc.last_match_seq) <= 0)
+			return;
+		g_bc.have_match = 1;
+		g_bc.last_match_seq = newest;
 		if (++g_bc.matches >= BTCHECK_MATCHES_REQUIRED)
 			g_bc.state = BTCHECK_PASSED;
 	} else if (++g_bc.mismatches > BTCHECK_MISMATCH_LIMIT) {
@@ -174,6 +189,7 @@ btcheck_state_t btcheck_feed_raw(const ds45_btraw_t *r, int port_connected, uint
 		    !raw_equal(r, &g_bc.hist[(g_bc.hist_head + BTCHECK_RAW_HISTORY - 1) %
 					     BTCHECK_RAW_HISTORY])) {
 			g_bc.hist[g_bc.hist_head] = *r;
+			g_bc.hist_seq[g_bc.hist_head] = g_bc.next_seq++;
 			g_bc.hist_head = (g_bc.hist_head + 1) % BTCHECK_RAW_HISTORY;
 			if (g_bc.hist_count < BTCHECK_RAW_HISTORY)
 				g_bc.hist_count++;
@@ -188,6 +204,7 @@ btcheck_state_t btcheck_feed_raw(const ds45_btraw_t *r, int port_connected, uint
 				/* not a failure: start the evidence over; the stale
 				 * raw history goes too, the freeze watch stays */
 				g_bc.matches = g_bc.mismatches = 0;
+				g_bc.have_match = 0;
 				g_bc.hist_count = g_bc.hist_head = 0;
 			}
 		} else if (g_bc.disc_valid && g_bc.have_last_raw && !raw_equal(r, &g_bc.last_raw) &&
