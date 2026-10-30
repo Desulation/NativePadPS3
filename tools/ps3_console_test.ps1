@@ -55,10 +55,20 @@ function Test-Port([int]$Port) {
     try { return ($c.ConnectAsync($Ip, $Port).Wait(1500) -and $c.Connected) } catch { return $false } finally { $c.Close() }
 }
 
-# Name -> size for the files in /dev_hdd0/tmp (FTP LIST, unix style).
+# Name -> size for the files in /dev_hdd0/tmp (FTP LIST, unix style). A busy
+# console (a dump being written) can time a listing out: retry a few times
+# before giving up, so one slow answer does not end a long wait.
 function Get-TmpListing {
+    for ($try = 1; ; $try++) {
+        try { $lines = Invoke-Curl @("$ftp$tmp/"); break }
+        catch {
+            if ($try -ge 5) { throw }
+            Say "FTP listing failed ($try/5), retrying: $($_.Exception.Message)"
+            Start-Sleep -Seconds 5
+        }
+    }
     $sizes = @{}
-    foreach ($line in (Invoke-Curl @("$ftp$tmp/"))) {
+    foreach ($line in $lines) {
         $f = "$line" -split '\s+'
         if ($f.Count -ge 9) { $sizes[$f[-1]] = [int64]$f[4] }
     }

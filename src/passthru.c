@@ -94,6 +94,22 @@ static volatile uint32_t s_dbg_src_changes; /* ... whose data differed */
 static volatile uint32_t s_dbg_src_len;     /* last len on the source port */
 static volatile uint32_t s_dbg_src_word;    /* last d1<<24|d2<<16|lx<<8|ly */
 static volatile uint32_t s_dbg_busy;        /* trylock failures */
+/* Per port: the last non-empty read (d1<<24|d2<<16|lx<<8|ly) and its len. */
+static volatile uint32_t s_dbg_port_word[DS45_MAX_PORT_NUM];
+static volatile uint32_t s_dbg_port_len[DS45_MAX_PORT_NUM];
+
+static uint32_t dbg_word(const CellPadData *data)
+{
+	uint32_t w = 0;
+
+	if (data->len > DS45_BTN_DIGITAL2)
+		w |= (uint32_t)(data->button[DS45_BTN_DIGITAL1] & 0xFF) << 24 |
+		     (uint32_t)(data->button[DS45_BTN_DIGITAL2] & 0xFF) << 16;
+	if (data->len > DS45_BTN_ANALOG_LEFT_Y)
+		w |= (uint32_t)(data->button[DS45_BTN_ANALOG_LEFT_X] & 0xFF) << 8 |
+		     (uint32_t)(data->button[DS45_BTN_ANALOG_LEFT_Y] & 0xFF);
+	return w;
+}
 
 static void dbg_observe(uint32_t port_no, const CellPadData *data)
 {
@@ -102,6 +118,10 @@ static void dbg_observe(uint32_t port_no, const CellPadData *data)
 	s_dbg_calls++;
 	if (port_no < 32)
 		s_dbg_ports |= 1u << port_no;
+	if (port_no < DS45_MAX_PORT_NUM && data->len > 0) {
+		s_dbg_port_word[port_no] = dbg_word(data);
+		s_dbg_port_len[port_no] = (uint32_t)data->len;
+	}
 	if ((int)port_no != s_src_port)
 		return;
 	s_dbg_src_calls++;
@@ -127,6 +147,43 @@ void passthru_trace_vsh_reads(void)
 	DS45_TRACE_HEX("vsh_src_d1d2lxly", s_dbg_src_word);
 	DS45_TRACE_HEX("vsh_lock_busy", s_dbg_busy);
 	DS45_TRACE_HEX("raw_samples", s_raw_samples);
+
+	/* Every port, only when something changed: what the system says the
+	 * port is (status<<24 | type<<16 | capability), and what VSH last read
+	 * from it (len, d1d2lxly). */
+	{
+		static uint32_t last_info[DS45_MAX_PORT_NUM], last_word[DS45_MAX_PORT_NUM];
+		static const char *const info_tag[DS45_MAX_PORT_NUM] = {
+			"p0_st_type_cap", "p1_st_type_cap", "p2_st_type_cap", "p3_st_type_cap",
+			"p4_st_type_cap", "p5_st_type_cap", "p6_st_type_cap" };
+		static const char *const word_tag[DS45_MAX_PORT_NUM] = {
+			"p0_d1d2lxly", "p1_d1d2lxly", "p2_d1d2lxly", "p3_d1d2lxly",
+			"p4_d1d2lxly", "p5_d1d2lxly", "p6_d1d2lxly" };
+		static const char *const len_tag[DS45_MAX_PORT_NUM] = {
+			"p0_len", "p1_len", "p2_len", "p3_len", "p4_len", "p5_len", "p6_len" };
+		CellPadInfo2 info;
+		int p;
+
+		if (cellPadGetInfo2(&info) == CELL_PAD_OK) {
+			for (p = 0; p < DS45_MAX_PORT_NUM; p++) {
+				uint32_t v = (info.port_status[p] & 0xFF) << 24 |
+				             (info.device_type[p] & 0xFF) << 16 |
+				             (info.device_capability[p] & 0xFFFF);
+				if (v != last_info[p]) {
+					last_info[p] = v;
+					DS45_TRACE_HEX(info_tag[p], v);
+				}
+			}
+		}
+		for (p = 0; p < DS45_MAX_PORT_NUM; p++) {
+			uint32_t w = s_dbg_port_word[p];
+			if (w != last_word[p]) {
+				last_word[p] = w;
+				DS45_TRACE_HEX(len_tag[p], s_dbg_port_len[p]);
+				DS45_TRACE_HEX(word_tag[p], w);
+			}
+		}
+	}
 }
 #endif
 
