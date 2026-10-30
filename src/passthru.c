@@ -259,6 +259,20 @@ static int is_generic_pad(const CellPadInfo2 *info, int port)
 }
 
 #ifdef DS45_LV2DUMP
+/* The bound pad's buttons from this tick's raw report, for the dumper's
+ * button triggers. Written and read on the plugin thread only. */
+static int      s_dump_btn_valid;
+static uint16_t s_dump_d1, s_dump_d2;
+
+int passthru_source_buttons(uint16_t *d1, uint16_t *d2)
+{
+	if (!s_dump_btn_valid)
+		return 0;
+	*d1 = s_dump_d1;
+	*d2 = s_dump_d2;
+	return 1;
+}
+
 /* The debug LV2 dumper waits for this. Not limited to the bound pad: a
  * firmware without a kernel record never binds one, and that is exactly the
  * firmware a dump is for. */
@@ -795,6 +809,9 @@ void passthru_poll(void)
 	ds45_btraw_t raw;
 	int i, connected, state;
 
+#ifdef DS45_LV2DUMP
+	s_dump_btn_valid = 0;
+#endif
 	if (!kernel_active() || s_src_port < 0)
 		return;
 
@@ -813,6 +830,13 @@ void passthru_poll(void)
 
 	if (read_raw(&raw) != 0)
 		return;
+#ifdef DS45_LV2DUMP
+	if (connected) {
+		s_dump_btn_valid = 1;
+		s_dump_d1 = raw.d1;
+		s_dump_d2 = raw.d2;
+	}
+#endif
 
 	s_raw_samples++;
 	bc_lock();

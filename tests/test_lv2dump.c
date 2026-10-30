@@ -28,6 +28,18 @@ static const uint8_t Q_NEXT[8]  = { 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x
 static int pad_on;
 int passthru_bt_pad_present(void) { return pad_on; }
 
+/* The bound pad's buttons this tick (passthru_source_buttons). */
+static int      btn_valid;
+static uint16_t btn_d1, btn_d2;
+int passthru_source_buttons(uint16_t *d1, uint16_t *d2)
+{
+	if (!btn_valid)
+		return 0;
+	*d1 = btn_d1;
+	*d2 = btn_d2;
+	return 1;
+}
+
 /* Record the boot trace (overrides the weak fake) to check kernel_log_fw()
  * still says what it did before the query was shared with the dumper. */
 static char traces[4][64];
@@ -84,6 +96,8 @@ static void setup(void)
 	fake_reset_all();
 	memset(&st, 0, sizeof(st));
 	pad_on = 1;
+	btn_valid = 0;
+	btn_d1 = btn_d2 = 0;
 	fake_syscall8 = fake_mapi;
 	fake_lv2_set(DS45_LV2_BASE, Q_FIRST, 8);
 	fake_lv2_set(DS45_LV2_BASE + CHUNK - 8, Q_PREV, 8);   /* chunk edge */
@@ -92,6 +106,20 @@ static void setup(void)
 	/* an active kernel record, so kmatch= is not just the default 0 */
 	if (kernel_resolve_from(legacy, 1, NULL, NULL) != DS45_KMATCH_LEGACY)
 		fake_reset_all();      /* makes the checks below fail loudly */
+}
+
+/* setup(), but resolved through a fingerprinted (verified) table entry, so
+ * the pad's buttons drive the dumps instead of the countdowns. */
+static int setup_verified(void)
+{
+	uint8_t fp[DS45_FP_LEN];
+	ds45_kernel_t tab[1] = { { "verified", DS45_LV2_BASE, 0, DS45_LV2_BASE + 0x345670, 0xE8 } };
+
+	setup();
+	memset(fp, 0, sizeof(fp));
+	memcpy(fp, Q_FIRST, 8);                  /* the fake image at BASE */
+	tab[0].fp_hash = ds45_fnv1a64(fp, DS45_FP_LEN);
+	return kernel_resolve_from(tab, 1, NULL, NULL) == DS45_KMATCH_TABLE;
 }
 
 static int bin_ok(const char *path)
@@ -379,6 +407,84 @@ static int test_dump_needs_text_file(void)
 	return 0;
 }
 
+/* Verified record: Options (press, release) arms dump A after 3 s hands off;
+ * Cross held for 2 s takes dump B while it is held. No countdown toasts. */
+static int test_buttons_drive_dumps(void)
+{
+	const char *txt;
+
+	CHECK(setup_verified());
+	lv2dump_poll(&st, 0);
+	CHECK(strcmp(fake_last_toast, "LV2 dump A: press Options, then hands off") == 0);
+	lv2dump_poll(&st, 100000);                           /* no report yet: waits */
+	CHECK(fake_file_size(A_BIN) == -1);
+
+	btn_valid = 1;
+	btn_d1 = DS45_CTRL_START;
+	lv2dump_poll(&st, 100010);
+	CHECK(fake_file_size(A_TXT) == -1);                  /* held: not yet */
+	btn_d1 = 0;
+	lv2dump_poll(&st, 100020);
+	CHECK(strcmp(fake_last_toast, "LV2 dump A in 3 s: hands off") == 0);
+	lv2dump_poll(&st, 103019);
+	CHECK(fake_file_size(A_BIN) == -1);
+	lv2dump_poll(&st, 103020);
+	CHECK(bin_ok(A_BIN));
+	CHECK(strcmp(fake_last_toast, "LV2 dump B: hold Cross for 2 s") == 0);
+
+	lv2dump_poll(&st, 200000);                           /* no Cross: waits */
+	CHECK(fake_file_size(B_BIN) == -1);
+	btn_d2 = DS45_CTRL_CROSS;
+	lv2dump_poll(&st, 200010);
+	lv2dump_poll(&st, 202009);
+	CHECK(fake_file_size(B_BIN) == -1);
+	lv2dump_poll(&st, 202010);
+	CHECK(bin_ok(B_BIN));
+	CHECK(strcmp(fake_last_toast, "LV2 dumps written: release the pad") == 0);
+	txt = fake_file_get(B_TXT);
+	CHECK(txt != NULL && strstr(txt, "pad=cross_held\n") != NULL);
+	CHECK(strstr(fake_tty, " in 20 s") == NULL && strstr(fake_tty, " in 30 s") == NULL);
+	return 0;
+}
+
+/* Letting go of Cross early restarts the 2 s hold; losing the report (pad
+ * unbound) counts as letting go. */
+static int test_cross_hold_restarts(void)
+{
+	CHECK(setup_verified());
+	fake_file_set(A_BIN, "old");                         /* straight to B */
+	lv2dump_poll(&st, 0);
+	CHECK(strcmp(fake_last_toast, "LV2 dump B: hold Cross for 2 s") == 0);
+
+	btn_valid = 1;
+	btn_d2 = DS45_CTRL_CROSS;
+	lv2dump_poll(&st, 1000);
+	btn_d2 = 0;
+	lv2dump_poll(&st, 2000);                             /* released */
+	btn_d2 = DS45_CTRL_CROSS;
+	lv2dump_poll(&st, 2500);
+	btn_valid = 0;
+	lv2dump_poll(&st, 3000);                             /* no report */
+	btn_valid = 1;
+	lv2dump_poll(&st, 3500);
+	lv2dump_poll(&st, 5499);
+	CHECK(fake_file_size(B_BIN) == -1);
+	lv2dump_poll(&st, 5500);
+	CHECK(bin_ok(B_BIN));
+	return 0;
+}
+
+/* The unverified legacy entry never lets the buttons drive anything. */
+static int test_legacy_keeps_countdowns(void)
+{
+	setup();                                             /* legacy match */
+	btn_valid = 1;
+	btn_d2 = DS45_CTRL_CROSS;
+	lv2dump_poll(&st, 0);
+	CHECK(strcmp(fake_last_toast, "LV2 dump A in 20 s: leave the pad untouched") == 0);
+	return 0;
+}
+
 /* DUMP_LV2 is a debug-only config key. */
 static int test_dump_config_key(void)
 {
@@ -428,6 +534,9 @@ int run_tests(void)
 	if ((r = test_dump_failure_deletes_partial()) != 0) return r;
 	if ((r = test_dump_without_ps3mapi()) != 0) return r;
 	if ((r = test_dump_needs_text_file()) != 0) return r;
+	if ((r = test_buttons_drive_dumps()) != 0) return r;
+	if ((r = test_cross_hold_restarts()) != 0) return r;
+	if ((r = test_legacy_keeps_countdowns()) != 0) return r;
 	if ((r = test_dump_config_key()) != 0) return r;
 	return 0;
 }

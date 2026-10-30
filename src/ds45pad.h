@@ -546,11 +546,16 @@ typedef struct {
 	int      phase;
 	int      said_wait;
 	int      checked;          /* existing dumps looked at once */
+	int      opt_down;         /* button mode: Options seen pressed */
+	int      held;             /* button mode: Cross held since due_ms - HOLD */
 	uint32_t due_ms;
 } lv2dump_t;
 void  lv2dump_poll(lv2dump_t *st, uint32_t now_ms);
 /* passthru.c: any generic (Bluetooth) pad connected, bound or not. */
 int   passthru_bt_pad_present(void);
+/* passthru.c: the bound pad's d1/d2 (DS45_CTRL_*) from this tick's raw
+ * report; 0 when there is none (no record, not bound, not connected). */
+int   passthru_source_buttons(uint16_t *d1, uint16_t *d2);
 #endif
 
 /* Debug-build-only boot trace. Compiles to nothing (and the tag strings are

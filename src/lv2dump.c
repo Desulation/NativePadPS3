@@ -35,11 +35,15 @@
 #define DUMP_SIZE  ((int)(DS45_LV2_BOUND - DS45_LV2_BASE))
 #define CHUNK      65536
 
-/* Time to read the toast before each dump. */
+/* Without a verified record: time to read the toast before each dump. */
 #define DELAY_A_MS 20000
 #define DELAY_B_MS 30000
+/* With one, the pad's buttons drive the dumps: dump A this long after
+ * Options is released, dump B once Cross has been held this long. */
+#define RELEASE_MS 3000
+#define HOLD_MS    2000
 
-enum { PH_WAIT_PAD = 0, PH_COUNT_A, PH_COUNT_B, PH_DONE };
+enum { PH_WAIT_PAD = 0, PH_COUNT_A, PH_COUNT_B, PH_ARM_A, PH_ARM_B, PH_DONE };
 
 /* The 8 MiB window is written in 64 KiB pieces: never 8 MiB in RAM at once. */
 typedef char chunk_divides_window[(DUMP_SIZE % CHUNK == 0) ? 1 : -1];
@@ -189,8 +193,38 @@ static int dump_one(const char *bin, const char *txt, const char *pad)
 	return 0;
 }
 
+/* The pad's own buttons can drive the dumps only once its report is known
+ * to be the pad's: a verified record (table, cache, scan), never the legacy
+ * guess. Otherwise the countdowns do. */
+static int buttons_trusted(void)
+{
+	ds45_kmatch_t s = kernel_active_source();
+
+	return s == DS45_KMATCH_TABLE || s == DS45_KMATCH_CACHE ||
+	       s == DS45_KMATCH_SCAN;
+}
+
+static void start_a(lv2dump_t *st, uint32_t now_ms)
+{
+	if (buttons_trusted()) {
+		say("LV2 dump A: press Options, then hands off");
+		st->opt_down = 0;
+		st->phase = PH_ARM_A;
+		return;
+	}
+	say("LV2 dump A in 20 s: leave the pad untouched");
+	st->due_ms = now_ms + DELAY_A_MS;
+	st->phase = PH_COUNT_A;
+}
+
 static void start_b(lv2dump_t *st, uint32_t now_ms)
 {
+	if (buttons_trusted()) {
+		say("LV2 dump B: hold Cross for 2 s");
+		st->held = 0;
+		st->phase = PH_ARM_B;
+		return;
+	}
 	say("LV2 dump B in 30 s: hold Cross, left stick fully left");
 	st->due_ms = now_ms + DELAY_B_MS;
 	st->phase = PH_COUNT_B;
@@ -200,6 +234,16 @@ static void fail(lv2dump_t *st)
 {
 	st->phase = PH_DONE;
 	say("LV2 dump failed: see the TTY, release the pad");
+}
+
+static void take_b(lv2dump_t *st, const char *pad)
+{
+	if (dump_one(DUMP_B_BIN, DUMP_B_TXT, pad) != 0) {
+		fail(st);
+		return;
+	}
+	st->phase = PH_DONE;
+	say("LV2 dumps written: release the pad");
 }
 
 void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
@@ -239,9 +283,41 @@ void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
 			start_b(st, now_ms);
 			return;
 		}
-		say("LV2 dump A in 20 s: leave the pad untouched");
-		st->due_ms = now_ms + DELAY_A_MS;
-		st->phase = PH_COUNT_A;
+		start_a(st, now_ms);
+		return;
+	}
+
+	if (st->phase == PH_ARM_A) {
+		uint16_t d1, d2;
+
+		/* Options pressed and released: hands off, then dump A. */
+		if (!passthru_source_buttons(&d1, &d2))
+			return;
+		if (d1 & DS45_CTRL_START) {
+			st->opt_down = 1;
+		} else if (st->opt_down) {
+			say("LV2 dump A in 3 s: hands off");
+			st->due_ms = now_ms + RELEASE_MS;
+			st->phase = PH_COUNT_A;
+		}
+		return;
+	}
+
+	if (st->phase == PH_ARM_B) {
+		uint16_t d1, d2;
+
+		/* Cross held for HOLD_MS: dump B while it still is. */
+		if (!passthru_source_buttons(&d1, &d2) || !(d2 & DS45_CTRL_CROSS)) {
+			st->held = 0;
+			return;
+		}
+		if (!st->held) {
+			st->held = 1;
+			st->due_ms = now_ms + HOLD_MS;
+			return;
+		}
+		if ((int32_t)(now_ms - st->due_ms) >= 0)
+			take_b(st, "cross_held");
 		return;
 	}
 
@@ -257,12 +333,7 @@ void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
 	}
 
 	/* PH_COUNT_B */
-	if (dump_one(DUMP_B_BIN, DUMP_B_TXT, "cross_held_left_stick_left") != 0) {
-		fail(st);
-		return;
-	}
-	st->phase = PH_DONE;
-	say("LV2 dumps written: release the pad");
+	take_b(st, "cross_held_left_stick_left");
 }
 
 #endif /* DS45_LV2DUMP */
