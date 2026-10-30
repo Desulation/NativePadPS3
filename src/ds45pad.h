@@ -15,6 +15,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <cell/pad.h>   /* CellPadData in the VSH detour prototypes below */
 #include "report_queue.h"
 
 #ifdef DS45_DEBUG

@@ -2,18 +2,33 @@ param(
     [ValidateSet('vsh', 'game')][string]$Variant = 'vsh',
     [switch]$Debug,
     [string]$Sdk = $env:CELL_SDK,
-    [string]$Tools = $env:DS45_TOOLS
+    [string]$Tools = $env:DS45_TOOLS,
+    [ValidateSet('auto', 'fself', 'scetool')][string]$Sign = 'auto'
 )
 # Native Windows equivalent of build.sh. Requires an independently provided
 # Cell SDK with real GetInfo2/GetDataExtra/SetPortSetting declarations/stubs.
+#
+# Signing: 'scetool' signs with retail keys (runs on CEX CFW and HEN) and needs
+# DS45_TOOLS. 'fself' uses the SDK's own make_fself: a fake-signed SELF that
+# DEX/debug firmware loads but a retail console rejects; it needs no keys.
+# 'auto' picks scetool when DS45_TOOLS is set, fself otherwise.
 $ErrorActionPreference = 'Stop'
-if (!$Sdk -or !$Tools) { throw 'Set CELL_SDK and DS45_TOOLS (scetool plus data/keys). No SPRX was built.' }
+if (!$Sdk) { throw 'Set CELL_SDK. No SPRX was built.' }
+if ($Sign -eq 'auto') { $Sign = if ($Tools) { 'scetool' } else { 'fself' } }
+if ($Sign -eq 'scetool' -and !$Tools) { throw 'Set DS45_TOOLS (scetool plus data/keys) to sign with scetool. No SPRX was built.' }
 $gcc = Join-Path $Sdk 'host-win32/ppu/bin/ppu-lv2-gcc.exe'
 $strip = Join-Path $Sdk 'host-win32/bin/ppu-lv2-prx-strip.exe'
-$scetool = Join-Path $Tools 'scetool.exe'
 $include = Join-Path $Sdk 'target/ppu/include'
 $lib = Join-Path $Sdk 'target/ppu/lib'
-foreach ($path in @($gcc,$strip,$scetool,(Join-Path $Tools 'data/keys'),(Join-Path $include 'cell/pad.h'))) {
+$deps = @($gcc,$strip,(Join-Path $include 'cell/pad.h'))
+if ($Sign -eq 'scetool') {
+    $signer = Join-Path $Tools 'scetool.exe'
+    $deps += @($signer,(Join-Path $Tools 'data/keys'))
+} else {
+    $signer = Join-Path $Sdk 'host-win32/bin/make_fself.exe'
+    $deps += $signer
+}
+foreach ($path in $deps) {
     if (!(Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing build dependency: $path" }
 }
 function Invoke-BuildTool([string]$Program, [string[]]$Arguments) {
@@ -24,7 +39,11 @@ $sources = @('libc','util','hook','config','sticks','diag','main')
 $libs = @('-lio_stub','-lfs_stub','-llv2_stub')
 $compat = Join-Path $PSScriptRoot '../patches/compat_pad.h'
 $flags = @('-mprx','-Os','-ffunction-sections','-fdata-sections','-fno-builtin-printf','-nodefaultlibs','-std=gnu99','-Wall','-Wno-unused-parameter','-I',$include)
-if (Test-Path -LiteralPath $compat) {
+# The shim rebuilds cellPadGetInfo2/cellPadSetPortSetting for old SDKs (192.001)
+# that lack them; an SDK that declares them (475.001) must not get it.
+$libpad = Join-Path $include 'cell/pad/libpad.h'
+$hasInfo2 = (Test-Path -LiteralPath $libpad) -and (Select-String -LiteralPath $libpad -Pattern 'cellPadGetInfo2' -Quiet)
+if (!$hasInfo2 -and (Test-Path -LiteralPath $compat)) {
     $flags = @('-include', $compat) + $flags
 }
 # -Debug defines DS45_DEBUG (boot trace, LV2 dumper) and tags the output name.
@@ -53,15 +72,20 @@ Invoke-BuildTool $gcc (@('-mprx','-zgenprx','-zgenstub','-ffunction-sections','-
 Invoke-BuildTool $strip @('--strip-debug','--strip-section-header',$sym,'-o',$prx)
 $oldPS3 = $env:PS3
 try {
-    $env:PS3 = Join-Path $Tools 'data'
     # Remove only a known temporary file, so a failed signing run cannot pass
     # by reading a stale signature from an earlier build.
     if (Test-Path -LiteralPath $signed) { Remove-Item -LiteralPath $signed }
-    Push-Location (Split-Path $scetool)
-    try {
-        Invoke-BuildTool $scetool @('-0','SELF','-1','TRUE','-s','FALSE','-2','0A','-3',$auth,'-4','01000002','-5','APP','-6','0003004000000000','-A','0001000000000000','-e',$prx,$signed)
-    } finally {
-        Pop-Location
+    if ($Sign -eq 'scetool') {
+        $env:PS3 = Join-Path $Tools 'data'
+        Push-Location (Split-Path $signer)
+        try {
+            Invoke-BuildTool $signer @('-0','SELF','-1','TRUE','-s','FALSE','-2','0A','-3',$auth,'-4','01000002','-5','APP','-6','0003004000000000','-A','0001000000000000','-e',$prx,$signed)
+        } finally {
+            Pop-Location
+        }
+    } else {
+        # make_fself takes no auth id; DEX firmware does not check one.
+        Invoke-BuildTool $signer @($prx,$signed)
     }
     $bytes = [IO.File]::ReadAllBytes($signed)
     if ($bytes.Length -lt 4 -or [BitConverter]::ToString($bytes,0,4) -ne '53-43-45-00') { throw 'Invalid SCE container' }
@@ -70,5 +94,6 @@ try {
     }
     Move-Item -LiteralPath $signed -Destination $output -Force
     Get-FileHash -LiteralPath $output -Algorithm SHA256
-    Write-Output "Successfully built and signed $Variant SPRX: $output"
+    $how = if ($Sign -eq 'fself') { 'fake-signed with make_fself, DEX/debug firmware only' } else { 'scetool, retail keys' }
+    Write-Output "Successfully built and signed $Variant SPRX ($how): $output"
 } finally { $env:PS3 = $oldPS3 }

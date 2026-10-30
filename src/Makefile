@@ -31,8 +31,11 @@ PPU_PRX_FLAGS = -mprx -mno-sn-ld -Os -ffunction-sections -fdata-sections \
                 -fno-builtin-printf -nodefaultlibs -std=gnu99 \
                 -Wall -Wno-shadow -Wno-unused-parameter
 
-EXTRA_CFLAGS    ?= -include ../patches/compat_pad.h
-PPU_CFLAGS       = $(PPU_PRX_FLAGS) $(EXTRA_CFLAGS)
+# The shim rebuilds cellPadGetInfo2/cellPadSetPortSetting for old SDKs (192.001)
+# that lack them; an SDK that declares them (475.001) must not get it.
+COMPAT_INC := $(shell grep -q cellPadGetInfo2 $(CELL_SDK)/target/ppu/include/cell/pad/libpad.h 2>/dev/null || echo -include ../patches/compat_pad.h)
+EXTRA_CFLAGS    ?= $(COMPAT_INC)
+PPU_CFLAGS      = $(PPU_PRX_FLAGS) $(EXTRA_CFLAGS)
 PPU_LDFLAGS     += $(PPU_PRX_FLAGS)
 PPU_PRX_LDFLAGS += -mprx -ffunction-sections -fdata-sections -Wl,--strip-unused-data
 
@@ -89,6 +92,11 @@ SCETOOL_FLAGS = -0 SELF -1 TRUE -s FALSE -2 0A \
 AUTH_VSH  = 1070000052000001
 AUTH_GAME = 1010000001000003
 
+# SIGN=scetool (default) signs with retail keys for CEX CFW and HEN.
+# SIGN=fself uses the SDK's make_fself instead: a fake-signed SELF that only
+# DEX/debug firmware loads, and it takes no auth id.
+SIGN ?= scetool
+
 SPRX_VSH  = ds45pad_vsh$(DEBUG_SUFFIX).sprx
 SPRX_GAME = ds45pad_game$(DEBUG_SUFFIX).sprx
 
@@ -105,13 +113,17 @@ vsh:
 game:
 	$(MAKE) clean-obj
 	$(MAKE) sign-one PPU_SRCS="$(SRCS_GAME)" PPU_PRX_LDLIBS="$(LIBS_GAME)" \
-	                 EXTRA_CFLAGS="-DDS45_GAME -include ../patches/compat_pad.h" \
+	                 EXTRA_CFLAGS="-DDS45_GAME $(COMPAT_INC)" \
 	                 AUTH=$(AUTH_GAME) SPRX=$(SPRX_GAME)
 
 sign-one:
 	$(MAKE) $(PPU_OBJS_DEPENDS)
 	$(PPU_PRX_STRIP) $(PPU_PRX_STRIPFLAGS) $(PPU_PRX_TARGET)
+ifeq ($(SIGN),fself)
+	$(CELL_SDK)/host-win32/bin/make_fself $(PPU_PRX_TARGET) $(SPRX)
+else
 	scetool $(SCETOOL_FLAGS) -3 $(AUTH) -e $(PPU_PRX_TARGET) $(SPRX)
+endif
 	@# A SPRX still starting with 7F 45 4C 46 ("ELF") means signing silently
 	@# did nothing, and an unsigned module in boot_plugins.txt hangs HEN at
 	@# boot. Delete it rather than leave it lying around to be installed.

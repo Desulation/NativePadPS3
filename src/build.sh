@@ -16,7 +16,9 @@
 set -e
 
 SDK="${CELL_SDK:-C:/ps3sdk/cell}"
-TOOLS="${DS45_TOOLS:-C:/ps3sdk/tools}"
+# DS45_TOOLS set: sign with scetool and retail keys (CEX CFW and HEN).
+# Unset: the SDK's make_fself, a fake-signed SELF for DEX/debug firmware only.
+TOOLS="${DS45_TOOLS:-}"
 
 PPU_BIN="$SDK/host-win32/ppu/bin"
 HOST_BIN="$SDK/host-win32/bin"
@@ -67,9 +69,11 @@ if [ "$DEBUG" = "1" ]; then
 	fi
 fi
 
+# The shim rebuilds cellPadGetInfo2/cellPadSetPortSetting for old SDKs (192.001)
+# that lack them; an SDK that declares them (475.001) must not get it.
 COMPAT_PAD="../patches/compat_pad.h"
 EXTRA_INC=""
-if [ -f "$COMPAT_PAD" ]; then
+if [ -f "$COMPAT_PAD" ] && ! grep -q cellPadGetInfo2 "$INCLUDE/cell/pad/libpad.h" 2>/dev/null; then
 	EXTRA_INC="-include $COMPAT_PAD"
 fi
 
@@ -85,16 +89,22 @@ LDFLAGS="-mprx -zgenprx -zgenstub -ffunction-sections -fdata-sections \
 SCEFLAGS="-0 SELF -1 TRUE -s FALSE -2 0A -3 $AUTH -4 01000002 \
           -5 APP -6 0003004000000000 -A 0001000000000000"
 
-# scetool resolves its key file through $PS3, so it works from any directory.
-export PS3="$TOOLS/data"
-
 # Tools are called by full path rather than through PATH: these are native
 # Windows binaries and Git Bash does not accept "C:/..." entries in PATH.
 GCC="$PPU_BIN/ppu-lv2-gcc.exe"
 PRXSTRIP="$HOST_BIN/ppu-lv2-prx-strip.exe"
-SCETOOL="$TOOLS/scetool.exe"
+DEPS="$GCC $PRXSTRIP"
+if [ -n "$TOOLS" ]; then
+	# scetool resolves its key file through $PS3, so it works from any directory.
+	export PS3="$TOOLS/data"
+	SCETOOL="$TOOLS/scetool.exe"
+	DEPS="$DEPS $SCETOOL $TOOLS/data/keys"
+else
+	MAKE_FSELF="$HOST_BIN/make_fself.exe"
+	DEPS="$DEPS $MAKE_FSELF"
+fi
 
-for t in "$GCC" "$PRXSTRIP" "$SCETOOL" "$TOOLS/data/keys"; do
+for t in $DEPS; do
 	[ -f "$t" ] || { echo "faltando: $t"; exit 1; }
 done
 
@@ -114,7 +124,12 @@ echo "strip..."
             obj/ds45pad.sym -o obj/ds45pad.prx
 
 echo "assinando..."
-"$SCETOOL" $SCEFLAGS -e obj/ds45pad.prx "$OUT" > /dev/null
+if [ -n "$TOOLS" ]; then
+	"$SCETOOL" $SCEFLAGS -e obj/ds45pad.prx "$OUT" > /dev/null
+else
+	# make_fself takes no auth id; DEX firmware does not check one.
+	"$MAKE_FSELF" obj/ds45pad.prx "$OUT" > /dev/null
+fi
 
 # A SPRX that still starts with 7F 45 4C 46 ("ELF") means signing silently did
 # nothing, and an unsigned module in boot_plugins.txt hangs HEN at boot.
