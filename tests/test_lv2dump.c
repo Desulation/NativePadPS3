@@ -106,6 +106,12 @@ static int test_dump_writes_both_files(void)
 
 	CHECK(fake_toasts == 1);
 	CHECK(strcmp(fake_last_toast, "LV2 dump written") == 0);
+
+	/* The toast is easy to miss; the same outcome goes to the TTY. */
+	CHECK(strcmp(fake_tty,
+	             "ds45pad: LV2 dump started\n"
+	             "ds45pad: LV2 dump written: " BIN_PATH " (8388608 bytes) and " TXT_PATH "\n") == 0);
+	CHECK(fake_tty_overflow == 0);
 	return 0;
 }
 
@@ -120,6 +126,8 @@ static int test_dump_skips_when_exists(void)
 	CHECK(fake_toasts == 0);
 	CHECK(fake_lv2_peek_count == 0);
 	CHECK(fake_sc8_calls == 0);
+	CHECK(strcmp(fake_tty,
+	             "ds45pad: LV2 dump skipped: " BIN_PATH " exists, delete it to dump again\n") == 0);
 	return 0;
 }
 
@@ -144,6 +152,10 @@ static int test_dump_failure_deletes_partial(void)
 	CHECK(fake_file_size(BIN_PATH) == -1);
 	CHECK(fake_file_deleted(BIN_PATH));
 	CHECK(fake_toasts == 0);
+	/* 1 write + 5 appends succeeded: the 7th chunk (offset 6 * 64 KiB) failed */
+	CHECK(strcmp(fake_tty,
+	             "ds45pad: LV2 dump started\n"
+	             "ds45pad: LV2 dump failed at offset 0x00060000, partial .bin deleted\n") == 0);
 
 	/* the next run is not blocked by the failed one */
 	fake_append_fail_after = -1;
@@ -180,6 +192,9 @@ static int test_dump_needs_text_file(void)
 	CHECK(fake_file_size(BIN_PATH) == -1);
 	CHECK(fake_toasts == 0);
 	CHECK(fake_lv2_peek_count == 0);
+	CHECK(strcmp(fake_tty,
+	             "ds45pad: LV2 dump started\n"
+	             "ds45pad: LV2 dump failed: cannot write " TXT_PATH "\n") == 0);
 	return 0;
 }
 

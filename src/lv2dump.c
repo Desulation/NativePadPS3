@@ -18,6 +18,8 @@
 
 #ifdef DS45_LV2DUMP
 
+#include <sys/tty.h>
+
 #include "lv2.h"
 #include "kernel.h"
 
@@ -68,6 +70,20 @@ static int put_dec(char *buf, int cap, int n, uint32_t v)
 	return n;
 }
 
+/* One line to the PPU TTY (ProDG Target Manager / debug console): every
+ * outcome, since the toast is easy to miss and a skipped dump shows none. */
+static void tty(const char *msg)
+{
+	char line[160];
+	unsigned int written;
+	int n = 0;
+
+	n = put_str(line, sizeof(line), n, "ds45pad: ");
+	n = put_str(line, sizeof(line), n, msg);
+	n = put_str(line, sizeof(line), n, "\n");
+	sys_tty_write(SYS_TTYP_PPU_STDOUT, line, (unsigned int)n, &written);
+}
+
 static int write_description(void)
 {
 	char text[256];
@@ -100,12 +116,17 @@ void lv2dump_run(void)
 	int off;
 
 	/* One dump per console state: delete the files to take another. */
-	if (ds45_file_exists(DUMP_BIN))
+	if (ds45_file_exists(DUMP_BIN)) {
+		tty("LV2 dump skipped: " DUMP_BIN " exists, delete it to dump again");
 		return;
+	}
+	tty("LV2 dump started");
 
 	/* Description first, so a .bin never exists without it. */
-	if (write_description() != 0)
+	if (write_description() != 0) {
+		tty("LV2 dump failed: cannot write " DUMP_TXT);
 		return;
+	}
 
 	for (off = 0; off < DUMP_SIZE; off += CHUNK) {
 		int rc = ds45_lv2_read_bytes(DS45_LV2_BASE + (uint64_t)off, chunk, CHUNK);
@@ -114,14 +135,30 @@ void lv2dump_run(void)
 			rc = off == 0 ? ds45_write_file(DUMP_BIN, chunk, CHUNK)
 			              : ds45_append_file(DUMP_BIN, chunk, CHUNK);
 		if (rc != 0) {
+			char msg[80];
+			int n = 0;
+
 			/* A truncated .bin would block every later run (the
 			 * exists-check above) and mislead the scanner. */
 			ds45_delete_file(DUMP_BIN);
+			n = put_str(msg, sizeof(msg), n, "LV2 dump failed at offset ");
+			n = put_hex(msg, sizeof(msg), n, (uint64_t)off, 8);
+			put_str(msg, sizeof(msg), n, ", partial .bin deleted");
+			tty(msg);
 			return;
 		}
 	}
 
 	ds45_notify("LV2 dump written");
+	{
+		char msg[120];
+		int n = 0;
+
+		n = put_str(msg, sizeof(msg), n, "LV2 dump written: " DUMP_BIN " (");
+		n = put_dec(msg, sizeof(msg), n, (uint32_t)DUMP_SIZE);
+		put_str(msg, sizeof(msg), n, " bytes) and " DUMP_TXT);
+		tty(msg);
+	}
 }
 
 #endif /* DS45_LV2DUMP */

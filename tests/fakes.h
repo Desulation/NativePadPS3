@@ -57,6 +57,11 @@ extern int fake_mutex_live;     /* created and not destroyed */
 extern int fake_toasts;
 extern char fake_last_toast[128];
 
+/* sys_tty_write() appends here (NUL-terminated; output past the buffer is
+ * dropped and counted in fake_tty_overflow). Cleared by fake_reset_all(). */
+extern char fake_tty[2048];
+extern int  fake_tty_overflow;
+
 /* In-memory file system behind ds45_read_file() and friends. Files are
  * heap-allocated (up to 32 MiB each); writes that cannot be stored fail
  * with -1 rather than truncating. */

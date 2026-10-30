@@ -6,6 +6,7 @@
 #include <cell/pad.h>
 #include <sys/synchronization.h>
 #include <sys/sys_time.h>
+#include <sys/tty.h>
 #include "ds45pad.h"
 #include "lv2.h"
 #include "fakes.h"
@@ -190,6 +191,26 @@ FAKE_WEAK void ds45_notify(const char *msg)
 	fake_toasts++;
 	strncpy(fake_last_toast, msg, sizeof(fake_last_toast) - 1);
 	fake_last_toast[sizeof(fake_last_toast) - 1] = '\0';
+}
+
+char fake_tty[2048];
+int  fake_tty_overflow;
+
+int sys_tty_write(unsigned int ch, const void *buf, unsigned int len,
+                  unsigned int *pwritelen)
+{
+	size_t have = strlen(fake_tty);
+
+	(void)ch;
+	if (have + len >= sizeof(fake_tty)) {
+		fake_tty_overflow++;
+		return -1;
+	}
+	memcpy(fake_tty + have, buf, len);
+	fake_tty[have + len] = '\0';
+	if (pwritelen)
+		*pwritelen = len;
+	return 0;
 }
 
 FAKE_WEAK void ds45_boot_mark(const char *stage) { (void)stage; }
@@ -460,6 +481,8 @@ void fake_reset_all(void)
 	fake_mutex_live = 0;
 	fake_toasts = 0;
 	fake_last_toast[0] = '\0';
+	fake_tty[0] = '\0';
+	fake_tty_overflow = 0;
 	for (i = 0; i < FAKE_FILES; i++) {
 		free(files[i].data);
 		memset(&files[i], 0, sizeof(files[i]));
