@@ -168,10 +168,16 @@ btcheck_state_t btcheck_feed_raw(const ds45_btraw_t *r, int port_connected, uint
 		g_bc.connected = 1;
 		g_bc.was_connected = 1;
 		g_bc.disc_valid = 0;                /* back: the freeze watch is over */
-		g_bc.hist[g_bc.hist_head] = *r;
-		g_bc.hist_head = (g_bc.hist_head + 1) % BTCHECK_RAW_HISTORY;
-		if (g_bc.hist_count < BTCHECK_RAW_HISTORY)
-			g_bc.hist_count++;
+		/* keep the last N DISTINCT raw states: a fast feed of an
+		 * unchanged report must not push an older state out */
+		if (g_bc.hist_count == 0 ||
+		    !raw_equal(r, &g_bc.hist[(g_bc.hist_head + BTCHECK_RAW_HISTORY - 1) %
+					     BTCHECK_RAW_HISTORY])) {
+			g_bc.hist[g_bc.hist_head] = *r;
+			g_bc.hist_head = (g_bc.hist_head + 1) % BTCHECK_RAW_HISTORY;
+			if (g_bc.hist_count < BTCHECK_RAW_HISTORY)
+				g_bc.hist_count++;
+		}
 	} else {
 		g_bc.connected = 0;
 		if (g_bc.was_connected) {           /* first disconnected sample */

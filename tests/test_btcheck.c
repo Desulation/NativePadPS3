@@ -250,38 +250,82 @@ static int test_mismatch_after_pass_ignored(void)
 	return 0;
 }
 
+static ds45_btraw_t distinct_raw(int k)    /* never within tolerance of (10,10,10,10) */
+{
+	return mk_raw((uint8_t)(200 + k), 200, 200, 200, 0, (uint16_t)k);
+}
+
 static int test_history_window(void)
 {
 	int i;
 	CellPadData d;
 	ds45_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
-	ds45_btraw_t b = mk_raw(200, 200, 200, 200, 0, 0);
+	ds45_btraw_t b;
 
-	/* a sample still within the last 8 raw samples matches */
+	/* `a` plus 7 later distinct states: still one of the last 8, so it
+	 * matches. (One match, then 10 mismatches: not past the limit. Had the
+	 * first been a mismatch, 11 would FAIL.) */
 	btcheck_reset(PORT);
 	btcheck_feed_raw(&a, 1, 1000);
-	for (i = 0; i < BTCHECK_RAW_HISTORY - 1; i++)
+	for (i = 0; i < BTCHECK_RAW_HISTORY - 1; i++) {
+		b = distinct_raw(i);
 		btcheck_feed_raw(&b, 1, 2000 + (uint64_t)i);
+	}
 	d = mk_vsh(10, 10, 10, 10, 0, 0);
 	btcheck_observe_vsh(PORT, &d);
-	/* one match so far; 10 mismatches would FAIL only on the 11th, so
-	 * probe by driving mismatches: it must take 11 more to fail. */
 	for (i = 0; i < 10; i++) {
 		d = mk_vsh(50, 50, 50, 50, 0, (uint16_t)i);
 		btcheck_observe_vsh(PORT, &d);
 	}
 	CHECK(btcheck_state() == BTCHECK_PENDING);
 
-	/* one more raw sample pushes `a` out: it now mismatches */
+	/* one more distinct state pushes `a` out: it now mismatches */
 	btcheck_reset(PORT);
 	btcheck_feed_raw(&a, 1, 1000);
-	for (i = 0; i < BTCHECK_RAW_HISTORY; i++)
+	for (i = 0; i < BTCHECK_RAW_HISTORY; i++) {
+		b = distinct_raw(i);
 		btcheck_feed_raw(&b, 1, 2000 + (uint64_t)i);
+	}
 	for (i = 0; i < 11; i++) {
 		d = mk_vsh(10, 10, 10, 10, 0, (uint16_t)i);
 		btcheck_observe_vsh(PORT, &d);
 	}
 	CHECK(btcheck_state() == BTCHECK_FAILED);
+	return 0;
+}
+
+static int test_repeated_raw_does_not_evict_history(void)
+{
+	int i;
+	CellPadData d;
+	ds45_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
+	ds45_btraw_t b = distinct_raw(0);
+
+	/* 20 identical raw samples after an older distinct one: the older
+	 * state is still in the history, so a lagging VSH read of it matches */
+	btcheck_reset(PORT);
+	btcheck_feed_raw(&a, 1, 1000);
+	for (i = 0; i < 20; i++)
+		btcheck_feed_raw(&b, 1, 2000 + (uint64_t)i * 10000);
+	d = mk_vsh(10, 10, 10, 10, 0, 0);
+	btcheck_observe_vsh(PORT, &d);
+	/* it was a match (not a mismatch): 10 further mismatches stay PENDING */
+	for (i = 0; i < 10; i++) {
+		d = mk_vsh(50, 50, 50, 50, 0, (uint16_t)i);
+		btcheck_observe_vsh(PORT, &d);
+	}
+	CHECK(btcheck_state() == BTCHECK_PENDING);
+
+	/* the same through to PASSED: 50 lagging reads of `a` match */
+	btcheck_reset(PORT);
+	btcheck_feed_raw(&a, 1, 1000);
+	for (i = 0; i < 20; i++)
+		btcheck_feed_raw(&b, 1, 2000 + (uint64_t)i * 10000);
+	for (i = 0; i < 50; i++) {
+		d = mk_vsh((uint16_t)(10 + (i & 1)), 10, 10, 10, 0, 0);
+		btcheck_observe_vsh(PORT, &d);
+	}
+	CHECK(btcheck_state() == BTCHECK_PASSED);
 	return 0;
 }
 
@@ -538,6 +582,7 @@ int run_tests(void)
 	RUN(test_fail_after_11_mismatches);
 	RUN(test_mismatch_after_pass_ignored);
 	RUN(test_history_window);
+	RUN(test_repeated_raw_does_not_evict_history);
 	RUN(test_unchanged_vsh_samples_not_counted);
 	RUN(test_other_ports_and_empty_ignored);
 	RUN(test_no_raw_yet_is_not_a_mismatch);

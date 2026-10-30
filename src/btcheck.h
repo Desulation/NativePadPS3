@@ -12,6 +12,20 @@
  *
  * Pure logic: no LV2 reads, no clock (time is passed in). VSH-only; the game
  * build does not link it.
+ *
+ * Contract for callers:
+ *  - Single instance, no locking: btcheck_feed_raw and btcheck_observe_vsh
+ *    (and reset/state/samples_seen) must all be called from the same context.
+ *  - btcheck_observe_vsh needs CellPadData.len to be set (as cellPadGetData
+ *    does; len == 0 means "no data this poll"). A short len is ignored, so a
+ *    caller that leaves len unset is never counted.
+ *  - The raw history holds the last BTCHECK_RAW_HISTORY DISTINCT raw states
+ *    (a sample equal to the newest entry is not pushed), so a high raw feed
+ *    rate does not push an older state out from under a lagging VSH read.
+ *  - Fail-safe freeze rule: a raw buffer that changes more than
+ *    BTCHECK_FREEZE_US after the pad disconnected is FAILED, in PENDING and
+ *    in PASSED alike (a trusted location that keeps changing with the pad
+ *    gone is revoked). FAILED is terminal until btcheck_reset.
  */
 #ifndef DS45_BTCHECK_H
 #define DS45_BTCHECK_H
