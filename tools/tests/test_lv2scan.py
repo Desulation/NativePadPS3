@@ -448,12 +448,16 @@ def test_emit_c_pattern_accepts_plain_list_with_indices():
 
 
 # --------------------------------------------------------------------------
-# CLI
+# CLI (a dump is exactly the 8 MiB window, so these images are full size)
 # --------------------------------------------------------------------------
 
+def big(**kw):
+    return S.build_image(size=S.WINDOW, **kw)
+
+
 def test_cli_two_dumps(tmp_path, capsys):
-    a = S.build_image(ld_disp=0x1230, report_off=0xE8)
-    b = S.build_image(ld_disp=0x2468, toc_off=0x9000, report_off=0xF0)
+    a = big(ld_disp=0x1230, report_off=0xE8)
+    b = big(ld_disp=0x2468, toc_off=0x9000, report_off=0xF0)
     pa, pb = tmp_path / "a.bin", tmp_path / "b.bin"
     pa.write_bytes(a.data)
     pb.write_bytes(b.data)
@@ -463,25 +467,26 @@ def test_cli_two_dumps(tmp_path, capsys):
     assert '{ "FW A", ' in out and '{ "FW B", ' in out
     assert "ds45_scan_pattern" in out
     assert out.count("raw hits: 1") == 2
+    # the verdict is printed before the pattern C
+    assert out.index("raw hits: 1") < out.index("ds45_scan_pattern")
 
 
 def test_cli_single_dump_default_name(tmp_path, capsys):
-    a = S.build_image()
     p = tmp_path / "console1.bin"
-    p.write_bytes(a.data)
+    p.write_bytes(big().data)
     assert L.main([str(p)]) == 0
     assert '{ "console1", ' in capsys.readouterr().out
 
 
 def test_cli_no_candidate_is_an_error(tmp_path, capsys):
     p = tmp_path / "x.bin"
-    p.write_bytes(bytes(0x1000))
+    p.write_bytes(bytes(S.WINDOW))
     assert L.main([str(p)]) == 1
 
 
 def test_cli_several_candidates_need_a_pick(tmp_path, capsys):
-    a = S.build_image(func_off=0x1000, opd_off=0x400)
-    b = S.build_image(func_off=0x3000, opd_off=0x420, report_off=0x20)
+    a = big(func_off=0x1000, opd_off=0x400)
+    b = big(func_off=0x3000, opd_off=0x420, report_off=0x20)
     p = tmp_path / "m.bin"
     p.write_bytes(merge(a.data, b.data))
     assert L.main([str(p)]) == 2
@@ -490,16 +495,49 @@ def test_cli_several_candidates_need_a_pick(tmp_path, capsys):
 
 def test_cli_name_count_must_match(tmp_path):
     p = tmp_path / "x.bin"
-    p.write_bytes(S.build_image().data)
+    p.write_bytes(big().data)
     assert L.main([str(p), "--name", "a", "--name", "b"]) == 2
 
 
-def test_cli_base_option(tmp_path, capsys):
-    # an image that is not at the default base
-    base = 0x8000000000000000
-    p = tmp_path / "b.bin"
-    p.write_bytes(S.build_image().data)
-    assert L.main([str(p), "--base", hex(base)]) == 0
+def test_cli_rejects_a_dump_of_the_wrong_size(tmp_path, capsys):
+    p = tmp_path / "short.bin"
+    p.write_bytes(S.build_image().data)             # 64 KiB
+    assert L.main([str(p)]) == 2
+    cap = capsys.readouterr()
+    assert "short.bin" in cap.err and str(S.WINDOW) in cap.err
+    assert "ds45_scan_pattern" not in cap.out
+
+
+def test_cli_reports_a_missing_file_without_a_traceback(tmp_path, capsys):
+    rc = L.main([str(tmp_path / "nope.bin")])
+    cap = capsys.readouterr()
+    assert rc == 2
+    assert "nope.bin" in cap.err and "Traceback" not in cap.err
+
+
+def test_cli_has_no_base_option(tmp_path):
+    # the plugin always scans from DS45_LV2_BASE, so the tool does too
+    p = tmp_path / "x.bin"
+    p.write_bytes(big().data)
+    with pytest.raises(SystemExit) as e:
+        L.main([str(p), "--base", "0x8000000000000000"])
+    assert e.value.code == 2
+
+
+def test_cli_prints_no_pattern_when_the_scan_fails(tmp_path, capsys):
+    # two functions, the same report offset, different slots: the pattern
+    # (displacement masked) hits both and the C scan would refuse the result
+    a = big(func_off=0x1000, opd_off=0x400, ld_disp=0x1230)
+    b = big(func_off=0x3000, opd_off=0x420, ld_disp=0x1238)
+    p = tmp_path / "m.bin"
+    p.write_bytes(merge(a.data, b.data))
+    rc = L.main([str(p), "--pick", "0"])
+    cap = capsys.readouterr()
+    assert rc == 1
+    assert "scan FAILS" in cap.out and "raw hits: 2" in cap.out
+    assert "ds45_scan_pattern" not in cap.out
+    assert "ds45_scan_insns" not in cap.out
+
 
 
 # --------------------------------------------------------------------------
@@ -541,3 +579,103 @@ def test_works_without_capstone(monkeypatch):
 def test_disasm_filled_with_capstone():
     c = one(S.build_image().data)
     assert any("ld r9" in line for line in c.disasm)
+
+
+# --------------------------------------------------------------------------
+# what the plugin can use (kernel_record_usable) and what C reads
+# --------------------------------------------------------------------------
+
+def _patch_report_use(s, *words):
+    """Replace the report-use word (and the nop after it) of a Synth image."""
+    img = bytearray(s.data)
+    a = s.report_addr - BASE
+    for i, w in enumerate(words):
+        img[a + 4 * i:a + 4 * i + 4] = w.to_bytes(4, "big")
+    return bytes(img)
+
+
+def test_record_usable_mirrors_c():
+    ok = BASE + 0x1000
+    assert L.record_usable(ok, 0xE8)
+    assert L.record_usable(ok, L.DS45_REPORT_OFF_MAX)
+    assert not L.record_usable(ok, 0x21)                  # unaligned offset
+    assert not L.record_usable(ok, L.DS45_REPORT_OFF_MAX + 8)
+    assert not L.record_usable(ok + 4, 0xE8)              # unaligned slot
+    assert not L.record_usable(BASE - 8, 0xE8)
+    assert not L.record_usable(BASE + S.WINDOW - 4, 0xE8)
+    assert L.record_usable(BASE + S.WINDOW - 8, 0xE8)
+
+
+def test_unaligned_report_off_is_not_a_candidate():
+    assert L.find_candidates(S.build_image(report_off=0x21).data, BASE) == []
+
+
+def test_unaligned_use_is_skipped_and_a_later_aligned_use_is_picked():
+    s = S.build_image()
+    img = _patch_report_use(s, S.lbz(0, 0x21, 9), S.lbz(0, 0x28, 9))
+    c = one(img)
+    assert c.report_off == 0x28
+    assert c.report_insn_addr == s.report_addr + 4
+
+
+def test_ds_form_use_with_nonzero_low_bits_is_skipped():
+    lwa = 0xE8000002 | (0 << 21) | (9 << 16) | 0xE8          # lwa r0,0xE8(r9)
+    s = S.build_image()
+    assert L.find_candidates(_patch_report_use(s, lwa), BASE) == []
+    # an aligned use after it is still found
+    img = _patch_report_use(s, lwa, S.lbz(0, 0x30, 9))
+    assert one(img).report_off == 0x30
+    # ld (xo 0) is accepted
+    ld_use = S.ld(0, 0xE8, 9)
+    assert one(_patch_report_use(s, ld_use)).report_off == 0xE8
+
+
+@pytest.mark.parametrize("off", [0x21, 0x7FF8])
+def test_simulate_scan_rejects_an_unusable_record(off):
+    a = S.build_image(report_off=0xE8)
+    b = S.build_image(report_off=0xF0, ld_disp=0x2468)
+    pat = L.common_pattern([(a.data, one(a.data)), (b.data, one(b.data))])
+    bad = S.build_image(report_off=off)         # matches the wildcarded pattern
+    res = L.simulate_scan(bad.data, BASE, pat)
+    assert res.raw_hits == 1
+    assert res.error and "unusable" in res.error
+    assert res.slot_addr is None
+
+
+def _early_ld_image(ld_gap, **kw):
+    """A function whose TOC ld is `ld_gap` words after the stdu, compares
+    after it (so it still qualifies), in an otherwise empty image."""
+    img = bytearray(0x10000)
+    func_off = 0x1000
+    words = [S.stdu_r1(-0x80)] + [S.NOP] * (ld_gap - 1) + [
+        S.ld(9, 0x1230, 2), S.ld(9, 0, 9), S.lbz(0, 0xE8, 9),
+        S.cmplwi(3, 0x054C), S.cmpwi(4, 0x0268), S.cmplwi(5, 0xA1), S.BLR]
+    for i, w in enumerate(words):
+        img[func_off + 4 * i:func_off + 4 * i + 4] = w.to_bytes(4, "big")
+    img[0x400:0x408] = (BASE + func_off).to_bytes(8, "big")
+    img[0x408:0x410] = (BASE + 0x8000).to_bytes(8, "big")
+    return bytes(img)
+
+
+@pytest.mark.parametrize("gap", [1, 3, 8])
+def test_pattern_never_starts_before_the_prologue(gap):
+    img = _early_ld_image(gap)
+    c = one(img)
+    pat = L.common_pattern([(img, c)])
+    # insns[0] is at ld - toc_ld_index words: it may not precede the stdu
+    assert pat.toc_ld_index <= gap
+    res = L.simulate_scan(img, BASE, pat)
+    assert res.error is None and res.raw_hits == 1
+    assert (res.slot_addr, res.report_off) == (c.slot_addr, c.report_off)
+
+
+def test_pattern_clips_to_the_nearest_dump_prologue():
+    # one dump with the ld 1 word after its stdu, one with plenty of room
+    early = _early_ld_image(1)
+    roomy = S.build_image(ld_disp=0x2468)
+    pe, pr = (early, one(early)), (roomy.data, one(roomy.data))
+    # the report use is 2 words after the ld in both
+    pat = L.common_pattern([pe, pr])
+    assert pat.toc_ld_index == 1
+    for img, c in (pe, pr):
+        assert L.simulate_scan(img, BASE, pat).error is None

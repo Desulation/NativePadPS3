@@ -43,12 +43,23 @@ DS45_FP_LEN = 32
 DS45_SCAN_MAX_INSNS = 16
 DS45_SCAN_MAX_HITS = 8
 DS45_SCAN_PROLOGUE_RANGE = 0x800
+DS45_REPORT_OFF_MAX = 0x7FF0     # kernel.h: largest usable report offset
 DS45_INSN_LD_FROM_R2 = (0xFC1F0003, 0xE8020000)   # ld any, ds(r2)
 DS45_INSN_STDU_R1 = (0xFFFF0003, 0xF8210001)      # stdu r1, ds(r1)
 
 FNV64_OFFSET = 0xCBF29CE484222325
 FNV64_PRIME = 0x100000001B3
 M64 = 0xFFFFFFFFFFFFFFFF
+
+def record_usable(slot_addr: int, report_off: int, base: int = DEFAULT_BASE) -> bool:
+    """kernel_record_usable in src/kernel.c: slot 8-aligned inside
+    [base, base + 8 MiB - 8], report_off 8-aligned and <= DS45_REPORT_OFF_MAX.
+    A record failing this is refused by the plugin whatever its source."""
+    return ((slot_addr & 7) == 0
+            and base <= slot_addr <= base + WINDOW_SIZE - 8
+            and (report_off & 7) == 0
+            and 0 <= report_off <= DS45_REPORT_OFF_MAX)
+
 
 # ---- search rules (host side only) ---------------------------------------
 
@@ -98,25 +109,31 @@ _DS_FORM_OPS = frozenset([58, 62])      # ld/ldu/lwa, std/stdu
 
 def _d_form_imm(w: int, ra: int) -> Optional[int]:
     """Immediate of a D/DS-form instruction whose rA field is `ra`, else None.
-    rA == 0 means "no base" in these encodings and is never accepted."""
+    rA == 0 means "no base" in these encodings and is never accepted. A DS-form
+    word is accepted only with the low two bits clear (ld, std): the C scan
+    reads the immediate as simm16(word & 0xFFFF), so lwa/ldu/stdu would read
+    differently there."""
     if ra == 0 or ((w >> 16) & 31) != ra:
         return None
     op = w >> 26
     if op in _D_FORM_OPS:
         return _simm16(w)
-    if op in _DS_FORM_OPS:
-        return _simm16(w & 0xFFFC)
+    if op in _DS_FORM_OPS and not w & 3:
+        return _simm16(w)
     return None
 
 
 def _first_report_use(words, j: int, end: int) -> Optional[Tuple[int, int]]:
     """For the ld at word index j: (index, offset) of the first later D-form
-    instruction with rA == rT and an immediate in [0x10, 0x400], looking at
-    most REPORT_LOOKAHEAD_WORDS ahead and not past `end`."""
+    instruction with rA == rT and an immediate in [0x10, 0x400] that the
+    plugin can use (8-aligned, <= DS45_REPORT_OFF_MAX), looking at most
+    REPORT_LOOKAHEAD_WORDS ahead and not past `end`. Uses that fail are
+    skipped and the search goes on."""
     rt = (words[j] >> 21) & 31
     for k in range(j + 1, min(end, j + 1 + REPORT_LOOKAHEAD_WORDS)):
         imm = _d_form_imm(words[k], rt)
-        if imm is not None and REPORT_OFF_MIN <= imm <= REPORT_OFF_MAX:
+        if (imm is not None and REPORT_OFF_MIN <= imm <= REPORT_OFF_MAX
+                and imm & 7 == 0 and imm <= DS45_REPORT_OFF_MAX):
             return k, imm
     return None
 
@@ -208,7 +225,7 @@ def find_candidates(img: bytes, base: int = DEFAULT_BASE) -> List[Candidate]:
                 if toc is None:
                     break
             slot = (toc + _simm16(words[j] & 0xFFFC)) & M64
-            if slot & 7 or not (base <= slot <= base + WINDOW_SIZE - 8):
+            if not record_usable(slot, use[1], base):
                 continue
             ld_addr = base + 4 * j
             fp = ld_addr & ~7
@@ -292,7 +309,9 @@ def common_pattern(per_dump, base: int = DEFAULT_BASE) -> Pattern:
     The result is at most DS45_SCAN_MAX_INSNS long: words with an empty mask
     are dropped from both ends first; if it is still too long, the end word
     carrying fewer fixed bits goes (a tie drops the earlier word) until it
-    fits. Neither index word is ever dropped. ValueError if they cannot both
+    fits. Neither index word is ever dropped. Words before any dump's
+    function prologue (its `stdu r1`) are excluded first, because the C scan
+    finds the prologue from the first pattern word backwards. ValueError if they cannot both
     fit, or the dumps disagree on the distance between them.
     """
     if not per_dump:
@@ -300,6 +319,7 @@ def common_pattern(per_dump, base: int = DEFAULT_BASE) -> Pattern:
 
     rel_report = None
     anchors = []
+    clip = -WINDOW_BEFORE          # first usable word, relative to the ld
     for img, c in per_dump:
         ld_addr = c.ld_addr or _derive_ld_addr(img, base, c)
         rep_addr = c.report_insn_addr or _derive_report_addr(img, base, ld_addr)
@@ -310,6 +330,10 @@ def common_pattern(per_dump, base: int = DEFAULT_BASE) -> Pattern:
             raise ValueError("dumps disagree on the distance from the TOC ld "
                              "to the report use (%d vs %d words)" % (rel_report, rel))
         anchors.append(ld_addr)
+        if base <= c.func_start < ld_addr:
+            # the C scan looks for the prologue from insns[0] backwards, so
+            # insns[0] may not lie before this dump's own stdu
+            clip = max(clip, (c.func_start - ld_addr) // 4)
 
     span = WINDOW_BEFORE + 1 + WINDOW_AFTER
     toc_i = WINDOW_BEFORE
@@ -321,7 +345,7 @@ def common_pattern(per_dump, base: int = DEFAULT_BASE) -> Pattern:
     for i in range(span):
         ws = [_word_at(img, base, a + 4 * (i - WINDOW_BEFORE))
               for (img, _), a in zip(per_dump, anchors)]
-        if any(w is None for w in ws):
+        if i - WINDOW_BEFORE < clip or any(w is None for w in ws):
             masks.append(0)
             values.append(0)
             continue
@@ -455,6 +479,11 @@ def simulate_scan(img: bytes, base: int, pat: Pattern) -> ScanResult:
     if found is None:
         res.error = "no hit resolves (prologue, descriptor, slot or fingerprint)"
         return res
+    if not record_usable(found[2], found[3], base):
+        # kernel_resolve_from refuses a scan result kernel_record_usable rejects
+        res.error = ("record unusable: slot 0x%X report_off 0x%X (needs 8-aligned, "
+                     "report_off <= 0x%X)" % (found[2], found[3], DS45_REPORT_OFF_MAX))
+        return res
     res.fp_addr, res.fp_hash, res.slot_addr, res.report_off = found
     return res
 
@@ -541,9 +570,6 @@ def main(argv=None) -> int:
     ap.add_argument("--name", action="append", default=[],
                     help="table name for each DUMP, in order "
                          "(default: the file name without extension)")
-    ap.add_argument("--base", type=lambda s: int(s, 0), default=DEFAULT_BASE,
-                    help="address of the first byte of each dump "
-                         "(default 0x8000000000000000)")
     ap.add_argument("--pick", action="append", type=int, default=[],
                     help="which candidate to use, for each DUMP in order, "
                          "when a dump has several (0-based)")
@@ -562,11 +588,21 @@ def main(argv=None) -> int:
 
     images, chosen = [], []
     status = 0
+    base = DEFAULT_BASE            # the plugin always scans from DS45_LV2_BASE
     for k, path in enumerate(args.dumps):
-        with open(path, "rb") as f:
-            img = f.read()
+        try:
+            with open(path, "rb") as f:
+                img = f.read()
+        except OSError as e:
+            print("lv2scan: cannot read %s: %s" % (path, e.strerror or e),
+                  file=sys.stderr)
+            return 2
+        if len(img) != WINDOW_SIZE:
+            print("lv2scan: %s is %d bytes, a dump is exactly %d (the 8 MiB LV2 "
+                  "window)" % (path, len(img), WINDOW_SIZE), file=sys.stderr)
+            return 2
         images.append(img)
-        cands = find_candidates(img, args.base)
+        cands = find_candidates(img, base)
         print("// %s: %d candidate(s)" % (names[k], len(cands)))
         for i, c in enumerate(cands):
             print("//   [%d] func 0x%X  ld 0x%X  slot 0x%X  report_off 0x%X"
@@ -599,33 +635,39 @@ def main(argv=None) -> int:
         print(emit_c_entry(name, c))
 
     try:
-        pat = common_pattern(list(zip(images, chosen)), args.base)
+        pat = common_pattern(list(zip(images, chosen)), base)
         text = emit_c_pattern(pat)
     except ValueError as e:
         print("lv2scan: %s" % e, file=sys.stderr)
         return 1
 
-    print("\n// scan pattern, common to %d dump(s)" % len(images))
-    print(text)
-
-    print("\n// the emitted pattern against each dump (the C scan gives up "
-          "above %d raw hits)" % DS45_SCAN_MAX_HITS)
+    # the verdict comes before the pattern, and a pattern that does not
+    # resolve every dump to its table entry is not printed at all
+    print("\n// the pattern against each dump (the C scan gives up above "
+          "%d raw hits)" % DS45_SCAN_MAX_HITS)
     for name, img, c in zip(names, images, chosen):
-        r = simulate_scan(img, args.base, pat)
+        r = simulate_scan(img, base, pat)
         line = "// %s: raw hits: %d" % (name, r.raw_hits)
         if r.error:
             line += ", scan FAILS: %s" % r.error
             status = 1
         else:
-            agrees = (r.fp_addr, r.fp_hash, r.slot_addr, r.report_off) == \
-                     (c.fp_addr, c.fp_hash, c.slot_addr, c.report_off)
+            agrees = ((r.fp_addr, r.fp_hash, r.slot_addr, r.report_off) ==
+                      (c.fp_addr, c.fp_hash, c.slot_addr, c.report_off))
             line += ", resolves slot %s report_off %s%s" % (
                 _hex(r.slot_addr), _hex(r.report_off),
                 "" if agrees else "  MISMATCH with the table entry")
             if not agrees:
                 status = 1
         print(line)
-    return status
+    if status:
+        print("lv2scan: the pattern does not resolve every dump; not printed",
+              file=sys.stderr)
+        return status
+
+    print("\n// scan pattern, common to %d dump(s)" % len(images))
+    print(text)
+    return 0
 
 
 if __name__ == "__main__":
