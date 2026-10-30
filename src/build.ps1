@@ -6,12 +6,12 @@ param(
     [ValidateSet('auto', 'fself', 'scetool')][string]$Sign = 'auto'
 )
 # Native Windows equivalent of build.sh. Requires an independently provided
-# Cell SDK with real GetInfo2/GetDataExtra/SetPortSetting declarations/stubs.
+# Cell SDK; one without GetInfo2/SetPortSetting (192.001) gets the compat shim.
 #
 # Signing: 'scetool' signs with retail keys (runs on CEX CFW and HEN) and needs
-# DS45_TOOLS. 'fself' uses the SDK's own make_fself: a fake-signed SELF that
-# DEX/debug firmware loads but a retail console rejects; it needs no keys.
-# 'auto' picks scetool when DS45_TOOLS is set, fself otherwise.
+# DS45_TOOLS. 'fself' uses the SDK's own make_fself: a fake-signed SELF meant
+# for DEX/debug firmware (a retail console rejects it); it needs no keys and
+# ignores DS45_TOOLS. 'auto' picks scetool when DS45_TOOLS is set, fself otherwise.
 $ErrorActionPreference = 'Stop'
 if (!$Sdk) { throw 'Set CELL_SDK. No SPRX was built.' }
 if ($Sign -eq 'auto') { $Sign = if ($Tools) { 'scetool' } else { 'fself' } }
@@ -84,7 +84,7 @@ try {
             Pop-Location
         }
     } else {
-        # make_fself takes no auth id; DEX firmware does not check one.
+        # make_fself takes no auth id (loading on DEX is confirmed on console, Task 11).
         Invoke-BuildTool $signer @($prx,$signed)
     }
     $bytes = [IO.File]::ReadAllBytes($signed)

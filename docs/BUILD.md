@@ -51,7 +51,7 @@ make SIGN=fself # sign with the SDK's make_fself instead of scetool (DEX only)
 
 ## SPRX Signing (`make_fself`, DEX/debug consoles)
 
-The SDK's `make_fself` turns the PRX into a fake-signed SELF. DEX and debug firmware load it without keys; a retail (CEX) console rejects it. It takes no auth ID.
+The SDK's `make_fself` turns the PRX into a fake-signed SELF, meant for DEX and debug firmware; a retail (CEX) console rejects it. It needs no keys and takes no auth ID. `build.ps1 -Sign fself` and `make SIGN=fself` force it; `build.sh` uses it whenever `DS45_TOOLS` is unset.
 
 ## SPRX Signing (`scetool`, CEX CFW and HEN)
 

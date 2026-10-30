@@ -33,7 +33,9 @@ PPU_PRX_FLAGS = -mprx -mno-sn-ld -Os -ffunction-sections -fdata-sections \
 
 # The shim rebuilds cellPadGetInfo2/cellPadSetPortSetting for old SDKs (192.001)
 # that lack them; an SDK that declares them (475.001) must not get it.
-COMPAT_INC := $(shell grep -q cellPadGetInfo2 $(CELL_SDK)/target/ppu/include/cell/pad/libpad.h 2>/dev/null || echo -include ../patches/compat_pad.h)
+# Forward slashes: $(shell) runs sh, which would eat the backslashes of a
+# Windows-style CELL_SDK such as C:\usr\local\cell.
+COMPAT_INC := $(shell grep -q cellPadGetInfo2 "$(subst \,/,$(CELL_SDK))/target/ppu/include/cell/pad/libpad.h" 2>/dev/null || echo -include ../patches/compat_pad.h)
 EXTRA_CFLAGS    ?= $(COMPAT_INC)
 PPU_CFLAGS      = $(PPU_PRX_FLAGS) $(EXTRA_CFLAGS)
 PPU_LDFLAGS     += $(PPU_PRX_FLAGS)

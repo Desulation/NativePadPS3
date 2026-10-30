@@ -93,20 +93,22 @@ SCEFLAGS="-0 SELF -1 TRUE -s FALSE -2 0A -3 $AUTH -4 01000002 \
 # Windows binaries and Git Bash does not accept "C:/..." entries in PATH.
 GCC="$PPU_BIN/ppu-lv2-gcc.exe"
 PRXSTRIP="$HOST_BIN/ppu-lv2-prx-strip.exe"
-DEPS="$GCC $PRXSTRIP"
+need() {
+	for t in "$@"; do
+		[ -f "$t" ] || { echo "faltando: $t"; exit 1; }
+	done
+}
+
+need "$GCC" "$PRXSTRIP"
 if [ -n "$TOOLS" ]; then
 	# scetool resolves its key file through $PS3, so it works from any directory.
 	export PS3="$TOOLS/data"
 	SCETOOL="$TOOLS/scetool.exe"
-	DEPS="$DEPS $SCETOOL $TOOLS/data/keys"
+	need "$SCETOOL" "$TOOLS/data/keys"
 else
 	MAKE_FSELF="$HOST_BIN/make_fself.exe"
-	DEPS="$DEPS $MAKE_FSELF"
+	need "$MAKE_FSELF"
 fi
-
-for t in $DEPS; do
-	[ -f "$t" ] || { echo "faltando: $t"; exit 1; }
-done
 
 mkdir -p obj
 rm -f obj/*.o
@@ -127,7 +129,7 @@ echo "assinando..."
 if [ -n "$TOOLS" ]; then
 	"$SCETOOL" $SCEFLAGS -e obj/ds45pad.prx "$OUT" > /dev/null
 else
-	# make_fself takes no auth id; DEX firmware does not check one.
+	# make_fself takes no auth id (loading on DEX is confirmed on console, Task 11).
 	"$MAKE_FSELF" obj/ds45pad.prx "$OUT" > /dev/null
 fi
 
