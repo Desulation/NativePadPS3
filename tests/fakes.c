@@ -196,8 +196,8 @@ FAKE_WEAK void ds45_notify(const char *msg)
 char fake_tty[2048];
 int  fake_tty_overflow;
 
-int sys_tty_write(unsigned int ch, const void *buf, unsigned int len,
-                  unsigned int *pwritelen)
+FAKE_WEAK int sys_tty_write(unsigned int ch, const void *buf, unsigned int len,
+                            unsigned int *pwritelen)
 {
 	size_t have = strlen(fake_tty);
 
