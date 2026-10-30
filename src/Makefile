@@ -43,8 +43,10 @@ PPU_PRX_STRIPFLAGS += --strip-debug --strip-section-header
 ifeq ($(DEBUG),1)
 PPU_PRX_FLAGS += -DDS45_DEBUG
 DEBUG_SUFFIX = _debug
+SRCS_VSH_DEBUG = lv2dump.c
 else
 DEBUG_SUFFIX =
+SRCS_VSH_DEBUG =
 endif
 
 # The two builds do NOT share a source list or a library list.
@@ -55,7 +57,8 @@ endif
 # VSH-only anyway, must be absent from the in-game build rather than merely
 # unused by it.
 SRCS_VSH  = libc.c util.c hook.c config.c ds4.c dualsense.c sticks.c padldd.c \
-            usb.c passthru.c lv2.c kernel.c btcheck.c diag.c main.c
+            usb.c passthru.c lv2.c kernel.c btcheck.c diag.c main.c \
+            $(SRCS_VSH_DEBUG)
 SRCS_GAME = libc.c util.c hook.c config.c sticks.c gamehook.c diag.c main.c
 
 LIBS_VSH  = -lusbd_stub -lio_stub -lfs_stub -llv2_stub

@@ -476,41 +476,56 @@ void kernel_reject_active(void)
 #define PS3MAPI_OPCODE_GET_FW_TYPE  0x0013
 #define PS3MAPI_OPCODE_GET_FW_VER   0x0014
 
+#ifdef DS45_DEBUG
+int kernel_fw_query(char *type, int cap, uint32_t *ver)
+{
+	/* Generous: Cobra copies a short string ("CEX", "DEX", ...). */
+	char raw[64];
+	int32_t rc;
+	int i, n = 0;
+
+	for (i = 0; i < (int)sizeof(raw); i++)
+		raw[i] = 0;
+	{
+		system_call_3(8, PS3MAPI_SYSCALL8_OPCODE, PS3MAPI_OPCODE_GET_FW_TYPE,
+		              (uint64_t)(uintptr_t)raw);
+		rc = (int32_t)p1;
+	}
+	if (type && cap > 0) {
+		/* printable characters only, and never past the end of either */
+		if (rc == 0)
+			for (i = 0; i < (int)sizeof(raw) && raw[i] && n < cap - 1; i++)
+				if (raw[i] >= 0x20 && raw[i] < 0x7F)
+					type[n++] = raw[i];
+		type[n] = 0;
+	}
+
+	{
+		system_call_2(8, PS3MAPI_SYSCALL8_OPCODE, PS3MAPI_OPCODE_GET_FW_VER);
+		if (ver)
+			*ver = (uint32_t)p1;
+	}
+	return rc;
+}
+#endif
+
 void kernel_log_fw(void)
 {
 #ifdef DS45_DEBUG
-	/* Generous: Cobra copies a short string ("CEX", "DEX", ...). */
-	char type[64];
 	char tag[32];
 	const char prefix[] = "fw_type=";
 	int32_t rc;
 	uint32_t ver;
-	int i, j;
+	int i;
 
-	for (i = 0; i < (int)sizeof(type); i++)
-		type[i] = 0;
-	{
-		system_call_3(8, PS3MAPI_SYSCALL8_OPCODE, PS3MAPI_OPCODE_GET_FW_TYPE,
-		              (uint64_t)(uintptr_t)type);
-		rc = (int32_t)p1;
-	}
+	rc = kernel_fw_query(tag + (sizeof(prefix) - 1),
+	                     (int)(sizeof(tag) - (sizeof(prefix) - 1)), &ver);
 	if (rc != 0) {
 		DS45_TRACE_HEX("fw_type_err", rc);
 	} else {
 		for (i = 0; prefix[i]; i++)
 			tag[i] = prefix[i];
-		/* printable characters only, and never past the end of either */
-		for (j = 0; j < (int)sizeof(type) && type[j] &&
-		            i < (int)sizeof(tag) - 1; j++)
-			if (type[j] >= 0x20 && type[j] < 0x7F)
-				tag[i++] = type[j];
-		tag[i] = 0;
 		DS45_TRACE(tag);
-	}
-
-	{
-		system_call_2(8, PS3MAPI_SYSCALL8_OPCODE, PS3MAPI_OPCODE_GET_FW_VER);
-		ver = (uint32_t)p1;
 	}
 	DS45_TRACE_HEX("fw_version", ver);
 #endif

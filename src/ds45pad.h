@@ -23,6 +23,12 @@
 #define DS45PAD_VERSION "1.0.1-ps-usb-candidate"
 #endif
 
+/* The LV2 dumper (lv2dump.c): debug builds of the VSH plugin only. Nothing of
+ * it - code, config key, file names, toast - exists in release or game builds. */
+#if defined(DS45_DEBUG) && !defined(DS45_GAME)
+#define DS45_LV2DUMP 1
+#endif
+
 /* Where the plugin looks for its data files. */
 #define DS45_DIR          "/dev_hdd0/plugins/ds45pad"
 #define DS45_CONFIG_FILE  DS45_DIR "/ds45pad.txt"
@@ -376,6 +382,9 @@ typedef struct {
 
 	int      diag;             /* write DS45_DIAG_FILE                    */
 	int      notify;           /* show XMB notifications                  */
+#ifdef DS45_LV2DUMP
+	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
+#endif
 } ds45_config_t;
 
 extern ds45_config_t g_cfg;
@@ -522,6 +531,11 @@ int   ds45_write_file(const char *path, const void *data, int len);  /* create/t
 #ifndef DS45_GAME   /* VSH-only: would add libfs imports to the game build */
 int   ds45_delete_file(const char *path);                            /* 0 ok, -1 fail */
 int   ds45_file_exists(const char *path);                            /* 1 yes, 0 no */
+int   ds45_append_file(const char *path, const void *data, int len); /* create or append; 0 ok, -1 fail */
+#endif
+
+#ifdef DS45_LV2DUMP
+void  lv2dump_run(void);   /* lv2dump.c; once, writes the LV2 window to the HDD */
 #endif
 
 /* Debug-build-only boot trace. Compiles to nothing (and the tag strings are

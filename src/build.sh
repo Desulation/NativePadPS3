@@ -6,10 +6,12 @@
 # returns no output and no usable exit code - calling the compiler directly is
 # both simpler and easier to debug.
 #
-# Usage:  ./build.sh [game]
+# Usage:  ./build.sh [game] [debug]
 #   (no argument) -> ds45pad_vsh.sprx   (boot plugin, runs in the VSH)
 #   game          -> ds45pad_game.sprx  (-DDS45_GAME; injected into a running
 #                                        game to correct the stick curve)
+#   debug         -> the same with -DDS45_DEBUG, named ds45pad_<variant>_debug.sprx
+#                    (boot trace; the VSH build also gets the LV2 dumper)
 
 set -e
 
@@ -28,7 +30,16 @@ LIBDIR="$SDK/target/ppu/lib"
 AUTH_VSH=1070000052000001
 AUTH_GAME=1010000001000003
 
-if [ "$1" = "game" ]; then
+VARIANT=vsh
+DEBUG=0
+for a in "$@"; do
+	case "$a" in
+		game)  VARIANT=game ;;
+		debug) DEBUG=1 ;;
+	esac
+done
+
+if [ "$VARIANT" = "game" ]; then
 	EXTRA="-DDS45_GAME"
 	OUT="ds45pad_game.sprx"
 	AUTH="$AUTH_GAME"
@@ -44,6 +55,16 @@ else
 	SRCS="libc.c util.c hook.c config.c ds4.c dualsense.c sticks.c padldd.c \
 	      usb.c passthru.c lv2.c kernel.c btcheck.c diag.c main.c"
 	LDLIBS="-lusbd_stub -lio_stub -lfs_stub -llv2_stub"
+fi
+
+# debug: -DDS45_DEBUG (boot trace, and for the VSH build the LV2 dumper),
+# output tagged _debug. Same switch as `make DEBUG=1` / `build.ps1 -Debug`.
+if [ "$DEBUG" = "1" ]; then
+	EXTRA="$EXTRA -DDS45_DEBUG"
+	OUT="${OUT%.sprx}_debug.sprx"
+	if [ "$VARIANT" = "vsh" ]; then
+		SRCS="$SRCS lv2dump.c"
+	fi
 fi
 
 COMPAT_PAD="../patches/compat_pad.h"

@@ -7,6 +7,7 @@
  */
 
 #include <string.h>
+#include <cell/pad.h>   /* CellPadData, needed by ds45pad.h */
 
 #include "ds45pad.h"
 
@@ -68,6 +69,9 @@ void ds45_config_defaults(ds45_config_t *c)
 
 	c->diag   = 0;
 	c->notify = 0;   /* the boot trace is the safe way to confirm loading */
+#ifdef DS45_LV2DUMP
+	c->dump_lv2 = 0;
+#endif
 }
 
 static int is_space(char c)
@@ -226,6 +230,10 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		if (parse_int(val, &n)) c->diag = n;
 	} else if (match(key, "NOTIFY")) {
 		if (parse_int(val, &n)) c->notify = n;
+#ifdef DS45_LV2DUMP
+	} else if (match(key, "DUMP_LV2")) {
+		if (parse_int(val, &n)) c->dump_lv2 = n;
+#endif
 	}
 }
 

@@ -487,6 +487,15 @@ static void ds45_thread(uint64_t arg)
 				}
 				ds45_boot_mark("notify_ok");
 			}
+#ifdef DS45_LV2DUMP
+			/* Debug builds, DUMP_LV2 = 1: once, after the XMB is up. Reading
+			 * 8 MiB through syscall 6 holds this thread for a few seconds. */
+			if (g_cfg.dump_lv2) {
+				ds45_boot_mark("lv2dump");
+				lv2dump_run();
+				ds45_boot_mark("lv2dump_done");
+			}
+#endif
 		}
 
 		/* Fast enough to catch a button press, slow enough not to drown the

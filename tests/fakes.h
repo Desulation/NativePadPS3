@@ -68,7 +68,15 @@ int         fake_file_size(const char *path);  /* bytes, -1 if absent */
 void        fake_file_set_bytes(const char *path, const void *data, int len);
 int         fake_file_deleted(const char *path); /* 1 if ds45_delete_file()d */
 
+/* Failure injection for ds45_write_file()/ds45_append_file(): any write to
+ * fake_write_fail_path fails; once fake_append_fail_after (>= 0) appends have
+ * succeeded, the next and every later append fails. -1 / NULL = never.
+ * Cleared by fake_reset_all(). */
+extern const char *fake_write_fail_path;
+extern int         fake_append_fail_after;
+
 int ds45_write_file(const char *path, const void *data, int len);
+int ds45_append_file(const char *path, const void *data, int len);
 int ds45_delete_file(const char *path);
 int ds45_file_exists(const char *path);
 

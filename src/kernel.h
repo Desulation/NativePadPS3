@@ -121,4 +121,14 @@ void kernel_reject_active(void);
  * builds make no call at all. */
 void kernel_log_fw(void);
 
+#ifdef DS45_DEBUG
+/* The same query, returned instead of traced (debug builds only; shared with
+ * the LV2 dumper). *type gets the printable characters of the PS3MAPI type
+ * string, cap bytes at most including the NUL ("" on failure); *ver the raw
+ * GET_FW_VERSION result (only meaningful when the return value is 0). Returns
+ * the GET_FW_TYPE result: 0 on success, nonzero without PS3MAPI. Either
+ * output may be NULL. */
+int kernel_fw_query(char *type, int cap, uint32_t *ver);
+#endif
+
 #endif /* DS45_KERNEL_H */

@@ -306,12 +306,51 @@ FAKE_WEAK int ds45_read_file(const char *path, char *out, int cap)
 	return n;
 }
 
+const char *fake_write_fail_path;
+int         fake_append_fail_after = -1;
+
 FAKE_WEAK int ds45_write_file(const char *path, const void *data, int len)
 {
-	int i = file_slot(path, 1);
+	int i;
+	if (fake_write_fail_path && strcmp(path, fake_write_fail_path) == 0)
+		return -1;
+	i = file_slot(path, 1);
 	if (i < 0)
 		return -1;
 	return file_store(i, data, len);
+}
+
+/* Append (creating if absent). The fake_append_fail_after-th append and every
+ * one after it fails without storing anything. */
+FAKE_WEAK int ds45_append_file(const char *path, const void *data, int len)
+{
+	int i;
+	char *p;
+
+	if (fake_write_fail_path && strcmp(path, fake_write_fail_path) == 0)
+		return -1;
+	if (fake_append_fail_after == 0)
+		return -1;
+	if (fake_append_fail_after > 0)
+		fake_append_fail_after--;
+	if (len < 0 || (len > 0 && !data))
+		return -1;
+	i = file_slot(path, 1);
+	if (i < 0)
+		return -1;
+	if (!files[i].present)
+		return file_store(i, data, len);
+	if (len > FAKE_FILE_MAX - files[i].len)
+		return -1;
+	p = realloc(files[i].data, (size_t)files[i].len + (size_t)len + 1);
+	if (!p)
+		return -1;
+	if (len)
+		memcpy(p + files[i].len, data, (size_t)len);
+	files[i].len += len;
+	p[files[i].len] = 0;
+	files[i].data = p;
+	return 0;
 }
 
 FAKE_WEAK int ds45_delete_file(const char *path)
@@ -333,8 +372,15 @@ FAKE_WEAK int ds45_file_exists(const char *path)
 	return i >= 0 && files[i].present;
 }
 
+/* Only so config.c can be linked without util.c's remap tables. */
+FAKE_WEAK ds45_map_t ds45_parse_map(const char *name)
+{
+	(void)name;
+	return DS45_MAP_NONE;
+}
+
 /* ---------------------------------------------------------------------- */
-/* LDD                                                                      */
+/* LDD                                                                   */
 /* ---------------------------------------------------------------------- */
 
 int fake_ldd_registers;
@@ -418,6 +464,8 @@ void fake_reset_all(void)
 		free(files[i].data);
 		memset(&files[i], 0, sizeof(files[i]));
 	}
+	fake_write_fail_path = NULL;
+	fake_append_fail_after = -1;
 	fake_ldd_registers = 0;
 	fake_ldd_unregisters = 0;
 	memset(&fake_pad_info, 0, sizeof(fake_pad_info));

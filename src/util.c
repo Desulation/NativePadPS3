@@ -132,9 +132,9 @@ int ds45_read_file(const char *path, char *out, int cap)
 	return (int)nread;
 }
 
-/* Create or truncate path and write len bytes. 0 on success, -1 on any
- * failure (including a short write). */
-int ds45_write_file(const char *path, const void *data, int len)
+/* Open path with flags and write len bytes. 0 on success, -1 on any failure
+ * (including a short write). */
+static int write_with_flags(const char *path, int flags, const void *data, int len)
 {
 	int fd;
 	const uint8_t *p = (const uint8_t *)data;
@@ -143,8 +143,7 @@ int ds45_write_file(const char *path, const void *data, int len)
 	if (!path || len < 0 || (len > 0 && !data))
 		return -1;
 
-	if (cellFsOpen(path, CELL_FS_O_WRONLY | CELL_FS_O_CREAT | CELL_FS_O_TRUNC,
-	               &fd, NULL, 0) != CELL_FS_SUCCEEDED)
+	if (cellFsOpen(path, flags, &fd, NULL, 0) != CELL_FS_SUCCEEDED)
 		return -1;
 
 	while (len > 0) {
@@ -163,6 +162,15 @@ int ds45_write_file(const char *path, const void *data, int len)
 	return rc;
 }
 
+/* Create or truncate path and write len bytes. 0 on success, -1 on any
+ * failure (including a short write). */
+int ds45_write_file(const char *path, const void *data, int len)
+{
+	return write_with_flags(path,
+	                        CELL_FS_O_WRONLY | CELL_FS_O_CREAT | CELL_FS_O_TRUNC,
+	                        data, len);
+}
+
 /* VSH-only: the game build must not gain cellFsUnlink/cellFsStat imports. */
 #ifndef DS45_GAME
 int ds45_delete_file(const char *path)
@@ -175,6 +183,15 @@ int ds45_file_exists(const char *path)
 	CellFsStat st;
 
 	return cellFsStat(path, &st) == CELL_FS_SUCCEEDED ? 1 : 0;
+}
+
+/* Append len bytes to path, creating it if absent. 0 ok, -1 fail. Used to
+ * write files too big to hold in memory (the LV2 dump) a chunk at a time. */
+int ds45_append_file(const char *path, const void *data, int len)
+{
+	return write_with_flags(path,
+	                        CELL_FS_O_WRONLY | CELL_FS_O_CREAT | CELL_FS_O_APPEND,
+	                        data, len);
 }
 #endif /* !DS45_GAME */
 
