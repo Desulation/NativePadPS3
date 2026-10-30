@@ -353,7 +353,7 @@ static void ds45_thread(uint64_t arg)
 	int last_btcheck = -1;
 	int usb_ok;
 #ifdef DS45_LV2DUMP
-	lv2dump_t lv2dump = { 0, 0, 0 };
+	lv2dump_t lv2dump = { 0, 0, 0, 0 };
 #endif
 #endif
 

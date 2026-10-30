@@ -194,14 +194,18 @@ static int test_skips_when_both_exist(void)
 	return 0;
 }
 
-/* A kept from an earlier run (say B failed): A is skipped, B still taken. */
-static int test_existing_a_still_takes_b(void)
+/* A kept from an earlier run (say B failed): no A countdown, straight to
+ * B's, and B still taken. */
+static int test_existing_a_goes_straight_to_b(void)
 {
 	setup();
 	fake_file_set(A_BIN, "old");
 	lv2dump_poll(&st, 0);
-	lv2dump_poll(&st, T_A);
-	lv2dump_poll(&st, T_B);
+	CHECK(strcmp(fake_last_toast, "LV2 dump B in 10 s: hold Cross, left stick fully left") == 0);
+	CHECK(fake_toasts == 1);
+	lv2dump_poll(&st, 9999);
+	CHECK(fake_file_size(B_BIN) == -1);
+	lv2dump_poll(&st, 10000);
 
 	CHECK(fake_file_size(A_BIN) == 3);
 	CHECK(bin_ok(B_BIN));
@@ -211,19 +215,19 @@ static int test_existing_a_still_takes_b(void)
 	return 0;
 }
 
-/* The pad leaves during a countdown: no dump, and the countdown starts over
- * when it is back. */
+/* The pad leaves in the middle of a countdown: said at once, no dump, and
+ * the countdown starts over when it is back. */
 static int test_pad_lost_restarts_countdown(void)
 {
 	setup();
 	lv2dump_poll(&st, 0);
 	pad_on = 0;
-	lv2dump_poll(&st, T_A);
-	CHECK(fake_lv2_peek_count == 0);
+	lv2dump_poll(&st, 1000);
 	CHECK(strcmp(fake_last_toast, "LV2 dump: pad disconnected, waiting for it") == 0);
-
-	lv2dump_poll(&st, T_A + 1000);                       /* still gone: quiet */
+	lv2dump_poll(&st, T_A);                              /* still gone: quiet */
+	lv2dump_poll(&st, T_A + 1000);
 	CHECK(fake_toasts == 2);
+	CHECK(fake_lv2_peek_count == 0);
 
 	pad_on = 1;
 	lv2dump_poll(&st, 20000);
@@ -232,6 +236,62 @@ static int test_pad_lost_restarts_countdown(void)
 	CHECK(fake_lv2_peek_count == 0);
 	lv2dump_poll(&st, 20000 + T_A);
 	CHECK(bin_ok(A_BIN));
+	return 0;
+}
+
+/* Lost during B's countdown: A is already there, so when the pad is back
+ * the B countdown restarts, not A's. */
+static int test_pad_lost_during_b(void)
+{
+	setup();
+	lv2dump_poll(&st, 0);
+	lv2dump_poll(&st, T_A);
+	CHECK(bin_ok(A_BIN));
+	pad_on = 0;
+	lv2dump_poll(&st, T_A + 2000);
+	CHECK(strcmp(fake_last_toast, "LV2 dump: pad disconnected, waiting for it") == 0);
+
+	pad_on = 1;
+	lv2dump_poll(&st, 30000);
+	CHECK(strcmp(fake_last_toast, "LV2 dump B in 10 s: hold Cross, left stick fully left") == 0);
+	lv2dump_poll(&st, 39999);
+	CHECK(fake_file_size(B_BIN) == -1);
+	lv2dump_poll(&st, 40000);
+	CHECK(bin_ok(B_BIN));
+	CHECK(fake_lv2_peek_count == 2 * (WINDOW / 8));      /* A not dumped twice */
+	return 0;
+}
+
+/* The countdown survives the uint32 millisecond counter wrapping. */
+static int test_countdown_across_wrap(void)
+{
+	const uint32_t t0 = 0xFFFFFFFFu - 1000u;
+
+	setup();
+	lv2dump_poll(&st, t0);
+	lv2dump_poll(&st, 0xFFFFFFFFu);
+	lv2dump_poll(&st, (uint32_t)(t0 + T_A - 1));
+	CHECK(fake_lv2_peek_count == 0);
+	lv2dump_poll(&st, (uint32_t)(t0 + T_A));
+	CHECK(bin_ok(A_BIN));
+	return 0;
+}
+
+/* A failed dump B still tells the person holding the pad to let go. */
+static int test_b_failure_says_release(void)
+{
+	setup();
+	fake_write_fail_path = B_TXT;
+	lv2dump_poll(&st, 0);
+	lv2dump_poll(&st, T_A);
+	lv2dump_poll(&st, T_B);
+
+	CHECK(bin_ok(A_BIN));
+	CHECK(fake_file_size(B_BIN) == -1);
+	CHECK(strcmp(fake_last_toast, "LV2 dump failed: see the TTY, release the pad") == 0);
+	CHECK(strstr(fake_tty, "ds45pad: LV2 dump failed: cannot write " B_TXT "\n") != NULL);
+	lv2dump_poll(&st, T_B + 100000);                     /* done */
+	CHECK(fake_toasts == 3);
 	return 0;
 }
 
@@ -259,12 +319,14 @@ static int test_dump_failure_deletes_partial(void)
 
 	CHECK(fake_file_size(A_BIN) == -1);
 	CHECK(fake_file_deleted(A_BIN));
-	CHECK(fake_toasts == 1);                             /* only the countdown */
+	CHECK(fake_toasts == 2);                             /* countdown, failure */
+	CHECK(strcmp(fake_last_toast, "LV2 dump failed: see the TTY, release the pad") == 0);
 	/* 1 write + 5 appends succeeded: the 7th chunk (offset 6 * 64 KiB) failed */
 	CHECK(strcmp(fake_tty,
 	             "ds45pad: LV2 dump A in 5 s: leave the pad untouched\n"
 	             "ds45pad: LV2 dump started: " A_BIN "\n"
-	             "ds45pad: LV2 dump failed at offset 0x00060000, partial .bin deleted\n") == 0);
+	             "ds45pad: LV2 dump failed at offset 0x00060000, partial .bin deleted\n"
+	             "ds45pad: LV2 dump failed: see the TTY, release the pad\n") == 0);
 	/* the run is over: with writes working again, still no dump B */
 	fake_append_fail_after = -1;
 	{
@@ -313,7 +375,7 @@ static int test_dump_needs_text_file(void)
 	CHECK(fake_file_size(A_BIN) == -1);
 	CHECK(fake_lv2_peek_count == 0);
 	CHECK(strstr(fake_tty, "ds45pad: LV2 dump failed: cannot write " A_TXT "\n") != NULL);
-	CHECK(fake_toasts == 1);                             /* only the countdown */
+	CHECK(fake_toasts == 2);                             /* countdown, failure */
 	return 0;
 }
 
@@ -357,8 +419,11 @@ int run_tests(void)
 	if ((r = test_waits_for_pad()) != 0) return r;
 	if ((r = test_two_dumps_with_countdown()) != 0) return r;
 	if ((r = test_skips_when_both_exist()) != 0) return r;
-	if ((r = test_existing_a_still_takes_b()) != 0) return r;
+	if ((r = test_existing_a_goes_straight_to_b()) != 0) return r;
 	if ((r = test_pad_lost_restarts_countdown()) != 0) return r;
+	if ((r = test_pad_lost_during_b()) != 0) return r;
+	if ((r = test_countdown_across_wrap()) != 0) return r;
+	if ((r = test_b_failure_says_release()) != 0) return r;
 	if ((r = test_dump_reads_stay_in_window()) != 0) return r;
 	if ((r = test_dump_failure_deletes_partial()) != 0) return r;
 	if ((r = test_dump_without_ps3mapi()) != 0) return r;

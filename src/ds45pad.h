@@ -542,6 +542,7 @@ int   ds45_append_file(const char *path, const void *data, int len); /* create o
 typedef struct {
 	int      phase;
 	int      said_wait;
+	int      checked;          /* existing dumps looked at once */
 	uint32_t due_ms;
 } lv2dump_t;
 void  lv2dump_poll(lv2dump_t *st, uint32_t now_ms);

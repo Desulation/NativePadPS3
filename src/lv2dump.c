@@ -189,23 +189,54 @@ static int dump_one(const char *bin, const char *txt, const char *pad)
 	return 0;
 }
 
+static void start_b(lv2dump_t *st, uint32_t now_ms)
+{
+	say("LV2 dump B in 10 s: hold Cross, left stick fully left");
+	st->due_ms = now_ms + DELAY_B_MS;
+	st->phase = PH_COUNT_B;
+}
+
+static void fail(lv2dump_t *st)
+{
+	st->phase = PH_DONE;
+	say("LV2 dump failed: see the TTY, release the pad");
+}
+
 void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
 {
 	if (st->phase == PH_DONE)
 		return;
 
-	if (st->phase == PH_WAIT_PAD) {
+	/* Once per run: nothing to do if both dumps are already there. */
+	if (!st->checked) {
+		st->checked = 1;
 		if (ds45_file_exists(DUMP_A_BIN) && ds45_file_exists(DUMP_B_BIN)) {
 			tty("LV2 dumps skipped: " DUMP_A_BIN " and " DUMP_B_BIN
 			    " exist, delete both to dump again");
 			st->phase = PH_DONE;
 			return;
 		}
-		if (!passthru_bt_pad_present()) {
-			if (!st->said_wait) {
-				st->said_wait = 1;
-				say("LV2 dump: connect the Bluetooth pad");
-			}
+	}
+
+	/* Checked every tick, countdowns included: a pad that leaves restarts
+	 * the countdown when it is back, never a dump without it. */
+	if (!passthru_bt_pad_present()) {
+		if (st->phase != PH_WAIT_PAD) {
+			st->phase = PH_WAIT_PAD;
+			st->said_wait = 1;
+			say("LV2 dump: pad disconnected, waiting for it");
+		} else if (!st->said_wait) {
+			st->said_wait = 1;
+			say("LV2 dump: connect the Bluetooth pad");
+		}
+		return;
+	}
+
+	if (st->phase == PH_WAIT_PAD) {
+		if (ds45_file_exists(DUMP_A_BIN)) {
+			/* Kept from an earlier run, or taken before the pad left. */
+			tty("LV2 dump skipped: " DUMP_A_BIN " exists, delete it to dump again");
+			start_b(st, now_ms);
 			return;
 		}
 		say("LV2 dump A in 5 s: leave the pad untouched");
@@ -217,29 +248,21 @@ void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
 	if ((int32_t)(now_ms - st->due_ms) < 0)
 		return;
 
-	/* The pad went away during the countdown: start over when it is back. */
-	if (!passthru_bt_pad_present()) {
-		say("LV2 dump: pad disconnected, waiting for it");
-		st->said_wait = 1;
-		st->phase = PH_WAIT_PAD;
-		return;
-	}
-
 	if (st->phase == PH_COUNT_A) {
-		if (dump_one(DUMP_A_BIN, DUMP_A_TXT, "untouched") != 0) {
-			st->phase = PH_DONE;
-			return;
-		}
-		say("LV2 dump B in 10 s: hold Cross, left stick fully left");
-		st->due_ms = now_ms + DELAY_B_MS;
-		st->phase = PH_COUNT_B;
+		if (dump_one(DUMP_A_BIN, DUMP_A_TXT, "untouched") != 0)
+			fail(st);
+		else
+			start_b(st, now_ms);
 		return;
 	}
 
 	/* PH_COUNT_B */
+	if (dump_one(DUMP_B_BIN, DUMP_B_TXT, "cross_held_left_stick_left") != 0) {
+		fail(st);
+		return;
+	}
 	st->phase = PH_DONE;
-	if (dump_one(DUMP_B_BIN, DUMP_B_TXT, "cross_held_left_stick_left") == 0)
-		say("LV2 dumps written: release the pad");
+	say("LV2 dumps written: release the pad");
 }
 
 #endif /* DS45_LV2DUMP */
