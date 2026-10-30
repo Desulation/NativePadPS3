@@ -63,7 +63,8 @@ function Get-TmpListing {
         try { $lines = Invoke-Curl @("$ftp$tmp/"); break }
         catch {
             if ($try -ge 5) { throw }
-            Say "FTP listing failed ($try/5), retrying: $($_.Exception.Message)"
+            # To the host: Say's output would otherwise join the returned table.
+            Say "FTP listing failed ($try/5), retrying: $($_.Exception.Message)" | Out-Host
             Start-Sleep -Seconds 5
         }
     }

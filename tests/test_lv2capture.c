@@ -138,6 +138,8 @@ static int test_log_limit(void)
 		lv2capture_poll(&cap, (uint32_t)i);
 	}
 	CHECK(nlines == 2 * DS45_CAPTURE_MAX_LOGS + 1);
+	CHECK(cap.logs == DS45_CAPTURE_MAX_LOGS);
+	CHECK(cap.stopped);
 	peeks = fake_lv2_peek_count;
 	lv2capture_poll(&cap, 99999);
 	CHECK(fake_lv2_peek_count == peeks);
@@ -168,6 +170,18 @@ static int test_config_keys(void)
 	ds45_config_load(&c, "/c.txt");
 	CHECK(c.capture_len == 0);                  /* above the 128-byte maximum */
 	CHECK(c.capture_off == 0);                  /* outside the 8 MiB window */
+
+	ds45_config_defaults(&c);
+	fake_file_set("/c.txt", "CAPTURE_LV2 = 0x7FFFF8\nCAPTURE_LEN = 128\n");
+	ds45_config_load(&c, "/c.txt");
+	CHECK(c.capture_off == 0x7FFFF8u);          /* last doubleword */
+	CHECK(c.capture_len == 128);                /* the maximum */
+
+	ds45_config_defaults(&c);
+	fake_file_set("/c.txt", "CAPTURE_LV2 = -8\nCAPTURE_LEN = -8\n");
+	ds45_config_load(&c, "/c.txt");
+	CHECK(c.capture_off == 0);
+	CHECK(c.capture_len == 0);
 	return 0;
 }
 

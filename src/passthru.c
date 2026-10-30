@@ -126,12 +126,7 @@ static void dbg_observe(uint32_t port_no, const CellPadData *data)
 		return;
 	s_dbg_src_calls++;
 	s_dbg_src_len = (uint32_t)data->len;
-	if (data->len > DS45_BTN_DIGITAL2)
-		w |= (uint32_t)(data->button[DS45_BTN_DIGITAL1] & 0xFF) << 24 |
-		     (uint32_t)(data->button[DS45_BTN_DIGITAL2] & 0xFF) << 16;
-	if (data->len > DS45_BTN_ANALOG_LEFT_Y)
-		w |= (uint32_t)(data->button[DS45_BTN_ANALOG_LEFT_X] & 0xFF) << 8 |
-		     (uint32_t)(data->button[DS45_BTN_ANALOG_LEFT_Y] & 0xFF);
+	w = dbg_word(data);
 	if (w != s_dbg_src_word)
 		s_dbg_src_changes++;
 	s_dbg_src_word = w;
