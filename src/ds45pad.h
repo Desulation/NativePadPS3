@@ -536,7 +536,17 @@ int   ds45_append_file(const char *path, const void *data, int len); /* create o
 #endif
 
 #ifdef DS45_LV2DUMP
-void  lv2dump_run(void);   /* lv2dump.c; once, writes the LV2 window to the HDD */
+/* lv2dump.c: two dumps of the LV2 window once a Bluetooth pad is connected
+ * (A untouched, B with Cross held and the left stick left). Zero-initialise
+ * the state, then poll every tick; it stops by itself when done. */
+typedef struct {
+	int      phase;
+	int      said_wait;
+	uint32_t due_ms;
+} lv2dump_t;
+void  lv2dump_poll(lv2dump_t *st, uint32_t now_ms);
+/* passthru.c: any generic (Bluetooth) pad connected, bound or not. */
+int   passthru_bt_pad_present(void);
 #endif
 
 /* Debug-build-only boot trace. Compiles to nothing (and the tag strings are

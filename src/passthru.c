@@ -204,6 +204,25 @@ static int is_generic_pad(const CellPadInfo2 *info, int port)
 	return 1;
 }
 
+#ifdef DS45_LV2DUMP
+/* The debug LV2 dumper waits for this. Not limited to the bound pad: a
+ * firmware without a kernel record never binds one, and that is exactly the
+ * firmware a dump is for. */
+int passthru_bt_pad_present(void)
+{
+	CellPadInfo2 info;
+	int port;
+
+	if (cellPadGetInfo2(&info) != CELL_PAD_OK)
+		return 0;
+	for (port = 0; port < DS45_MAX_PORT_NUM; port++)
+		if (is_generic_pad(&info, port))
+			return 1;
+
+	return 0;
+}
+#endif
+
 static int already_bound(int port)
 {
 	int i;

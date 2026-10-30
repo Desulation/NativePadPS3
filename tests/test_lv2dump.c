@@ -8,15 +8,25 @@
 
 /* Synthetic image only: made-up qwords and a made-up PS3MAPI answer. */
 
-#define BIN_PATH "/dev_hdd0/tmp/ds45pad_lv2.bin"
-#define TXT_PATH "/dev_hdd0/tmp/ds45pad_lv2.txt"
-#define WINDOW   ((int)(DS45_LV2_BOUND - DS45_LV2_BASE))
-#define CHUNK    65536
+#define A_BIN   "/dev_hdd0/tmp/ds45pad_lv2.bin"
+#define A_TXT   "/dev_hdd0/tmp/ds45pad_lv2.txt"
+#define B_BIN   "/dev_hdd0/tmp/ds45pad_lv2_b.bin"
+#define B_TXT   "/dev_hdd0/tmp/ds45pad_lv2_b.txt"
+#define WINDOW  ((int)(DS45_LV2_BOUND - DS45_LV2_BASE))
+#define CHUNK   65536
+
+#define T_A     5000u     /* dump A is due 5 s after the pad shows up */
+#define T_B     15000u    /* dump B 10 s after dump A */
 
 static const uint8_t Q_FIRST[8] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88 };
 static const uint8_t Q_LAST[8]  = { 0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x07, 0x18 };
 static const uint8_t Q_PREV[8]  = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x09 };
 static const uint8_t Q_NEXT[8]  = { 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10, 0x19 };
+
+/* passthru.c is not linked: the test decides whether a Bluetooth pad is
+ * connected. */
+static int pad_on;
+int passthru_bt_pad_present(void) { return pad_on; }
 
 /* Record the boot trace (overrides the weak fake) to check kernel_log_fw()
  * still says what it did before the query was shared with the dumper. */
@@ -63,6 +73,8 @@ static uint64_t fake_mapi(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4)
 	return (uint64_t)-1;
 }
 
+static lv2dump_t st;
+
 static void setup(void)
 {
 	static const ds45_kernel_t legacy[1] = {
@@ -70,6 +82,8 @@ static void setup(void)
 	};
 
 	fake_reset_all();
+	memset(&st, 0, sizeof(st));
+	pad_on = 1;
 	fake_syscall8 = fake_mapi;
 	fake_lv2_set(DS45_LV2_BASE, Q_FIRST, 8);
 	fake_lv2_set(DS45_LV2_BASE + CHUNK - 8, Q_PREV, 8);   /* chunk edge */
@@ -80,22 +94,56 @@ static void setup(void)
 		fake_reset_all();      /* makes the checks below fail loudly */
 }
 
-static int test_dump_writes_both_files(void)
+static int bin_ok(const char *path)
 {
-	const char *bin, *txt;
+	const char *bin = fake_file_get(path);
+
+	return fake_file_size(path) == WINDOW && bin != NULL &&
+	       memcmp(bin, Q_FIRST, 8) == 0 &&
+	       memcmp(bin + WINDOW - 8, Q_LAST, 8) == 0 &&
+	       memcmp(bin + CHUNK - 8, Q_PREV, 8) == 0 &&       /* chunk order */
+	       memcmp(bin + CHUNK, Q_NEXT, 8) == 0;
+}
+
+static int test_waits_for_pad(void)
+{
+	setup();
+	pad_on = 0;
+	lv2dump_poll(&st, 0);
+	lv2dump_poll(&st, 60000);
+	lv2dump_poll(&st, 120000);
+
+	CHECK(fake_lv2_peek_count == 0);
+	CHECK(fake_file_size(A_TXT) == -1);
+	CHECK(fake_toasts == 1);                             /* said once */
+	CHECK(strcmp(fake_last_toast, "LV2 dump: connect the Bluetooth pad") == 0);
+	CHECK(strcmp(fake_tty, "ds45pad: LV2 dump: connect the Bluetooth pad\n") == 0);
+	return 0;
+}
+
+static int test_two_dumps_with_countdown(void)
+{
+	const char *txt;
 
 	setup();
-	lv2dump_run();
+	lv2dump_poll(&st, 0);
+	CHECK(strcmp(fake_last_toast, "LV2 dump A in 5 s: leave the pad untouched") == 0);
+	lv2dump_poll(&st, T_A - 1);
+	CHECK(fake_lv2_peek_count == 0);                     /* not yet */
 
-	CHECK(fake_file_size(BIN_PATH) == WINDOW);
-	bin = fake_file_get(BIN_PATH);
-	CHECK(bin != NULL);
-	CHECK(memcmp(bin, Q_FIRST, 8) == 0);
-	CHECK(memcmp(bin + WINDOW - 8, Q_LAST, 8) == 0);
-	CHECK(memcmp(bin + CHUNK - 8, Q_PREV, 8) == 0);      /* chunk order */
-	CHECK(memcmp(bin + CHUNK, Q_NEXT, 8) == 0);
+	lv2dump_poll(&st, T_A);
+	CHECK(bin_ok(A_BIN));
+	CHECK(fake_file_size(B_BIN) == -1);
+	CHECK(strcmp(fake_last_toast, "LV2 dump B in 10 s: hold Cross, left stick fully left") == 0);
+	lv2dump_poll(&st, T_B - 1);
+	CHECK(fake_file_size(B_BIN) == -1);                  /* not yet */
 
-	txt = fake_file_get(TXT_PATH);
+	lv2dump_poll(&st, T_B);
+	CHECK(bin_ok(B_BIN));
+	CHECK(strcmp(fake_last_toast, "LV2 dumps written: release the pad") == 0);
+	CHECK(fake_toasts == 3);
+
+	txt = fake_file_get(A_TXT);
 	CHECK(txt != NULL);
 	CHECK(strstr(txt, "base=0x8000000000000000\n") != NULL);
 	CHECK(strstr(txt, "bound=0x8000000000800000\n") != NULL);
@@ -103,65 +151,136 @@ static int test_dump_writes_both_files(void)
 	CHECK(strstr(txt, "fw_type=DEX\n") != NULL);
 	CHECK(strstr(txt, "fw_version=0x00000492\n") != NULL);
 	CHECK(strstr(txt, "kmatch=4\n") != NULL);            /* DS45_KMATCH_LEGACY */
+	CHECK(strstr(txt, "pad=untouched\n") != NULL);
+	txt = fake_file_get(B_TXT);
+	CHECK(txt != NULL);
+	CHECK(strstr(txt, "pad=cross_held_left_stick_left\n") != NULL);
 
-	CHECK(fake_toasts == 1);
-	CHECK(strcmp(fake_last_toast, "LV2 dump written") == 0);
-
-	/* The toast is easy to miss; the same outcome goes to the TTY. */
+	/* Toasts are easy to miss; every step also goes to the TTY. */
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dump started\n"
-	             "ds45pad: LV2 dump written: " BIN_PATH " (8388608 bytes) and " TXT_PATH "\n") == 0);
+	             "ds45pad: LV2 dump A in 5 s: leave the pad untouched\n"
+	             "ds45pad: LV2 dump started: " A_BIN "\n"
+	             "ds45pad: LV2 dump written: " A_BIN " (8388608 bytes) and " A_TXT "\n"
+	             "ds45pad: LV2 dump B in 10 s: hold Cross, left stick fully left\n"
+	             "ds45pad: LV2 dump started: " B_BIN "\n"
+	             "ds45pad: LV2 dump written: " B_BIN " (8388608 bytes) and " B_TXT "\n"
+	             "ds45pad: LV2 dumps written: release the pad\n") == 0);
 	CHECK(fake_tty_overflow == 0);
+
+	/* Done: nothing more, however long it keeps being polled. */
+	lv2dump_poll(&st, T_B + 100000);
+	CHECK(fake_lv2_peek_count == 2 * (WINDOW / 8));
+	CHECK(fake_toasts == 3);
 	return 0;
 }
 
-static int test_dump_skips_when_exists(void)
+static int test_skips_when_both_exist(void)
 {
 	setup();
-	fake_file_set(BIN_PATH, "old");
-	lv2dump_run();
+	fake_file_set(A_BIN, "old");
+	fake_file_set(B_BIN, "old");
+	lv2dump_poll(&st, 0);
+	lv2dump_poll(&st, T_B);
 
-	CHECK(fake_file_size(BIN_PATH) == 3);                /* untouched */
-	CHECK(fake_file_size(TXT_PATH) == -1);
+	CHECK(fake_file_size(A_BIN) == 3);                   /* untouched */
+	CHECK(fake_file_size(B_BIN) == 3);
+	CHECK(fake_file_size(A_TXT) == -1);
 	CHECK(fake_toasts == 0);
 	CHECK(fake_lv2_peek_count == 0);
 	CHECK(fake_sc8_calls == 0);
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dump skipped: " BIN_PATH " exists, delete it to dump again\n") == 0);
+	             "ds45pad: LV2 dumps skipped: " A_BIN " and " B_BIN
+	             " exist, delete both to dump again\n") == 0);
+	return 0;
+}
+
+/* A kept from an earlier run (say B failed): A is skipped, B still taken. */
+static int test_existing_a_still_takes_b(void)
+{
+	setup();
+	fake_file_set(A_BIN, "old");
+	lv2dump_poll(&st, 0);
+	lv2dump_poll(&st, T_A);
+	lv2dump_poll(&st, T_B);
+
+	CHECK(fake_file_size(A_BIN) == 3);
+	CHECK(bin_ok(B_BIN));
+	CHECK(strstr(fake_tty, "ds45pad: LV2 dump skipped: " A_BIN
+	                       " exists, delete it to dump again\n") != NULL);
+	CHECK(strcmp(fake_last_toast, "LV2 dumps written: release the pad") == 0);
+	return 0;
+}
+
+/* The pad leaves during a countdown: no dump, and the countdown starts over
+ * when it is back. */
+static int test_pad_lost_restarts_countdown(void)
+{
+	setup();
+	lv2dump_poll(&st, 0);
+	pad_on = 0;
+	lv2dump_poll(&st, T_A);
+	CHECK(fake_lv2_peek_count == 0);
+	CHECK(strcmp(fake_last_toast, "LV2 dump: pad disconnected, waiting for it") == 0);
+
+	lv2dump_poll(&st, T_A + 1000);                       /* still gone: quiet */
+	CHECK(fake_toasts == 2);
+
+	pad_on = 1;
+	lv2dump_poll(&st, 20000);
+	CHECK(strcmp(fake_last_toast, "LV2 dump A in 5 s: leave the pad untouched") == 0);
+	lv2dump_poll(&st, 20000 + T_A - 1);
+	CHECK(fake_lv2_peek_count == 0);
+	lv2dump_poll(&st, 20000 + T_A);
+	CHECK(bin_ok(A_BIN));
 	return 0;
 }
 
 static int test_dump_reads_stay_in_window(void)
 {
 	setup();
-	lv2dump_run();
+	lv2dump_poll(&st, 0);
+	lv2dump_poll(&st, T_A);
+	lv2dump_poll(&st, T_B);
 
 	CHECK(fake_lv2_out_of_bounds == 0);
-	CHECK(fake_lv2_peek_count == WINDOW / 8);            /* each qword once */
+	CHECK(fake_lv2_peek_count == 2 * (WINDOW / 8));      /* each qword once per dump */
 	return 0;
 }
 
 /* A failed chunk must not leave a truncated .bin that the skip-if-exists
- * check would keep for ever, and must not announce success. */
+ * check would keep for ever, must not announce success, and stops the run:
+ * no dump B after a failed A. */
 static int test_dump_failure_deletes_partial(void)
 {
 	setup();
 	fake_append_fail_after = 5;
-	lv2dump_run();
+	lv2dump_poll(&st, 0);
+	lv2dump_poll(&st, T_A);
 
-	CHECK(fake_file_size(BIN_PATH) == -1);
-	CHECK(fake_file_deleted(BIN_PATH));
-	CHECK(fake_toasts == 0);
+	CHECK(fake_file_size(A_BIN) == -1);
+	CHECK(fake_file_deleted(A_BIN));
+	CHECK(fake_toasts == 1);                             /* only the countdown */
 	/* 1 write + 5 appends succeeded: the 7th chunk (offset 6 * 64 KiB) failed */
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dump started\n"
+	             "ds45pad: LV2 dump A in 5 s: leave the pad untouched\n"
+	             "ds45pad: LV2 dump started: " A_BIN "\n"
 	             "ds45pad: LV2 dump failed at offset 0x00060000, partial .bin deleted\n") == 0);
-
-	/* the next run is not blocked by the failed one */
+	/* the run is over: with writes working again, still no dump B */
 	fake_append_fail_after = -1;
-	lv2dump_run();
-	CHECK(fake_file_size(BIN_PATH) == WINDOW);
-	CHECK(fake_toasts == 1);
+	{
+		int peeks = fake_lv2_peek_count;
+
+		lv2dump_poll(&st, T_B);
+		lv2dump_poll(&st, T_B + 100000);
+		CHECK(fake_file_size(B_BIN) == -1);
+		CHECK(fake_lv2_peek_count == peeks);
+	}
+
+	/* the next run (next boot) is not blocked by the failed one */
+	memset(&st, 0, sizeof(st));
+	lv2dump_poll(&st, 0);
+	lv2dump_poll(&st, T_A);
+	CHECK(bin_ok(A_BIN));
 	return 0;
 }
 
@@ -172,10 +291,11 @@ static int test_dump_without_ps3mapi(void)
 
 	setup();
 	fake_syscall8 = NULL;
-	lv2dump_run();
+	lv2dump_poll(&st, 0);
+	lv2dump_poll(&st, T_A);
 
-	CHECK(fake_file_size(BIN_PATH) == WINDOW);
-	txt = fake_file_get(TXT_PATH);
+	CHECK(bin_ok(A_BIN));
+	txt = fake_file_get(A_TXT);
 	CHECK(txt != NULL);
 	CHECK(strstr(txt, "fw_type=unknown\n") != NULL);
 	CHECK(strstr(txt, "fw_version=unknown\n") != NULL);
@@ -186,15 +306,14 @@ static int test_dump_without_ps3mapi(void)
 static int test_dump_needs_text_file(void)
 {
 	setup();
-	fake_write_fail_path = TXT_PATH;
-	lv2dump_run();
+	fake_write_fail_path = A_TXT;
+	lv2dump_poll(&st, 0);
+	lv2dump_poll(&st, T_A);
 
-	CHECK(fake_file_size(BIN_PATH) == -1);
-	CHECK(fake_toasts == 0);
+	CHECK(fake_file_size(A_BIN) == -1);
 	CHECK(fake_lv2_peek_count == 0);
-	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dump started\n"
-	             "ds45pad: LV2 dump failed: cannot write " TXT_PATH "\n") == 0);
+	CHECK(strstr(fake_tty, "ds45pad: LV2 dump failed: cannot write " A_TXT "\n") != NULL);
+	CHECK(fake_toasts == 1);                             /* only the countdown */
 	return 0;
 }
 
@@ -235,8 +354,11 @@ int run_tests(void)
 	int r;
 
 	if ((r = test_log_fw_unchanged()) != 0) return r;
-	if ((r = test_dump_writes_both_files()) != 0) return r;
-	if ((r = test_dump_skips_when_exists()) != 0) return r;
+	if ((r = test_waits_for_pad()) != 0) return r;
+	if ((r = test_two_dumps_with_countdown()) != 0) return r;
+	if ((r = test_skips_when_both_exist()) != 0) return r;
+	if ((r = test_existing_a_still_takes_b()) != 0) return r;
+	if ((r = test_pad_lost_restarts_countdown()) != 0) return r;
 	if ((r = test_dump_reads_stay_in_window()) != 0) return r;
 	if ((r = test_dump_failure_deletes_partial()) != 0) return r;
 	if ((r = test_dump_without_ps3mapi()) != 0) return r;

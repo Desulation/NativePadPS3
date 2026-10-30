@@ -4,8 +4,13 @@
  * Supporting a new firmware means finding where its kernel keeps the
  * Bluetooth report slot, which needs a copy of that console's own kernel
  * window: the same 8 MiB range webMAN MOD's /dump.ps3?lv2 reads. This writes
- * it to the console's own HDD, once, through the bounds-checked reads in
- * lv2.c. The dumps are the developer's own and are never committed.
+ * it to the console's own HDD through the bounds-checked reads in lv2.c. The
+ * dumps are the developer's own and are never committed.
+ *
+ * Two dumps, taken while a Bluetooth pad is connected: A with the pad
+ * untouched, B with Cross held and the left stick pushed fully left. The
+ * live report is then the buffer whose bytes differ between them in exactly
+ * that way. A dump taken before any pad connects holds no report at all.
  *
  * Debug VSH builds only (DUMP_LV2 = 1 in ds45pad.txt); the file is not part
  * of release or game builds, which contain none of its code or strings.
@@ -23,10 +28,18 @@
 #include "lv2.h"
 #include "kernel.h"
 
-#define DUMP_BIN   "/dev_hdd0/tmp/ds45pad_lv2.bin"
-#define DUMP_TXT   "/dev_hdd0/tmp/ds45pad_lv2.txt"
+#define DUMP_A_BIN "/dev_hdd0/tmp/ds45pad_lv2.bin"
+#define DUMP_A_TXT "/dev_hdd0/tmp/ds45pad_lv2.txt"
+#define DUMP_B_BIN "/dev_hdd0/tmp/ds45pad_lv2_b.bin"
+#define DUMP_B_TXT "/dev_hdd0/tmp/ds45pad_lv2_b.txt"
 #define DUMP_SIZE  ((int)(DS45_LV2_BOUND - DS45_LV2_BASE))
 #define CHUNK      65536
+
+/* Time to read the toast before each dump. */
+#define DELAY_A_MS 5000
+#define DELAY_B_MS 10000
+
+enum { PH_WAIT_PAD = 0, PH_COUNT_A, PH_COUNT_B, PH_DONE };
 
 /* The 8 MiB window is written in 64 KiB pieces: never 8 MiB in RAM at once. */
 typedef char chunk_divides_window[(DUMP_SIZE % CHUNK == 0) ? 1 : -1];
@@ -71,7 +84,7 @@ static int put_dec(char *buf, int cap, int n, uint32_t v)
 }
 
 /* One line to the PPU TTY (ProDG Target Manager / debug console): every
- * outcome, since the toast is easy to miss and a skipped dump shows none. */
+ * outcome, since a toast is easy to miss and a skipped dump shows none. */
 static void tty(const char *msg)
 {
 	char line[160];
@@ -84,7 +97,14 @@ static void tty(const char *msg)
 	sys_tty_write(SYS_TTYP_PPU_STDOUT, line, (unsigned int)n, &written);
 }
 
-static int write_description(void)
+/* Instructions for the person holding the pad: toast and TTY. */
+static void say(const char *msg)
+{
+	ds45_notify(msg);
+	tty(msg);
+}
+
+static int write_description(const char *txt, const char *pad)
 {
 	char text[256];
 	char type[24];
@@ -106,59 +126,120 @@ static int write_description(void)
 		n = put_str(text, sizeof(text), n, "unknown");
 	n = put_str(text, sizeof(text), n, "\nkmatch=");
 	n = put_dec(text, sizeof(text), n, (uint32_t)kernel_active_source());
+	n = put_str(text, sizeof(text), n, "\npad=");
+	n = put_str(text, sizeof(text), n, pad);
 	n = put_str(text, sizeof(text), n, "\n");
 
-	return ds45_write_file(DUMP_TXT, text, n);
+	return ds45_write_file(txt, text, n);
 }
 
-void lv2dump_run(void)
+/* One dump: 0 written or already there, -1 failed (nothing half-written
+ * left behind). An existing .bin is kept: delete it to take another. */
+static int dump_one(const char *bin, const char *txt, const char *pad)
 {
-	int off;
+	char msg[120];
+	int off, n;
 
-	/* One dump per console state: delete the files to take another. */
-	if (ds45_file_exists(DUMP_BIN)) {
-		tty("LV2 dump skipped: " DUMP_BIN " exists, delete it to dump again");
-		return;
+	if (ds45_file_exists(bin)) {
+		n = put_str(msg, sizeof(msg), 0, "LV2 dump skipped: ");
+		n = put_str(msg, sizeof(msg), n, bin);
+		put_str(msg, sizeof(msg), n, " exists, delete it to dump again");
+		tty(msg);
+		return 0;
 	}
-	tty("LV2 dump started");
+	n = put_str(msg, sizeof(msg), 0, "LV2 dump started: ");
+	put_str(msg, sizeof(msg), n, bin);
+	tty(msg);
+	ds45_boot_mark("lv2dump");
 
 	/* Description first, so a .bin never exists without it. */
-	if (write_description() != 0) {
-		tty("LV2 dump failed: cannot write " DUMP_TXT);
-		return;
+	if (write_description(txt, pad) != 0) {
+		n = put_str(msg, sizeof(msg), 0, "LV2 dump failed: cannot write ");
+		put_str(msg, sizeof(msg), n, txt);
+		tty(msg);
+		return -1;
 	}
 
 	for (off = 0; off < DUMP_SIZE; off += CHUNK) {
 		int rc = ds45_lv2_read_bytes(DS45_LV2_BASE + (uint64_t)off, chunk, CHUNK);
 
 		if (rc == 0)
-			rc = off == 0 ? ds45_write_file(DUMP_BIN, chunk, CHUNK)
-			              : ds45_append_file(DUMP_BIN, chunk, CHUNK);
+			rc = off == 0 ? ds45_write_file(bin, chunk, CHUNK)
+			              : ds45_append_file(bin, chunk, CHUNK);
 		if (rc != 0) {
-			char msg[80];
-			int n = 0;
-
 			/* A truncated .bin would block every later run (the
 			 * exists-check above) and mislead the scanner. */
-			ds45_delete_file(DUMP_BIN);
-			n = put_str(msg, sizeof(msg), n, "LV2 dump failed at offset ");
+			ds45_delete_file(bin);
+			n = put_str(msg, sizeof(msg), 0, "LV2 dump failed at offset ");
 			n = put_hex(msg, sizeof(msg), n, (uint64_t)off, 8);
 			put_str(msg, sizeof(msg), n, ", partial .bin deleted");
 			tty(msg);
-			return;
+			return -1;
 		}
 	}
 
-	ds45_notify("LV2 dump written");
-	{
-		char msg[120];
-		int n = 0;
+	ds45_boot_mark("lv2dump_done");
+	n = put_str(msg, sizeof(msg), 0, "LV2 dump written: ");
+	n = put_str(msg, sizeof(msg), n, bin);
+	n = put_str(msg, sizeof(msg), n, " (");
+	n = put_dec(msg, sizeof(msg), n, (uint32_t)DUMP_SIZE);
+	n = put_str(msg, sizeof(msg), n, " bytes) and ");
+	put_str(msg, sizeof(msg), n, txt);
+	tty(msg);
+	return 0;
+}
 
-		n = put_str(msg, sizeof(msg), n, "LV2 dump written: " DUMP_BIN " (");
-		n = put_dec(msg, sizeof(msg), n, (uint32_t)DUMP_SIZE);
-		put_str(msg, sizeof(msg), n, " bytes) and " DUMP_TXT);
-		tty(msg);
+void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
+{
+	if (st->phase == PH_DONE)
+		return;
+
+	if (st->phase == PH_WAIT_PAD) {
+		if (ds45_file_exists(DUMP_A_BIN) && ds45_file_exists(DUMP_B_BIN)) {
+			tty("LV2 dumps skipped: " DUMP_A_BIN " and " DUMP_B_BIN
+			    " exist, delete both to dump again");
+			st->phase = PH_DONE;
+			return;
+		}
+		if (!passthru_bt_pad_present()) {
+			if (!st->said_wait) {
+				st->said_wait = 1;
+				say("LV2 dump: connect the Bluetooth pad");
+			}
+			return;
+		}
+		say("LV2 dump A in 5 s: leave the pad untouched");
+		st->due_ms = now_ms + DELAY_A_MS;
+		st->phase = PH_COUNT_A;
+		return;
 	}
+
+	if ((int32_t)(now_ms - st->due_ms) < 0)
+		return;
+
+	/* The pad went away during the countdown: start over when it is back. */
+	if (!passthru_bt_pad_present()) {
+		say("LV2 dump: pad disconnected, waiting for it");
+		st->said_wait = 1;
+		st->phase = PH_WAIT_PAD;
+		return;
+	}
+
+	if (st->phase == PH_COUNT_A) {
+		if (dump_one(DUMP_A_BIN, DUMP_A_TXT, "untouched") != 0) {
+			st->phase = PH_DONE;
+			return;
+		}
+		say("LV2 dump B in 10 s: hold Cross, left stick fully left");
+		st->due_ms = now_ms + DELAY_B_MS;
+		st->phase = PH_COUNT_B;
+		return;
+	}
+
+	/* PH_COUNT_B */
+	st->phase = PH_DONE;
+	if (dump_one(DUMP_B_BIN, DUMP_B_TXT, "cross_held_left_stick_left") == 0)
+		say("LV2 dumps written: release the pad");
 }
 
 #endif /* DS45_LV2DUMP */

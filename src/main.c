@@ -352,6 +352,9 @@ static void ds45_thread(uint64_t arg)
 	int bt_toast_shown = 0;
 	int last_btcheck = -1;
 	int usb_ok;
+#ifdef DS45_LV2DUMP
+	lv2dump_t lv2dump = { 0, 0, 0 };
+#endif
 #endif
 
 	(void)arg;
@@ -487,16 +490,15 @@ static void ds45_thread(uint64_t arg)
 				}
 				ds45_boot_mark("notify_ok");
 			}
-#ifdef DS45_LV2DUMP
-			/* Debug builds, DUMP_LV2 = 1: once, after the XMB is up. Reading
-			 * 8 MiB through syscall 6 holds this thread for a few seconds. */
-			if (g_cfg.dump_lv2) {
-				ds45_boot_mark("lv2dump");
-				lv2dump_run();
-				ds45_boot_mark("lv2dump_done");
-			}
-#endif
 		}
+
+#ifdef DS45_LV2DUMP
+		/* Debug builds, DUMP_LV2 = 1: after the XMB is up, two dumps once a
+		 * Bluetooth pad is connected. Each holds this thread for a few
+		 * seconds while 8 MiB are read through syscall 6. */
+		if (announced && g_cfg.dump_lv2)
+			lv2dump_poll(&lv2dump, uptime);
+#endif
 
 		/* Fast enough to catch a button press, slow enough not to drown the
 		 * log or the console in file writes. */
