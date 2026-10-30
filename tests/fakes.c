@@ -24,6 +24,7 @@ uint64_t fake_now_us;
 
 static uint8_t *lv2_pages[LV2_PAGES];
 int fake_lv2_out_of_bounds;
+int fake_lv2_peek_count;
 
 void fake_lv2_reset(void)
 {
@@ -33,6 +34,7 @@ void fake_lv2_reset(void)
 		lv2_pages[i] = NULL;
 	}
 	fake_lv2_out_of_bounds = 0;
+	fake_lv2_peek_count = 0;
 }
 
 void fake_lv2_set(uint64_t addr, const uint8_t *bytes, int len)
@@ -61,6 +63,7 @@ static uint64_t lv2_peek(uint64_t addr)
 	uint64_t off, v = 0;
 	int i;
 
+	fake_lv2_peek_count++;
 	if ((addr & 7) || addr < DS45_LV2_BASE || addr > DS45_LV2_BOUND - 8) {
 		fake_lv2_out_of_bounds++;
 		return 0;

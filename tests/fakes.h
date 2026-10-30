@@ -21,6 +21,8 @@ void fake_lv2_set(uint64_t addr, const uint8_t *bytes, int len);
 void fake_lv2_reset(void);
 /* Count of syscall-6 reads that were misaligned or outside the window. */
 extern int fake_lv2_out_of_bounds;
+/* Count of all syscall-6 reads, in or out of bounds. */
+extern int fake_lv2_peek_count;
 
 /* Syscall dispatcher behind system_call_N. 6 = peek, anything else = -1. */
 uint64_t fake_syscall(int n, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);

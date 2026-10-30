@@ -164,3 +164,192 @@ void kernel_cache_delete(void)
 {
 	ds45_delete_file(DS45_KERNEL_CACHE_FILE);
 }
+
+/* ------------------------------------------------------------------------ */
+/* signature scan                                                            */
+/* ------------------------------------------------------------------------ */
+
+/* The real pattern comes from a later task; until then the scan never runs. */
+const ds45_scan_pattern_t ds45_scan_pattern = { NULL, 0, 0, 0 };
+
+#define RING_MASK (DS45_SCAN_MAX_INSNS - 1)
+typedef char ds45_scan_ring_is_pow2[(DS45_SCAN_MAX_INSNS & RING_MASK) == 0 ? 1 : -1];
+
+typedef struct {
+	uint64_t insns_addr;   /* address of insns[0] */
+	uint64_t start;        /* function start (its stdu); 0 = none */
+	uint64_t toc;          /* from the descriptor; 0 = none */
+	int32_t  disp;
+	uint32_t report_off;
+} scan_hit_t;
+
+static int insn_is(const ds45_insn_match_t *m, uint32_t w)
+{
+	return (w & m->mask) == m->value;
+}
+
+/* Sign-extends the low 16 bits without relying on implementation-defined
+ * narrowing conversions. */
+static int32_t simm16(uint32_t w)
+{
+	int32_t v = (int32_t)(w & 0xFFFF);
+	return (v & 0x8000) ? v - 0x10000 : v;
+}
+
+static int pattern_valid(const ds45_scan_pattern_t *pat)
+{
+	return pat && pat->insns && pat->count > 0 &&
+	       pat->count <= DS45_SCAN_MAX_INSNS &&
+	       pat->toc_ld_index >= 0 && pat->toc_ld_index < pat->count &&
+	       pat->report_off_index >= 0 && pat->report_off_index < pat->count;
+}
+
+/* Nearest stdu r1 at or before insn_addr, at most DS45_SCAN_PROLOGUE_RANGE
+ * bytes back and never below the window. 0 if there is none. */
+static uint64_t find_prologue(uint64_t insn_addr)
+{
+	static const ds45_insn_match_t stdu = DS45_INSN_STDU_R1;
+	uint64_t lo, a, q = 0, q_addr = 0;
+
+	lo = (insn_addr - DS45_LV2_BASE >= DS45_SCAN_PROLOGUE_RANGE)
+	     ? insn_addr - DS45_SCAN_PROLOGUE_RANGE : DS45_LV2_BASE;
+	for (a = insn_addr; ; a -= 4) {
+		uint32_t w;
+
+		if (q_addr != (a & ~7ULL)) {       /* q_addr 0 = nothing read yet */
+			q_addr = a & ~7ULL;
+			if (ds45_lv2_read(q_addr, &q) != 0)
+				return 0;
+		}
+		w = (a & 4) ? (uint32_t)q : (uint32_t)(q >> 32);
+		if (insn_is(&stdu, w))
+			return a;
+		if (a <= lo)
+			return 0;
+	}
+}
+
+/* One walk over the window: every hit with a start but no TOC gets the second
+ * qword of the first aligned pair { start, toc } with toc inside the window. */
+static int resolve_tocs(scan_hit_t *hits, int n)
+{
+	uint64_t a, q, prev = 0;
+	int i, pending = 0;
+
+	for (i = 0; i < n; i++)
+		if (hits[i].start)
+			pending++;
+	for (a = DS45_LV2_BASE; a < DS45_LV2_BOUND && pending; a += 8) {
+		if (ds45_lv2_read(a, &q) != 0)
+			return -1;
+		/* start 0 (no prologue) never pairs, so neither a zero qword nor
+		 * the initial prev can match */
+		if (q >= DS45_LV2_BASE && q < DS45_LV2_BOUND)
+			for (i = 0; i < n; i++)
+				if (hits[i].start && hits[i].start == prev && !hits[i].toc) {
+					hits[i].toc = q;
+					pending--;
+				}
+		prev = q;
+	}
+	return 0;
+}
+
+int kernel_scan(const ds45_scan_pattern_t *pat, ds45_kernel_t *out)
+{
+	scan_hit_t hits[DS45_SCAN_MAX_HITS];
+	uint32_t ring[DS45_SCAN_MAX_INSNS];
+	uint32_t nwords = 0;
+	uint64_t a, q;
+	uint64_t r_fp = 0, r_hash = 0, r_slot = 0;
+	uint32_t r_off = 0;
+	int nhits = 0, found = 0, i, half;
+
+	if (!pattern_valid(pat) || !out)
+		return -1;
+
+	/* Pass 1: one walk, every qword read once. The last count words are kept
+	 * in a ring, so a pattern straddling qwords is matched without
+	 * re-reading. */
+	for (a = DS45_LV2_BASE; a < DS45_LV2_BOUND; a += 8) {
+		if (ds45_lv2_read(a, &q) != 0)
+			return -1;
+		for (half = 0; half < 2; half++) {
+			uint32_t first;
+			int32_t off;
+
+			ring[nwords & RING_MASK] = half ? (uint32_t)q : (uint32_t)(q >> 32);
+			nwords++;
+			if (nwords < (uint32_t)pat->count)
+				continue;
+			first = nwords - (uint32_t)pat->count;
+			for (i = 0; i < pat->count; i++)
+				if (!insn_is(&pat->insns[i], ring[(first + (uint32_t)i) & RING_MASK]))
+					break;
+			if (i < pat->count)
+				continue;
+
+			off = simm16(ring[(first + (uint32_t)pat->report_off_index) & RING_MASK]);
+			if (off < 0)
+				continue;                  /* dropped, not counted */
+			if (nhits == DS45_SCAN_MAX_HITS)
+				return -1;                 /* too many: ambiguous */
+			hits[nhits].insns_addr = a + 4 * (uint64_t)half -
+			                         4 * (uint64_t)(pat->count - 1);
+			hits[nhits].start = 0;
+			hits[nhits].toc = 0;
+			hits[nhits].disp =
+			    simm16(ring[(first + (uint32_t)pat->toc_ld_index) & RING_MASK] & 0xFFFC);
+			hits[nhits].report_off = (uint32_t)off;
+			nhits++;
+		}
+	}
+	if (nhits == 0)
+		return -1;
+
+	/* Post-hit lookups may re-read: the prologue search per hit, then a
+	 * second window walk for the descriptors. */
+	for (i = 0; i < nhits; i++)
+		hits[i].start = find_prologue(hits[i].insns_addr);
+	if (resolve_tocs(hits, nhits) != 0)
+		return -1;
+
+	for (i = 0; i < nhits; i++) {
+		uint64_t slot, fp;
+
+		if (!hits[i].toc)
+			continue;
+		slot = hits[i].toc + (uint64_t)(int64_t)hits[i].disp;
+		if ((slot & 7) || slot < DS45_LV2_BASE || slot > DS45_LV2_BOUND - 8)
+			continue;
+		fp = (hits[i].insns_addr + 4 * (uint64_t)pat->toc_ld_index) & ~7ULL;
+		if (fp > DS45_LV2_BOUND - DS45_FP_LEN)
+			continue;   /* fp >= BASE already: insns_addr is in the window */
+
+		if (found) {
+			if (slot != r_slot || hits[i].report_off != r_off)
+				return -1;                 /* two distinct results */
+			continue;
+		}
+		{
+			uint8_t buf[DS45_FP_LEN];
+
+			if (ds45_lv2_read_bytes(fp, buf, DS45_FP_LEN) != 0)
+				continue;
+			r_hash = ds45_fnv1a64(buf, DS45_FP_LEN);
+		}
+		r_fp = fp;
+		r_slot = slot;
+		r_off = hits[i].report_off;
+		found = 1;
+	}
+	if (!found)
+		return -1;
+
+	out->name       = "scan";
+	out->fp_addr    = r_fp;
+	out->fp_hash    = r_hash;
+	out->slot_addr  = r_slot;
+	out->report_off = r_off;
+	return 0;
+}

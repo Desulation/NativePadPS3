@@ -50,4 +50,39 @@ void kernel_cache_delete(void);
 extern const ds45_kernel_t ds45_kernel_table[];
 extern const int           ds45_kernel_table_count;
 
+/* ------------------------------------------------------------------------ */
+/* Load-time signature scan (read-only, bounded to the LV2 window)           */
+/* ------------------------------------------------------------------------ */
+
+typedef struct { uint32_t mask, value; } ds45_insn_match_t;
+typedef struct {
+	const ds45_insn_match_t *insns;   /* consecutive instruction words */
+	int count;
+	int toc_ld_index;      /* insn `ld rT, DS(r2)`: displacement = (int16_t)(word & 0xFFFC) */
+	int report_off_index;  /* insn whose (int16_t)(word & 0xFFFF) is the report offset */
+} ds45_scan_pattern_t;
+#define DS45_INSN_LD_FROM_R2 { 0xFC1F0003u, 0xE8020000u }  /* ld any, ds(r2) */
+#define DS45_INSN_STDU_R1    { 0xFFFF0003u, 0xF8210001u }  /* stdu r1, ds(r1) */
+
+#define DS45_SCAN_MAX_INSNS      16     /* longer patterns are rejected */
+#define DS45_SCAN_MAX_HITS       8      /* more pattern hits = ambiguous */
+#define DS45_SCAN_PROLOGUE_RANGE 0x800  /* bytes searched back for the stdu */
+
+/* Walks [DS45_LV2_BASE, DS45_LV2_BOUND) once for the pattern, then once more
+ * for the function descriptors of the hits. For each hit: function start =
+ * the nearest stdu r1 at or before insns[0], at most
+ * DS45_SCAN_PROLOGUE_RANGE bytes back; TOC = second qword of the first
+ * 8-aligned pair { start, toc } with toc inside the window. Result:
+ *   fp_addr    = address of insns[toc_ld_index], rounded down to 8
+ *   fp_hash    = FNV-1a 64 of the DS45_FP_LEN bytes at fp_addr
+ *   slot_addr  = TOC + displacement
+ *   report_off = immediate of insns[report_off_index]
+ * A hit is dropped if it has no prologue or descriptor, a negative report
+ * offset, an unaligned or out-of-window slot, or a fingerprint leaving the
+ * window. Returns 0 (out->name = "scan") only if the remaining hits agree on
+ * exactly one (slot_addr, report_off); otherwise -1 and *out untouched.
+ * An invalid pattern (count 0 included) returns -1 without any read. */
+int kernel_scan(const ds45_scan_pattern_t *pat, ds45_kernel_t *out);
+extern const ds45_scan_pattern_t ds45_scan_pattern;   /* count == 0 until Task 11 */
+
 #endif /* DS45_KERNEL_H */
