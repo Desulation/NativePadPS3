@@ -10,6 +10,9 @@
 #include <cell/pad.h>   /* CellPadData, needed by ds45pad.h */
 
 #include "ds45pad.h"
+#ifdef DS45_LV2DUMP
+#include "lv2.h"        /* the window CAPTURE_LV2 must fall inside */
+#endif
 
 ds45_config_t g_cfg;
 
@@ -71,6 +74,8 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->notify = 0;   /* the boot trace is the safe way to confirm loading */
 #ifdef DS45_LV2DUMP
 	c->dump_lv2 = 0;
+	c->capture_off = 0;
+	c->capture_len = 0;
 #endif
 }
 
@@ -233,6 +238,15 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 #ifdef DS45_LV2DUMP
 	} else if (match(key, "DUMP_LV2")) {
 		if (parse_int(val, &n)) c->dump_lv2 = n;
+	} else if (match(key, "CAPTURE_LV2")) {
+		/* An offset into the 8 MiB window, on a doubleword boundary. */
+		if (parse_int(val, &n) && n >= 0 && (n & 7) == 0 &&
+		    (uint64_t)n < DS45_LV2_BOUND - DS45_LV2_BASE)
+			c->capture_off = (uint32_t)n;
+	} else if (match(key, "CAPTURE_LEN")) {
+		if (parse_int(val, &n) && n >= 0 && (n & 7) == 0 &&
+		    n <= DS45_CAPTURE_MAX_LEN)
+			c->capture_len = (uint32_t)n;
 #endif
 	}
 }

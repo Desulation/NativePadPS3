@@ -65,7 +65,7 @@ if [ "$DEBUG" = "1" ]; then
 	EXTRA="$EXTRA -DDS45_DEBUG"
 	OUT="${OUT%.sprx}_debug.sprx"
 	if [ "$VARIANT" = "vsh" ]; then
-		SRCS="$SRCS lv2dump.c"
+		SRCS="$SRCS lv2dump.c lv2capture.c"
 	fi
 fi
 

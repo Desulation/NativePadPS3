@@ -354,6 +354,7 @@ static void ds45_thread(uint64_t arg)
 	int usb_ok;
 #ifdef DS45_LV2DUMP
 	lv2dump_t lv2dump = { 0, 0, 0, 0, 0, 0 };
+	static lv2capture_t lv2capture;   /* zeroed; off the 16 KiB stack */
 #endif
 #endif
 
@@ -498,6 +499,10 @@ static void ds45_thread(uint64_t arg)
 		 * seconds while 8 MiB are read through syscall 6. */
 		if (announced && g_cfg.dump_lv2)
 			lv2dump_poll(&lv2dump, uptime);
+
+		/* CAPTURE_LV2 / CAPTURE_LEN: every tick from the first, so a pad
+		 * connecting during boot is caught too. */
+		lv2capture_poll(&lv2capture, uptime);
 #endif
 
 		/* Fast enough to catch a button press, slow enough not to drown the

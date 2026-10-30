@@ -385,6 +385,8 @@ typedef struct {
 	int      notify;           /* show XMB notifications                  */
 #ifdef DS45_LV2DUMP
 	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
+	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */
+	uint32_t capture_len;      /* CAPTURE_LEN: bytes, multiple of 8, 0 = off   */
 #endif
 } ds45_config_t;
 
@@ -556,6 +558,19 @@ int   passthru_bt_pad_present(void);
 /* passthru.c: the bound pad's d1/d2 (DS45_CTRL_*) from this tick's raw
  * report; 0 when there is none (no record, not bound, not connected). */
 int   passthru_source_buttons(uint16_t *d1, uint16_t *d2);
+
+/* lv2capture.c: watch CAPTURE_LEN bytes at LV2 offset CAPTURE_LV2 every
+ * tick and write each change to the boot trace, bounded in total. Zero-
+ * initialise the state, then poll every tick. */
+#define DS45_CAPTURE_MAX_LEN  128
+#define DS45_CAPTURE_MAX_LOGS 400
+typedef struct {
+	int      have;             /* snap holds the last logged bytes */
+	int      stopped;          /* read refused or log limit reached */
+	uint32_t logs;             /* changes written so far */
+	uint8_t  snap[DS45_CAPTURE_MAX_LEN];
+} lv2capture_t;
+void  lv2capture_poll(lv2capture_t *st, uint32_t now_ms);
 #endif
 
 /* Debug-build-only boot trace. Compiles to nothing (and the tag strings are

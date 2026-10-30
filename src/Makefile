@@ -48,7 +48,7 @@ PPU_PRX_STRIPFLAGS += --strip-debug --strip-section-header
 ifeq ($(DEBUG),1)
 PPU_PRX_FLAGS += -DDS45_DEBUG
 DEBUG_SUFFIX = _debug
-SRCS_VSH_DEBUG = lv2dump.c
+SRCS_VSH_DEBUG = lv2dump.c lv2capture.c
 else
 DEBUG_SUFFIX =
 SRCS_VSH_DEBUG =
