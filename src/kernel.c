@@ -15,6 +15,13 @@
  * test-only define). The legacy entry has no fingerprint and is always
  * present: 0x34FBB0 - 0x3680. */
 const ds45_kernel_t ds45_kernel_table[] = {
+#ifndef DS45_NO_TABLE
+	/* DEX 4.92 (Evilnat): TOC 0x3759C0 - 0x35E0 holds the Bluetooth HID
+	 * object (0x4325E0); its live report is at +0xE8. Found by diffing two
+	 * dumps of the window taken with a DualSense connected, untouched and
+	 * with Cross held. Fingerprint: the first `ld r3,-0x35E0(r2)`. */
+	{ "DEX 4.92", 0x80000000000F3380ULL, 0xDF192C9D78181BF7ULL, 0x80000000003723E0ULL, 0xE8 },
+#endif
 	{ "CEX 4.93 (legacy)", 0, 0, 0x800000000034C530ULL, 0xE8 },
 };
 const int ds45_kernel_table_count =

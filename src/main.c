@@ -537,6 +537,9 @@ static void ds45_thread(uint64_t arg)
 
 				DS45_TRACE_HEX("btcheck_vsh_samples",
 				               passthru_btcheck_vsh_samples());
+#ifdef DS45_DEBUG
+				passthru_trace_vsh_reads();
+#endif
 				if (st != last_btcheck) {
 					last_btcheck = st;
 					DS45_TRACE_HEX("btcheck", st);

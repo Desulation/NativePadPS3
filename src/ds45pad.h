@@ -505,6 +505,9 @@ void passthru_observe_vsh(uint32_t port_no, const CellPadData *data);
 int  passthru_btcheck_state(void);
 int  passthru_btcheck_vsh_samples(void);
 int  passthru_raw_samples(void);
+#ifdef DS45_DEBUG
+void passthru_trace_vsh_reads(void);   /* boot trace: what VSH's pad reads look like */
+#endif
 void ds45_process_bt_input(uint32_t port_no, CellPadData *data);
 void ds45_trigger_bt_ps(int pressed);
 

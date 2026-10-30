@@ -84,14 +84,68 @@ void passthru_shutdown(void)
 	}
 }
 
+#ifdef DS45_DEBUG
+/* What VSH's own pad reads look like, for the boot trace. Written from VSH's
+ * threads without a lock: plain counters, approximate by design. */
+static volatile uint32_t s_dbg_calls;       /* every hooked read */
+static volatile uint32_t s_dbg_ports;       /* bit n: port n was read */
+static volatile uint32_t s_dbg_src_calls;   /* reads of the source port */
+static volatile uint32_t s_dbg_src_changes; /* ... whose data differed */
+static volatile uint32_t s_dbg_src_len;     /* last len on the source port */
+static volatile uint32_t s_dbg_src_word;    /* last d1<<24|d2<<16|lx<<8|ly */
+static volatile uint32_t s_dbg_busy;        /* trylock failures */
+
+static void dbg_observe(uint32_t port_no, const CellPadData *data)
+{
+	uint32_t w = 0;
+
+	s_dbg_calls++;
+	if (port_no < 32)
+		s_dbg_ports |= 1u << port_no;
+	if ((int)port_no != s_src_port)
+		return;
+	s_dbg_src_calls++;
+	s_dbg_src_len = (uint32_t)data->len;
+	if (data->len > DS45_BTN_DIGITAL2)
+		w |= (uint32_t)(data->button[DS45_BTN_DIGITAL1] & 0xFF) << 24 |
+		     (uint32_t)(data->button[DS45_BTN_DIGITAL2] & 0xFF) << 16;
+	if (data->len > DS45_BTN_ANALOG_LEFT_Y)
+		w |= (uint32_t)(data->button[DS45_BTN_ANALOG_LEFT_X] & 0xFF) << 8 |
+		     (uint32_t)(data->button[DS45_BTN_ANALOG_LEFT_Y] & 0xFF);
+	if (w != s_dbg_src_word)
+		s_dbg_src_changes++;
+	s_dbg_src_word = w;
+}
+
+void passthru_trace_vsh_reads(void)
+{
+	DS45_TRACE_HEX("vsh_reads", s_dbg_calls);
+	DS45_TRACE_HEX("vsh_ports", s_dbg_ports);
+	DS45_TRACE_HEX("vsh_src_reads", s_dbg_src_calls);
+	DS45_TRACE_HEX("vsh_src_changes", s_dbg_src_changes);
+	DS45_TRACE_HEX("vsh_src_len", s_dbg_src_len);
+	DS45_TRACE_HEX("vsh_src_d1d2lxly", s_dbg_src_word);
+	DS45_TRACE_HEX("vsh_lock_busy", s_dbg_busy);
+	DS45_TRACE_HEX("raw_samples", s_raw_samples);
+}
+#endif
+
 void passthru_observe_vsh(uint32_t port_no, const CellPadData *data)
 {
+#ifdef DS45_DEBUG
+	if (data)
+		dbg_observe(port_no, data);
+#endif
 	/* VSH reads every port at frame rate; only the watched one is worth a
 	 * lock (btcheck ignores the others anyway). */
 	if (!bc_ready || !data || (int)port_no != s_src_port)
 		return;
-	if (sys_mutex_trylock(bc_mutex) != 0)   /* CELL_OK */
+	if (sys_mutex_trylock(bc_mutex) != 0) { /* CELL_OK */
+#ifdef DS45_DEBUG
+		s_dbg_busy++;
+#endif
 		return;                         /* plugin thread busy: drop it */
+	}
 	btcheck_observe_vsh(port_no, data);
 	sys_mutex_unlock(bc_mutex);
 }

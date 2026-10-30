@@ -347,12 +347,22 @@ static int test_log_fw(void)
 	}
 	CHECK(saw13 && saw14);
 
-	/* no PS3MAPI (syscall 8 errors): logging only, resolution unaffected */
+	/* no PS3MAPI (syscall 8 errors): logging only, resolution unaffected.
+	 * The only reads are the fingerprint checks (32 bytes = 4 peeks each)
+	 * of the real table, none of which matches the empty fake image. */
 	fake_reset_all();
 	kernel_log_fw();
 	CHECK(fake_sc8_calls == 2);
 	CHECK(kernel_resolve(NULL) == DS45_KMATCH_LEGACY);
-	CHECK(fake_lv2_peek_count == 0);
+	{
+		int fps = 0;
+
+		for (i = 0; i < ds45_kernel_table_count; i++)
+			if (ds45_kernel_table[i].fp_addr != 0)
+				fps++;
+		CHECK(fake_lv2_peek_count == fps * (DS45_FP_LEN / 8));
+	}
+	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }
 
