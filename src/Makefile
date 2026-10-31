@@ -62,7 +62,8 @@ endif
 # VSH-only anyway, must be absent from the in-game build rather than merely
 # unused by it.
 SRCS_VSH  = libc.c util.c hook.c config.c ds4.c dualsense.c ds_body.c sixaxis.c \
-            sticks.c padldd.c usb.c passthru.c lv2.c kernel.c btcheck.c diag.c \
+            sticks.c padldd.c usb.c passthru.c lv2.c kernel.c btcheck.c \
+            kpatch.c kshim.c kshim_table.c diag.c \
             main.c $(SRCS_VSH_DEBUG)
 SRCS_GAME = libc.c util.c hook.c config.c sticks.c gamehook.c \
             diag.c main.c

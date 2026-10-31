@@ -100,7 +100,7 @@ if ($Variant -eq 'game') {
 } else {
     # sixaxis + ds_body are VSH-only: the DualSense body decode and sixaxis
     # scaling feed dualsense/padldd, neither of which the game variant links.
-    $sources += @('ds4','dualsense','ds_body','sixaxis','padldd','usb','passthru','lv2','kernel','btcheck')
+    $sources += @('ds4','dualsense','ds_body','sixaxis','padldd','usb','passthru','lv2','kernel','btcheck','kpatch','kshim','kshim_table')
     if ($Debug) { $sources += 'lv2dump', 'lv2capture' }   # debug VSH only; never release or game
     $libs = @('-lusbd_stub') + $libs; $auth = '1070000052000001'
     Build-ShimBlob (Split-Path $PSScriptRoot)   # regenerate src/shim_blob.h before the plugin compiles

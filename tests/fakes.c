@@ -118,6 +118,9 @@ int      fake_sc8_calls;
 uint64_t fake_sc8_a1[FAKE_SC8_LOG];
 uint64_t fake_sc8_a2[FAKE_SC8_LOG];
 
+int      fake_spare_syscall = -1;
+uint64_t (*fake_spare_handler)(uint64_t a1, uint64_t a2);
+
 uint64_t fake_syscall(int n, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4)
 {
 	switch (n) {
@@ -134,6 +137,10 @@ uint64_t fake_syscall(int n, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4)
 		fake_sc8_calls++;
 		return fake_syscall8 ? fake_syscall8(a1, a2, a3, a4) : (uint64_t)-1;
 	default:
+		/* The kshim installer borrows a spare syscall slot; route its number
+		 * to the test's allocator/flush stand-in. */
+		if (n == fake_spare_syscall && fake_spare_handler)
+			return fake_spare_handler(a1, a2);
 		return (uint64_t)-1;
 	}
 }
@@ -500,6 +507,8 @@ void fake_reset_all(void)
 	fake_sc8_calls = 0;
 	memset(fake_sc8_a1, 0, sizeof(fake_sc8_a1));
 	memset(fake_sc8_a2, 0, sizeof(fake_sc8_a2));
+	fake_spare_syscall = -1;
+	fake_spare_handler = NULL;
 	fake_mutex_busy = 0;
 	fake_mutex_depth = 0;
 	fake_mutex_errors = 0;

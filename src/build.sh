@@ -55,7 +55,8 @@ else
 	OUT="ds45pad_vsh.sprx"
 	AUTH="$AUTH_VSH"
 	SRCS="libc.c util.c hook.c config.c ds4.c dualsense.c ds_body.c sixaxis.c \
-	      sticks.c padldd.c usb.c passthru.c lv2.c kernel.c btcheck.c diag.c main.c"
+	      sticks.c padldd.c usb.c passthru.c lv2.c kernel.c btcheck.c \
+	      kpatch.c kshim.c kshim_table.c diag.c main.c"
 	LDLIBS="-lusbd_stub -lio_stub -lfs_stub -llv2_stub"
 fi
 

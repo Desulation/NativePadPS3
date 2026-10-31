@@ -53,6 +53,18 @@ extern int      fake_sc8_calls;
 extern uint64_t fake_sc8_a1[FAKE_SC8_LOG];
 extern uint64_t fake_sc8_a2[FAKE_SC8_LOG];
 
+/* Spare-syscall routing. The kshim installer borrows an otherwise-unused
+ * syscall slot: it points the slot at an OPD, calls the syscall, then restores
+ * the slot. The real kernel dispatcher would double-deref the slot and call
+ * the pointed-to function (the LV2 allocator, then the cache-flush routine);
+ * the fake does not model that indirection, so a test routes the spare syscall
+ * number to its own stand-in handler instead. fake_syscall() sends syscall
+ * number fake_spare_syscall (>= 0) to fake_spare_handler if both are set,
+ * passing (a1, a2) and returning its result (the allocator's address; the
+ * flush result is ignored). Both are cleared by fake_reset_all(). */
+extern int fake_spare_syscall;
+extern uint64_t (*fake_spare_handler)(uint64_t a1, uint64_t a2);
+
 /* sys_mutex_* fakes (tests/stubs/sys/synchronization.h). trylock fails
  * while fake_mutex_busy is set. fake_mutex_errors counts a lock taken while
  * already held (a real deadlock), an unlock of an unheld mutex, and

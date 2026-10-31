@@ -25,6 +25,7 @@
 #ifndef DS45_GAME
 #include "kernel.h"
 #include "btcheck.h"
+#include "kshim.h"
 #endif
 
 int ds45_start(uint64_t arg);
@@ -451,12 +452,23 @@ static void ds45_thread(uint64_t arg)
 	kernel_log_fw();
 	if (g_cfg.mode != DS45_MODE_USB) {
 		ds45_kmatch_t kmatch;
+		kshim_result_t kshim;
 
 		ds45_boot_mark("kernel_resolve");
 		kmatch = kernel_resolve(NULL);
 		ds45_boot_mark("kernel_resolve_done");
 		DS45_TRACE_HEX("kmatch", kmatch);
 		(void)kmatch;                /* release: the trace compiles away */
+
+		/* On a fingerprinted kernel, install the DS3-route shim so a DualSense
+		 * runs through the PS3's own Sony-pad path. Entirely RAM-only, verified
+		 * and read back; a mismatch or a failure writes nothing and the pad
+		 * keeps today's generic behaviour. The result (and, in debug builds,
+		 * the failing step) is traced. */
+		ds45_boot_mark("kshim_install");
+		kshim = kshim_install();
+		DS45_TRACE_HEX("kshim", kshim);
+		(void)kshim;                 /* release: the trace compiles away */
 	}
 
 	if (g_cfg.diag) {
@@ -615,6 +627,12 @@ static void ds45_stop_thread(uint64_t arg)
 		sys_ppu_thread_join(thread_id, &exit_code);
 
 #ifndef DS45_GAME
+	/* Switch the kernel shim's redirects back (and revert the product-ID
+	 * patches) so the DS3 driver stops calling into the blob; the blob itself
+	 * stays allocated, since a driver thread may still be executing inside it.
+	 * A no-op when nothing was installed (USB mode, or an unmatched kernel). */
+	kshim_remove();
+
 	/* Never in the game build. ds45_notify() resolves vshtask by walking the
 	 * table at 0x1008C + 0x984, which only *is* an import table in the VSH
 	 * process. In a game process that address holds arbitrary EBOOT data being
