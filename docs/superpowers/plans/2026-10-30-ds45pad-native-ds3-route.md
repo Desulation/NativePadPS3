@@ -197,6 +197,25 @@ static const uint32_t ds45_shim_relocs[];          /* offsets of 64-bit absolute
 
 ---
 
+### Task 5b: Console spike for the open facts U2 and U3 (with the user; added 2026-10-30)
+
+Decided with the user after Task 1 left U1-U3 open. U1 is ruled, not spiked: the shim identifies a DualSense connection through a per-handle table the plugin fills from kernel reads (`conn_key[]` in `ds45_shim_data_t`, keyed by the Bluetooth handle the hooks receive) and, at start-up, through `pad_obj+0x68`. U2 (does a feature-0x05 request sent by kernel code switch the pad to report `0x31`?) and U3 (does pool-0x22 memory execute?) are answered together by one RAM-only run.
+
+**Files:**
+- Create: `tools/spike_feature05.ps1` (throwaway tooling; git-ignored under `tools/spikes/` or deleted after the run), a tiny freestanding stub built with the Task 5 pipeline (`shim/spike05.c`, not part of the plugin blob).
+
+**Interfaces:**
+- Consumes: facts F3 (PDU `0x43`/`0x05`, `0x116EF0` send convention), F5 (flush), F6 (allocator, spare syscall); `ds45_lv2_write`; `kpatch_*`; the `CAPTURE_LV2`/`CAPTURE_LEN` debug capture already in the plugin.
+- Produces: a verdict recorded in the fact sheet: U2 settled yes/no, U3 settled yes/no, plus the observed reply handling. A "no" on U2 stops the plan before Task 6 and goes back to the user.
+
+- [ ] **Step 1: Build the stub:** `int spike05(uint32_t handle)` - assembles the GET feature-0x05 PDU and sends it through `0x116EF0` exactly as F3 describes; returns the send result. Host-test the PDU bytes (`tests/test_spike05.c`, deleted with the spike).
+- [ ] **Step 2: Script (RAM-only, every write verified and read back, every step traced):** spare syscall slot -> allocator, allocate, restore slot; write the stub, F5 flush; point the spare slot at the stub's descriptor; with the user's go-ahead and a DualSense connected as a Sony-type pad (debug tooling type flip, as in Task 8), call it once via the spare syscall; restore the slot; watch the capture at `0x4326C8` for 90 s.
+- [ ] **Step 3: Record** U2/U3 verdicts and the observed behaviour in `docs/superpowers/notes/2026-10-30-ds3-route-facts.md`; restore the pad's pairing type; commit the note - "docs: spike results for feature-0x05 switch and pool executability".
+
+Gate: U2 = no -> stop; report to the user with what was observed.
+
+---
+
 ### Task 6: Shim wrappers (start-up, input, product ID)
 
 **Files:**
