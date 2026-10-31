@@ -27,18 +27,27 @@ Conventions:
 **Why this slot is the Bluetooth start-up (evidence):**
 There are three sibling 9-slot per-transport descriptor tables, each with a slot-7
 start-up dispatcher:
-- `0x37CF20` slot 7 (`@0x37CF58`) → OPD `0x33A280` → fn `0x800000000000CAA3C`
-- `0x37CF68` slot 7 (`@0x37CFA0`) → OPD `0x33A298` → fn `0x800000000000CAB84`
-- `0x37CFB0` slot 7 (`@0x37CFE8`) → OPD `0x33A208` → fn `0x800000000000CA194`
+- `0x37CF20` slot 7 (`@0x37CF58`) → OPD `0x33A280` → fn `0x80000000000CAA3C`
+- `0x37CF68` slot 7 (`@0x37CFA0`) → OPD `0x33A298` → fn `0x80000000000CAB84`
+- `0x37CFB0` slot 7 (`@0x37CFE8`) → OPD `0x33A208` → fn `0x80000000000CA194`
 
-`0x0CAA3C` and `0x0CAB84` send only through `0x80000000000107C18` (the non-Bluetooth
+`0x0CAA3C` and `0x0CAB84` send only through `0x8000000000107C18` (the non-Bluetooth
 sender; needs global ready flag `*0x432BF8`). `0x0CA194` is a substate dispatcher on
-`drv+0x54` (jump table at OPD-derived base `0x800000000000CA218`, substates 0..8);
+`drv+0x54` (jump table at OPD-derived base `0x80000000000CA218`, substates 0..8);
 its state-7 handler `0x0CA2CC` is the only one of the three families that reaches the
-**Bluetooth** SET_REPORT sender `0x80000000000102750` (direct `bl` at `0x0CA334`,
+**Bluetooth** SET_REPORT sender `0x8000000000102750` (direct `bl` at `0x0CA334`,
 confirmed by a bl-target scan: `0x102750` is called only from `0x0CA334` and
-`0x0CA9BC`, both inside the `0x0CA194` substate machine). So table `0x37CFB0` is the
-Bluetooth transport's table and `@0x37CFE8` is its start-up slot.
+`0x0CA9BC`, both inside the `0x0CA194` substate machine).
+
+**This table→Bluetooth binding is INFERRED, not proven.** It rests only on which
+sender each slot-7 family uses; it cannot be confirmed by reference, because **no
+data/TOC pointer to `0x37CF20`, `0x37CF68` or `0x37CFB0` exists anywhere in the dump**
+(exhaustive pointer-value search, negative). The tables are reached only through
+driver objects built at runtime by indirect dispatch, which static tracing could not
+follow. Consequence for the installer: before swapping, it must read `@0x37CFE8` and
+confirm it still equals `0x800000000033A208`, and the first console bring-up must
+verify the DualSense actually dispatches through this slot (e.g. a read-only trace of a
+temporary redirect) rather than trust the inference.
 
 **Prototype of the pointed-to function** `0x80000000000CA194`:
 ```
@@ -54,15 +63,19 @@ both the 16-byte transport object (pad+0x4F0) and the pad object (class `0x38CDC
 **Getting VID/PID from the arguments:** NOT directly present in `drv`. The only
 identity field in `drv` is the connection handle at `+0xAC`. VID/PID is reachable by
 resolving that handle to its connection record (the same lookup `0x801010B8` that the
-senders use internally), or from the pad object (`pad+0x68` = VID/PID, proven in the
-dumps: live DS3 pad `0x654800`+0x68 = `054C/0268`; the limbo DualSense pad `0x650800`
-+0x68 = `054C/0CE6`). The exact `drv`→pad / `drv`→conn linkage and the VID/PID field
-offset inside the connection record are NOT established statically — see Unsatisfiable
-U1.
+senders use internally), or from the pad object at `pad+0x68`. VID/PID at `pad+0x68`
+is confirmed in the DS3-route snapshots, not in the plain `ds45pad_lv2.bin` dump (where
+`0x654868`/`0x650868` hold a pointer): `ds3route/rereg_ds1_on.bin` `0x654868` = `054C/0268`
+(a DS3), and `ds3route/navpid_connected.bin` `0x650868` = `054C/0CE6` (the limbo
+DualSense). These are heap addresses and are per-snapshot (the pad object's address
+varies by boot/connect order), so the installer must find the object via the driver's
+own structures, not by a fixed address. The exact `drv`→pad / `drv`→conn linkage and
+the VID/PID field offset inside the connection record are NOT established statically —
+see Unsatisfiable U1.
 
 **Condition that advances the pad object to running (settled):**
 It is **a reply from the pad (a real input report), NOT the start-up send's return
-value.** The pad handler `0x800000000002A4E40` (pad obj in r28, transport obj at
+value.** The pad handler `0x80000000002A4E40` (pad obj in r28, transport obj at
 pad+0x4F0, class `0x37CE18`, method 4 = input read) advances only when an input report
 arrives with **byte[0]==0x01 and byte[1]!=0xFF** (checks at `0x2A4F7C`/`0x2A4F84` and
 `0x2A4F88`/`0x2A4F90`). On that path it calls `0x2A26A8` → `0x2A2710` → `0x0C9AF0`
@@ -86,8 +99,9 @@ HID GET_REPORT of feature `0x05` (see F3), which switches the pad to full report
 wrapper tail-calls the original `0x0CA194` so a DS3 is untouched.
 
 Verification hash (installer sanity-check of the pointed-to function identity):
-- `0x0CA194` entry qword `@0xCA190`: FNV `0x3EDBE61A32005B76` (start-up dispatcher
-  prologue: stdu/mflr, `cmpdi r4,0`).
+- `0x0CA194` entry qword `@0xCA190`: FNV `0x3EDBE61A32005B76` — this 8-aligned qword
+  holds the **prior function's tail** plus the `0xCA194` entry instruction (`stdu r1`);
+  the `mflr`/`cmpdi r4,0` are in the next qword (`@0xCA198`).
 
 ---
 
@@ -103,16 +117,26 @@ OPD `0x33A010` → `0x0C9D60`.
 
 **Prototype of `0x80000000000C9D60`:**
 ```
-int c9d60(void *xport /*r3*/, int r4, unsigned short *len_out /*r5*/, int flag /*r6*/);
-// returns byte count read (sign-extended); the report lands in the driver's shared buffer
+int c9d60(void *xport /*r3*/, u8 *dst /*r4*/, u16 len_in /*r5, by value*/, int flag /*r6*/);
+// returns the byte count copied into dst (sign-extended), or 0x101E20's error if non-zero
 ```
-It reads the transport handle at `xport+8`, flips `flag` (`xori r6,r6,1`), and calls
-`0x80000000000101E20(handle, r4, &len, flag)`. `0x101E20` locks the BT-HID lock
-(`*0x4325D0`), looks the connection up by handle (`0x801010B8`) and calls `0x0F8FE0`.
+Evidence: `0x0C9D60` stores `r5` by value to a stack half-word (`sth r5,0x70(r1)`),
+reads the handle byte at `xport+8`, flips `flag` (`xori r6,r6,1`), and calls
+`0x8000000000101E20(handle, dst, &local_len, flag^1)` with `r4` passed through
+unchanged; on return it yields `r3` if non-zero, else the half-word at `0x70(r1)`
+(`lhz` at `0x0C9D88`). `0x101E20` takes the BT-HID lock (`*0x4325D0`, via
+`0x13C1C`/`0x13C14`), looks the connection up by handle (`0x801010B8`) and calls
+`0x0F8FE0(conn, dst, &len, flag)`. `0x0F8FE0` returns an error when `dst==NULL`
+(`cmpdi r4,0` at `0x0F8FE4`), reads the in-length from `*len` (`0x0F9060`), drains the
+queue into the shared buffer, then **memcpys `len-1` bytes from `0x4326C9` into `dst`**
+(`0x0F919C`–`0x0F91A8`, via `0x82A08`) and writes the resulting count back to `*len`
+(`0x0F91B8`). The handler `0x2A4E40` then parses **its own `dst` buffer (r27)**, not the
+shared buffer. **Consequence for the input wrapper:** it must rewrite the report in
+`dst` and return the rewritten length (49 for a translated DS3 report).
 
 **Does the result buffer start with the report ID or 0xA1?** — **the report ID.**
 `0x0F8FE0` memsets the shared buffer `0x4326C8` to `0x41` bytes, calls
-`0x80000000000116EF0(bdaddr,1,2,0x4326C8,0x41)` to drain the newest queued input, then
+`0x8000000000116EF0(bdaddr,1,2,0x4326C8,0x41)` to drain the newest queued input, then
 copies **from `0x4326C9` (i.e. it strips the leading `0xA1` DATA header)** `len-1`
 bytes to the caller. So the caller sees `report[0] = 0x01` for a DS3 (and would see
 `0x31` for a DualSense), never `0xA1`.
@@ -159,19 +183,33 @@ switches a DualSense from its minimal BT input report to the full motion report
 Build the Bluetooth HID control-channel GET_REPORT PDU by hand — header byte
 `0x43` (`GET_REPORT`=0x40 | `feature`=0x03), report id `0x05` — and transmit it on the
 same HID control path the SET sender uses. The lowest reusable primitive inside
-`0x0F8BD8` is the HCI/ACL assembly+send around `0x80000000000082A08` (payload memcpy
-after the 2-byte header) feeding `0x80000000000116EF0`; a GET differs from `0x0F8BD8`
+`0x0F8BD8` is the HCI/ACL assembly+send around `0x8000000000082A08` (payload memcpy
+after the 2-byte header) feeding `0x8000000000116EF0`; a GET differs from `0x0F8BD8`
 only in the header byte (`0x43` instead of `(type|0x50)`) and in expecting a returned
 feature report. Because `0x0F8BD8` hard-codes `0x50`, the shim must replicate its
-send sequence with the `0x43` header rather than call it. Whether it may be called
-from the F1 (start-up) context: yes — the F1 slot runs on a driver thread that already
-holds / can take the BT-HID lock (`*0x4325D0`), the same context the SET senders run
-in; a single non-blocking control-channel write with no wait is within the shim rules.
+send sequence with the `0x43` header rather than call it.
 
-**What is not settled read-only:** the exact prototype/args of the control-channel
-send primitive to reuse for a GET (versus SET), and empirical confirmation that a
-feature-0x05 GET actually flips this firmware's DualSense to `0x31`. See Unsatisfiable
-U2.
+**`0x8000000000116EF0` call convention (statically visible):**
+`int h116ef0(bdaddr/conn-id /*r3*/, int dir /*r4: 1 = read/drain, 2 = write*/,
+int r5 = 2, void *buf /*r6*/, int len /*r7*/, ...)`. The driver's uses: the input-read
+drain at `0x0F918C` passes `r4=1, r5=2, r6=`shared buffer`, r7=0x41`; the SET send at
+`0x0F8D04` passes `r4=2, r5=2`. So a GET is a `dir=2` (write/send) of the assembled
+`0x43`/`0x05` PDU followed by a `dir=1` drain for the feature-report reply.
+
+**Whether it may be called from the F1 (start-up) context — the lock contract:**
+The F1 start-up context does **NOT** hold the BT-HID lock. The BT sender `0x102750`
+acquires and releases that lock **itself** (`bl 0x13C1C` at `0x1027B0` to take it,
+`bl 0x13C14` at `0x102800` to drop it) and is called directly from the state handler
+`0x0CA334`. Therefore the shim's GET must go through the same self-locking send path
+(which takes the lock) and the wrapper must **not** pre-acquire `*0x4325D0` itself, or
+it will double-lock/deadlock. A single non-blocking send+drain with no wait otherwise
+fits the shim rules.
+
+**What is not settled read-only:** how the feature-report reply to a GET is delivered
+and read back on this stack (the drain side of the exchange), and empirical
+confirmation that a feature-0x05 GET actually flips this firmware's DualSense to
+`0x31`. The send-side conventions (`0x116EF0`, `0x82A08`, the `0x43` header) are
+settled above. See Unsatisfiable U2.
 
 Verification hashes (SET sender, for reference / to confirm the driver build):
 - `0x102750` is an OPD-called fn (OPD `0x3408C8`); callers of the BT sender are
@@ -201,33 +239,54 @@ branch to the shim PID blob, which re-tests `0x03D5` and `0x0CE6` (and preserves
 DualSense and otherwise reproducing the original control flow
 (`0x3D5`→`0x11B564`, else→`0x11B534`). The two earlier compares (`0x0268`, `0x042F`)
 are left intact.
+
+**Register / condition-register contract the inline blob must honour** (verified):
+at the patch point `0x11B5E4` the PID is in **`r0`** (loaded `lhz r0,0xB6(r1)` at
+`0x11B5D0`) and VID in **`r9`** (already confirmed `==0x054C` by the `beq` at
+`0x11B530`). `0x0268`/`0x042F` have already been matched and branched away above, so
+the blob only ever sees other PIDs; it must branch to **`0x11B234`** when `r0==0x0CE6`
+(accept as known Sony, skip SDP), to **`0x11B564`** when `r0==0x03D5` (the original
+fall-through, since `0x11B5EC` is `b 0x11B564`), and otherwise to **`0x11B534`** (the
+original `bne` target, which consumes `cr7` only to branch — the blob reaches it by a
+direct branch, so it need not set `cr7`). It may clobber `r0`, `r11`, `r12` and CR;
+it **must preserve** `r26`–`r29` (all three targets read them: `0x11B534` uses `r28`,
+`0x11B564` uses `r26`/`r27`/`r28`/`r29`, `0x11B234` uses `r28`).
+
 Verification hashes (installer must match before patching):
-- qword `@0x11B5D0` (holds `0x11B5D4 cmpwi 0x268` + `0x11B5D8 beq`): FNV
+- qword `@0x11B5D0` (holds `0x11B5D0 lhz r0,0xB6(r1)` + `0x11B5D4 cmpwi r0,0x268`): FNV
   `0x1D9D36267FF6017D`.
-- qword `@0x11B5D8` (holds `0x11B5D8 beq` + `0x11B5DC cmpwi 0x42F`): FNV
+- qword `@0x11B5D8` (holds `0x11B5D8 beq` + `0x11B5DC cmpwi r0,0x42F`): FNV
   `0x82EB2E1F6C9B0080`.
-- qword `@0x11B5E0` (holds `0x11B5E0 beq` + `0x11B5E4 cmpwi 0x3D5`, the patch target):
+- qword `@0x11B5E0` (holds `0x11B5E0 beq` + `0x11B5E4 cmpwi r0,0x3D5`, the patch target):
   FNV `0xE8ADD0EDF3B2B3C1`.
 
 **Helper `0x29E2B4`** `int(r3=VID, r4=PID)` → returns 1 for `VID==0x054C &&
-(PID==0x0268 || PID==0x042F)`, else 0 (the `0x042F` test is the `xori r4,r4,0x42F` at
+(PID==0x0268 || PID==0x042F)`, else 0 (the `0x042F` test is the `xori r0,r4,0x42F` at
 `0x29E2CC`). Callers: `0x2A08A4`, `0x2A1854`, `0x2A19D4` (pad-creation paths).
 Patch: replace the first instruction at **`0x800000000029E2B4`** with a branch to the
-shim PID blob, which returns 1 for `054C` with PID ∈ {`0x0268`,`0x042F`,`0x0CE6`} and 0
-otherwise, then returns to the caller (leaf function, so the blob just sets r3 and
-`blr`). Keeps `0x0268` and `0x042F`.
+shim PID blob. **Blob contract:** VID in `r3`, PID in `r4`; it must set `r3=1` to
+accept (`VID==0x054C` and PID ∈ {`0x0268`,`0x042F`,`0x0CE6`}) or `r3=0` to reject, then
+`blr` to the caller (leaf function). It may clobber `r0`, `r3`, `r4`, `r11`, `r12`.
+Keeps `0x0268` and `0x042F`.
 Verification hashes:
-- qword `@0x29E2B0` (entry: `cmpwi r3,0x54C` + `cmpwi r4,0x268`): FNV
+- qword `@0x29E2B0` holds the **prior function's tail** plus the `0x29E2B4` entry
+  (`cmpwi r3,0x54C`); the `cmpwi r4,0x268` is at `0x29E2B8` (next qword). FNV
   `0xF1B8B3EFF22A78FC`.
-- qword `@0x29E2C8` (`blr` + `xori r0,r4,0x42F` tail): FNV `0x8D1047F832C76096`.
+- qword `@0x29E2C8` (holds the `0x29E2C8 blr` of the VID-mismatch path + the
+  `0x29E2CC xori r0,r4,0x42F` tail): FNV `0x8D1047F832C76096`.
 
 ---
 
 ## F5 — Instruction-cache coherency for freshly written code
 
-The CFW syscall-7 poke is RAM-only and does **not** guarantee I-cache coherency for
-code (the on-console experiments noted stale-I-cache as a likely reason a code poke did
-not take effect). Use the kernel's own range-flush primitive.
+The CFW syscall-7 poke does **not** make written code coherent — this is now direct
+evidence, not speculation. Its syscall-table entry (slot 7) resolves to thunk
+`0x80000000005601E0`, which calls the poke body `0x8000000000562F40`; that body
+contains **no `dcbst`, `sync`, `icbi` or `isync`** (only loads/stores) — it is a
+plain memory write. (A separate CFW-payload routine at `0x80000000005632BC` does issue
+`icbi`+`isync`, but it lacks `dcbst`/`sync` and is not bound to any of syscalls 6–11,
+so it is not what a code poke invokes.) Use the kernel's own full range-flush
+primitive.
 
 **Routine:** LV2 `0x29B8`, kernel address **`0x80000000000029B8`**.
 ```
@@ -258,7 +317,7 @@ verify a known slot before use. Confirmed correct because slots 6–11 point int
 payload region (`0x5600xx`), i.e. the CFW-installed peek/poke syscalls (known facts:
 CFW uses 6/7/8/9/10/11, 35).
 
-**Not-implemented stub:** OPD **`0x80000000003621B0`** (entry `0x800000000002742D4`);
+**Not-implemented stub:** OPD **`0x80000000003621B0`** (entry `0x80000000002742D4`);
 **320** table slots point at it.
 
 **A spare (unused) syscall and its current value:**
@@ -300,29 +359,33 @@ Both hook points receive an object that carries only a Bluetooth handle (start-u
 mapping and the VID/PID field offset inside the connection record were not pinned down
 statically (the dispatch into the driver object is all indirect/method-table, which the
 earlier work already found "bottomed out"). VID/PID is reliably available at
-`pad_obj+0x68` (proven in the dumps), so the implementer can key the decision off the
-pad object or a plugin-set per-connection flag. *What would settle the exact arg path:*
-a read-only console snapshot that walks `drv`/transport→connection→VID/PID for a live
-DualSense (e.g. extend the existing `navpid_connected.bin`-style capture), or a
-one-time instrumented read — no write needed.
+`pad_obj+0x68` (confirmed in the DS3-route snapshots), so the implementer can key the
+decision off the pad object or a plugin-set per-connection flag. *What would settle the
+exact arg path (READ-ONLY):* a console memory snapshot that walks
+`drv`/transport→connection→VID/PID for a live DualSense (extend the existing
+`navpid_connected.bin`-style capture), or the debug plugin reading those offsets live
+(syscall-6 reads only). No console write is involved.
 
 **U2 — F3 GET_REPORT feature 0x05 (no one-call helper; empirical switch unconfirmed).**
 The driver exposes no Bluetooth HID GET_REPORT path; `0x102750`/`0x0F8BD8` are SET-only
-(header hard-coded `|0x50`). The shim must assemble the GET PDU (`0x43`, id `0x05`) and
-drive the control-channel send primitive itself. The exact send-primitive prototype for
-a GET (vs SET) and confirmation that feature-0x05 GET flips *this* DualSense to report
-`0x31` cannot be settled from the static dump. *What would settle it:* a console
-write-experiment (send a feature-0x05 GET on the HID control channel to a connected
-DualSense and observe whether `0x31` reports then appear) — **not performed** (write
-action, out of scope for this task).
+(header hard-coded `|0x50`). The send-side mechanics ARE settled in F3 (assemble the
+`0x43`/`0x05` PDU; `0x116EF0` with `dir=2` to send, `dir=1` to drain; `0x82A08` payload
+copy). What remains unsettled from the static dump: how the feature-report reply is
+delivered/read back on this stack, and whether a feature-0x05 GET flips *this* firmware's
+DualSense to report `0x31`. *What would settle it — a console WRITE experiment:* send a
+feature-0x05 GET on the HID control channel to a connected DualSense and observe whether
+`0x31` reports then appear — **not performed** (console write, out of scope for this
+read-only task).
 
 **U3 — Executability of pool-0x22 memory.**
 Reachability by 26-bit branch from the F4 sites is settled (above). Whether pool `0x22`
 returns memory the CPU will execute (the LV2 kernel heap is executable on CFW in
 practice, and the design already flushes the I-cache via F5 after writing) is not
-provable from the dump. *What would settle it:* a read-only console check that code
-placed in a pool-0x22 allocation executes after an F5 flush, or selection of a pool
-known-executable — needs a console run.
+provable from the dump. *What would settle it — a RAM-only WRITE experiment:* write a
+tiny return-stub into a pool-0x22 allocation, F5-flush it, and call it once (this writes
+code into kernel memory, so it is not read-only); alternatively select a pool already
+known to be executable. Either needs a console run and is out of scope for this
+read-only task.
 
 ---
 
@@ -333,8 +396,9 @@ known-executable — needs a console run.
 - F2 and the input/running mechanics are fully grounded in disassembly and the dumps;
   an implementer can write the input-wrapper prototype from F2 alone.
 - F1's wrapper prototype (`int ca194(void *drv, long arg1)`) and hook slot are settled;
-  the one gap for an implementer is deriving VID/PID (U1) — the note gives the proven
-  fallback (`pad+0x68`).
+  the table→Bluetooth binding is INFERRED (no reference to the tables exists in the
+  dump) and must be confirmed on first console bring-up, and deriving VID/PID from the
+  hook args is U1 — the note gives the confirmed fallback (`pad+0x68`).
 - F4 keeps `0x042F` at both sites (gate not triggered); F5 and F6 are fully settled.
 - Three residuals (U1–U3) are listed with the exact experiment that would settle each;
   per the task gate, a non-empty Unsatisfiable list means the controller should stop and
