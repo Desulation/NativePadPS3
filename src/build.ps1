@@ -35,7 +35,52 @@ function Invoke-BuildTool([string]$Program, [string[]]$Arguments) {
     & $Program @Arguments
     if ($LASTEXITCODE -ne 0) { throw "Build tool failed ($LASTEXITCODE): $Program" }
 }
-$sources = @('libc','util','hook','config','sticks','sixaxis','ds_body','diag','main')
+# The kernel shim blob is a separate freestanding PPC64 image the VSH plugin
+# embeds. It is deliberately NOT built with the Cell SDK's ppu-lv2-gcc (that
+# toolchain is ILP32 and would silently truncate the kernel's 64-bit pointers);
+# it is built true-LP64 big-endian with LLVM - clang + ld.lld - and packed into
+# src/shim_blob.h by tools/shim_pack.py. Only the VSH variants build it.
+function Build-ShimBlob([string]$Repo) {
+    $clang = (Get-Command clang -ErrorAction SilentlyContinue).Source
+    if (!$clang) { $clang = 'C:/Program Files/LLVM/bin/clang.exe' }
+    $lld = (Get-Command ld.lld -ErrorAction SilentlyContinue).Source
+    if (!$lld) { $lld = 'C:/Program Files/LLVM/bin/ld.lld.exe' }
+    $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+    if (!$py) { $py = (Get-Command py -ErrorAction SilentlyContinue).Source }
+    foreach ($p in @($clang, $lld, $py)) {
+        if (!$p -or !(Test-Path -LiteralPath $p)) {
+            throw "The VSH shim blob needs LLVM clang, ld.lld and python (missing: $p)."
+        }
+    }
+    $res = Join-Path ((& $clang -print-resource-dir).Trim()) 'include'
+    $shim = Join-Path $Repo 'shim'
+    $src  = Join-Path $Repo 'src'
+    # LP64 big-endian PPC64, freestanding, position-independent via relocation
+    # (not PIC codegen): see Task 4's verified invocation and the task-5 report.
+    $cflags = @('--target=powerpc64-unknown-linux-gnu', '-std=c99', '-O2',
+                '-ffreestanding', '-fno-builtin', '-nostdinc', '-isystem', $res,
+                '-fno-jump-tables', '-fno-stack-protector', '-fno-pic',
+                '-mcmodel=small', '-Wall', '-Wextra')
+    $units = @(
+        @{ src = (Join-Path $shim 'entry.c');      obj = (Join-Path $shim 'entry.o') },
+        @{ src = (Join-Path $shim 'ds3_report.c'); obj = (Join-Path $shim 'ds3_report.o') },
+        @{ src = (Join-Path $src  'sixaxis.c');    obj = (Join-Path $shim 'sixaxis.o') },
+        @{ src = (Join-Path $src  'ds_body.c');    obj = (Join-Path $shim 'ds_body.o') }
+    )
+    $objs = @()
+    foreach ($u in $units) {
+        Invoke-BuildTool $clang ($cflags + @('-c', $u.src, '-o', $u.obj))
+        $objs += $u.obj
+    }
+    $elf = Join-Path $shim 'shim.elf'
+    Invoke-BuildTool $lld (@('-m', 'elf64ppc', '-T', (Join-Path $shim 'shim.ld'),
+                             '--emit-relocs', '--no-dynamic-linker', '-static') +
+                           $objs + @('-o', $elf))
+    Invoke-BuildTool $py @('-I', (Join-Path $Repo 'tools/shim_pack.py'), $elf,
+                           (Join-Path $src 'shim_blob.h'))
+    Write-Output "Regenerated src/shim_blob.h from the freestanding kernel shim blob."
+}
+$sources = @('libc','util','hook','config','sticks','diag','main')
 $libs = @('-lio_stub','-lfs_stub','-llv2_stub')
 $compat = Join-Path $PSScriptRoot '../patches/compat_pad.h'
 $flags = @('-mprx','-Os','-ffunction-sections','-fdata-sections','-fno-builtin-printf','-nodefaultlibs','-std=gnu99','-Wall','-Wno-unused-parameter','-I',$include)
@@ -52,9 +97,12 @@ if ($Debug) { $flags += '-DDS45_DEBUG'; $suffix = '_debug' }
 if ($Variant -eq 'game') {
     $sources += 'gamehook'; $flags += '-DDS45_GAME'; $auth = '1010000001000003'
 } else {
-    $sources += @('ds4','dualsense','padldd','usb','passthru','lv2','kernel','btcheck')
+    # sixaxis + ds_body are VSH-only: the DualSense body decode and sixaxis
+    # scaling feed dualsense/padldd, neither of which the game variant links.
+    $sources += @('ds4','dualsense','ds_body','sixaxis','padldd','usb','passthru','lv2','kernel','btcheck')
     if ($Debug) { $sources += 'lv2dump', 'lv2capture' }   # debug VSH only; never release or game
     $libs = @('-lusbd_stub') + $libs; $auth = '1070000052000001'
+    Build-ShimBlob (Split-Path $PSScriptRoot)   # regenerate src/shim_blob.h before the plugin compiles
 }
 $objdir = Join-Path $PSScriptRoot "obj/$Variant$suffix"
 New-Item -ItemType Directory -Force -Path $objdir | Out-Null

@@ -64,7 +64,7 @@ endif
 SRCS_VSH  = libc.c util.c hook.c config.c ds4.c dualsense.c ds_body.c sixaxis.c \
             sticks.c padldd.c usb.c passthru.c lv2.c kernel.c btcheck.c diag.c \
             main.c $(SRCS_VSH_DEBUG)
-SRCS_GAME = libc.c util.c hook.c config.c sticks.c sixaxis.c ds_body.c gamehook.c \
+SRCS_GAME = libc.c util.c hook.c config.c sticks.c gamehook.c \
             diag.c main.c
 
 LIBS_VSH  = -lusbd_stub -lio_stub -lfs_stub -llv2_stub
@@ -108,7 +108,7 @@ all: vsh
 # Both targets clean first. Without that, objects left over from the other
 # variant get linked in silently - a "VSH" build made after a `make game` would
 # contain -DDS45_GAME code.
-vsh:
+vsh: shim-blob
 	$(MAKE) clean-obj
 	$(MAKE) sign-one PPU_SRCS="$(SRCS_VSH)" PPU_PRX_LDLIBS="$(LIBS_VSH)" \
 	                 AUTH=$(AUTH_VSH) SPRX=$(SPRX_VSH)
@@ -140,6 +140,29 @@ endif
 all-builds:
 	$(MAKE) vsh
 	$(MAKE) game
+
+# The kernel shim blob the VSH plugin embeds. Built with LLVM (true LP64
+# big-endian PPC64), never the ILP32 ppu-lv2-gcc which would truncate the
+# kernel's 64-bit pointers; tools/shim_pack.py packs it into src/shim_blob.h.
+# Forward slashes: the resource dir may contain spaces (Program Files), so it
+# is quoted; $(subst) drops the Windows backslashes $(shell) returns.
+SHIM_CLANG  ?= clang
+SHIM_LLD    ?= ld.lld
+SHIM_PY     ?= python
+SHIM_RESINC := $(subst \,/,$(shell $(SHIM_CLANG) -print-resource-dir))/include
+SHIM_CFLAGS  = --target=powerpc64-unknown-linux-gnu -std=c99 -O2 -ffreestanding \
+               -fno-builtin -nostdinc -isystem "$(SHIM_RESINC)" -fno-jump-tables \
+               -fno-stack-protector -fno-pic -mcmodel=small -Wall -Wextra
+
+shim-blob:
+	$(SHIM_CLANG) $(SHIM_CFLAGS) -c ../shim/entry.c      -o ../shim/entry.o
+	$(SHIM_CLANG) $(SHIM_CFLAGS) -c ../shim/ds3_report.c -o ../shim/ds3_report.o
+	$(SHIM_CLANG) $(SHIM_CFLAGS) -c sixaxis.c            -o ../shim/sixaxis.o
+	$(SHIM_CLANG) $(SHIM_CFLAGS) -c ds_body.c            -o ../shim/ds_body.o
+	$(SHIM_LLD) -m elf64ppc -T ../shim/shim.ld --emit-relocs --no-dynamic-linker \
+	    -static ../shim/entry.o ../shim/ds3_report.o ../shim/sixaxis.o \
+	    ../shim/ds_body.o -o ../shim/shim.elf
+	$(SHIM_PY) -I ../tools/shim_pack.py ../shim/shim.elf shim_blob.h
 
 clean-obj:
 	-rm -f *.o $(PPU_PRX_TARGET)

@@ -23,6 +23,14 @@ sdk_doc_chm/
 tools/dumps/
 kernel_cache.txt
 
+# Generated kernel shim blob and its build artefacts. The VSH plugin build
+# regenerates src/shim_blob.h from the freshly linked blob each time; none of
+# this is ever committed. (*.o and *.elf are already covered above; the blob's
+# are listed explicitly per the build contract.)
+src/shim_blob.h
+shim/*.o
+shim/*.elf
+
 # Tooling
 __pycache__/
 .pytest_cache/

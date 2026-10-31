@@ -48,7 +48,7 @@ if [ "$VARIANT" = "game" ]; then
 	# A game process loads libio and libfs but *not* libusbd, so the in-game
 	# build must not contain a single reference to it - otherwise the loader
 	# cannot resolve the module and PS3MAPI hangs on "Load" forever.
-	SRCS="libc.c util.c hook.c config.c sticks.c sixaxis.c ds_body.c gamehook.c diag.c main.c"
+	SRCS="libc.c util.c hook.c config.c sticks.c gamehook.c diag.c main.c"
 	LDLIBS="-lio_stub -lfs_stub"
 else
 	EXTRA=""
@@ -99,6 +99,30 @@ need() {
 	done
 }
 
+# The kernel shim blob is built with LLVM (true LP64 big-endian PPC64), never
+# the ILP32 ppu-lv2-gcc, which would truncate the kernel's 64-bit pointers.
+# Only the VSH build embeds it; tools/shim_pack.py turns the linked ELF into
+# src/shim_blob.h. Run from src/, so shim/ is ../shim and tools/ is ../tools.
+build_shim_blob() {
+	local CLANG="${CLANG:-clang}" LLD="${LLD:-ld.lld}" PY="${PY:-python}"
+	command -v "$CLANG" >/dev/null 2>&1 || { echo "faltando: clang (shim blob)"; exit 1; }
+	command -v "$LLD"   >/dev/null 2>&1 || { echo "faltando: ld.lld (shim blob)"; exit 1; }
+	command -v "$PY"    >/dev/null 2>&1 || { echo "faltando: python (shim blob)"; exit 1; }
+	local RES; RES="$("$CLANG" -print-resource-dir)/include"
+	local CF=(--target=powerpc64-unknown-linux-gnu -std=c99 -O2 -ffreestanding
+	          -fno-builtin -nostdinc -isystem "$RES" -fno-jump-tables
+	          -fno-stack-protector -fno-pic -mcmodel=small -Wall -Wextra)
+	echo "shim blob (LLVM)..."
+	"$CLANG" "${CF[@]}" -c ../shim/entry.c      -o ../shim/entry.o
+	"$CLANG" "${CF[@]}" -c ../shim/ds3_report.c -o ../shim/ds3_report.o
+	"$CLANG" "${CF[@]}" -c sixaxis.c            -o ../shim/sixaxis.o
+	"$CLANG" "${CF[@]}" -c ds_body.c            -o ../shim/ds_body.o
+	"$LLD" -m elf64ppc -T ../shim/shim.ld --emit-relocs --no-dynamic-linker -static \
+	       ../shim/entry.o ../shim/ds3_report.o ../shim/sixaxis.o ../shim/ds_body.o \
+	       -o ../shim/shim.elf
+	"$PY" -I ../tools/shim_pack.py ../shim/shim.elf shim_blob.h
+}
+
 need "$GCC" "$PRXSTRIP"
 if [ -n "$TOOLS" ]; then
 	# scetool resolves its key file through $PS3, so it works from any directory.
@@ -112,6 +136,11 @@ fi
 
 mkdir -p obj
 rm -f obj/*.o
+
+# The VSH build embeds the kernel shim blob; regenerate src/shim_blob.h first.
+if [ "$VARIANT" = "vsh" ]; then
+	build_shim_blob
+fi
 
 echo "compilando..."
 for f in $SRCS; do
