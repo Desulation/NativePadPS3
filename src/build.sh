@@ -114,11 +114,12 @@ build_shim_blob() {
 	          -fno-stack-protector -fno-pic -mcmodel=small -Wall -Wextra)
 	echo "shim blob (LLVM)..."
 	"$CLANG" "${CF[@]}" -c ../shim/entry.c      -o ../shim/entry.o
+	"$CLANG" "${CF[@]}" -c ../shim/shim.c       -o ../shim/shim.o
 	"$CLANG" "${CF[@]}" -c ../shim/ds3_report.c -o ../shim/ds3_report.o
 	"$CLANG" "${CF[@]}" -c sixaxis.c            -o ../shim/sixaxis.o
 	"$CLANG" "${CF[@]}" -c ds_body.c            -o ../shim/ds_body.o
 	"$LLD" -m elf64ppc -T ../shim/shim.ld --emit-relocs --no-dynamic-linker -static \
-	       ../shim/entry.o ../shim/ds3_report.o ../shim/sixaxis.o ../shim/ds_body.o \
+	       ../shim/entry.o ../shim/shim.o ../shim/ds3_report.o ../shim/sixaxis.o ../shim/ds_body.o \
 	       -o ../shim/shim.elf
 	"$PY" -I ../tools/shim_pack.py ../shim/shim.elf shim_blob.h
 }

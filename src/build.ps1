@@ -63,6 +63,7 @@ function Build-ShimBlob([string]$Repo) {
                 '-mcmodel=small', '-Wall', '-Wextra')
     $units = @(
         @{ src = (Join-Path $shim 'entry.c');      obj = (Join-Path $shim 'entry.o') },
+        @{ src = (Join-Path $shim 'shim.c');       obj = (Join-Path $shim 'shim.o') },
         @{ src = (Join-Path $shim 'ds3_report.c'); obj = (Join-Path $shim 'ds3_report.o') },
         @{ src = (Join-Path $src  'sixaxis.c');    obj = (Join-Path $shim 'sixaxis.o') },
         @{ src = (Join-Path $src  'ds_body.c');    obj = (Join-Path $shim 'ds_body.o') }

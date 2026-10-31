@@ -1,31 +1,32 @@
 /*
- * DS45PAD kernel shim - blob entry points.
+ * DS45PAD kernel shim - blob entry points (kernel-ABI glue).
  *
- * This is the one translation unit that is unique to the blob (the other three
- * - ds3_report.c, src/sixaxis.c, src/ds_body.c - are shared with the host
- * tests). It defines the single data object the plugin fills in and the three
- * entry points the plugin patches the kernel's DS3 driver to call.
+ * This is the one translation unit unique to the blob (shim.c, ds3_report.c,
+ * src/sixaxis.c and src/ds_body.c are shared with the host tests). It defines
+ * the single data object the plugin fills in, and the two wrappers the plugin
+ * patches the kernel's DS3 driver to call (the product-ID helper is
+ * shim_pid_ok in shim.c, which the kernel branches to directly). These bodies
+ * are the thin, untested glue: they pull VID/PID, the buffer and the length out
+ * of the real F1/F2 argument lists and the data block, hand them to the pure,
+ * tested decision functions in shim.c, and otherwise tail-call the originals so
+ * a DualShock 3 is left completely untouched.
  *
- * It is built freestanding into a flat, position-independent PPC64 blob that
- * runs INSIDE the PS3 kernel, so: no SDK, no libc, no static constructors, and
- * every pointer is 64-bit (the kernel's live addresses are 0x8000_0000_xxxx_
- * xxxx and must not be truncated). See shim/shim.ld and tools/shim_pack.py.
- *
- * These three bodies are deliberately thin placeholders for the build
- * pipeline: shim_startup / shim_input tail-call the originals the plugin
- * recorded, and shim_pid_ok returns the answer it is handed. The real
- * translation is wired in by a later task; what this task pins down is that the
- * blob links, relocates and packs cleanly.
+ * Built freestanding into a flat, position-independent PPC64 blob that runs
+ * INSIDE the PS3 kernel, so: no SDK, no libc, no static constructors, and every
+ * pointer is 64-bit (the kernel's live addresses are 0x8000_0000_xxxx_xxxx and
+ * must not be truncated). See shim/shim.ld and tools/shim_pack.py.
  *
  * Licensed under GPLv2 - see LICENSE.
  */
 
 #include <stdint.h>
 #include "shim_abi.h"
+#include "shim.h"
 
 /* The one object the plugin and the blob share at run time. The plugin writes
- * the configuration and the original descriptors into it when it installs the
- * shim and reads the counters back; the blob reads the configuration from it.
+ * the configuration, the original descriptors, the get_report descriptor and
+ * the per-connection identity into it when it installs the shim and reads the
+ * counters back; the blob reads the configuration from it.
  *
  * It carries its magic and version pre-filled so the installer can sanity-check
  * the image it just relocated, which also keeps the object in .data (a real,
@@ -39,36 +40,74 @@ ds45_shim_data_t ds45_shim_data = {
 /* On the 64-bit PowerPC ELFv1 ABI a function pointer is the address of a
  * { entry, toc, env } descriptor; calling through one loads the callee's TOC
  * (r2) and entry from it. orig_startup / orig_input hold the addresses of the
- * kernel's own descriptors, so a plain indirect call tail-calls the originals
- * with their own r2 restored. */
-typedef void (*shim_startup_fn)(void);
-typedef int  (*shim_input_fn)(void *ctx, uint8_t *report, int report_len);
+ * kernel's own descriptors (fact sheet F1/F2 prototypes), so a plain indirect
+ * call tail-calls the originals with their own r2 restored. */
+typedef int (*orig_startup_fn)(void *drv, long arg1);
+typedef int (*orig_input_fn)(void *xport, uint8_t *dst, uint16_t len_in,
+                             int flag);
 
-/* F1: driver start-up hook. Count the call and hand off to the original. */
-void shim_startup(void)
+/* The Bluetooth connection handle in each hook's arguments (fact sheet F1/F2):
+ * the start-up driver object carries it at drv+0xAC, the input transport object
+ * at xport+8. It is the only identity field within reach of the hook args. */
+#define F1_HANDLE_OFF   0xAC
+#define F2_HANDLE_OFF   0x08
+
+/* Resolve a connection handle to the identity the plugin recorded in the data
+ * block. The plugin fills a slot when a controller connects - conn_key[i] holds
+ * that connection's handle and conn_state[i] is non-zero for an enabled
+ * DualSense - resolving VID/PID the confirmed way (the pad object at +0x68)
+ * rather than from these hook arguments, which do not carry it. Deriving VID/
+ * PID straight from the hook args is the deferred residual U1; the blob only
+ * reads the slots the plugin fills. Returns 1 and the DualSense identity for a
+ * matching enabled slot, else 0 (which makes the caller tail-call the
+ * original). */
+static int entry_identity(uint8_t handle, uint16_t *vid, uint16_t *pid)
 {
-	ds45_shim_data.stat_startups++;
-	((shim_startup_fn)(uintptr_t)ds45_shim_data.orig_startup)();
+	int i;
+
+	for (i = 0; i < DS45_SHIM_CONNS; i++) {
+		if (ds45_shim_data.conn_state[i] != 0 &&
+		    (uint8_t)ds45_shim_data.conn_key[i] == handle) {
+			*vid = 0x054C;
+			*pid = 0x0CE6;
+			return 1;
+		}
+	}
+	return 0;
 }
 
-/* F2: input-report hook. Count the call and hand off to the original. The real
- * shim will translate report[] in place before this point. */
-int shim_input(void *ctx, uint8_t *report, int report_len)
+/* F1: Bluetooth Sony-pad start-up. For an enabled DualSense, do its own enable
+ * (shim_startup_dualsense issues the feature-0x05 GET); for everything else -
+ * disabled, the original's arg1==0 early-return, an unknown connection or a
+ * DualShock 3 - tail-call the original so it is untouched. */
+int shim_startup(void *drv, long arg1)
 {
-	ds45_shim_data.stat_passed++;
-	return ((shim_input_fn)(uintptr_t)ds45_shim_data.orig_input)(ctx, report,
-	                                                             report_len);
+	uint16_t vid, pid;
+
+	if (ds45_shim_data.enabled && arg1 != 0 && drv &&
+	    entry_identity(*((const uint8_t *)drv + F1_HANDLE_OFF), &vid, &pid) &&
+	    shim_is_dualsense(vid, pid))
+		return shim_startup_dualsense(&ds45_shim_data, drv, arg1);
+
+	return ((orig_startup_fn)(uintptr_t)ds45_shim_data.orig_startup)(drv, arg1);
 }
 
-/*
- * F?: the kernel's "is this process allowed the pad" predicate. The kernel
- * calls this one by its raw code address, with the KERNEL's r2 in place - not
- * the blob's - so it must never touch the TOC or any global (tools/shim_pack.py
- * enforces exactly that). Its image offset is exported as DS45_SHIM_OFF_PID_OK
- * as a code address, not a descriptor. The placeholder is transparent: it
- * returns the original answer it is handed.
- */
-int shim_pid_ok(int orig_answer)
+/* F2: Bluetooth transport input read (method 4). Always run the original first
+ * to fill dst and get the byte count, then, for an enabled DualSense, let the
+ * filter rewrite a 0x31 report in dst into a DS3 report; for anything else, or
+ * an error/implausible count from the original, return the original result
+ * untouched. */
+int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 {
-	return orig_answer;
+	int rc = ((orig_input_fn)(uintptr_t)ds45_shim_data.orig_input)(xport, dst,
+	                                                               len_in, flag);
+	uint16_t vid, pid, n;
+
+	if (!ds45_shim_data.enabled || !xport || !dst || rc < 0 || rc > 0x41)
+		return rc;
+	if (!entry_identity(*((const uint8_t *)xport + F2_HANDLE_OFF), &vid, &pid))
+		return rc;
+
+	n = (uint16_t)rc;
+	return shim_input_filter(&ds45_shim_data, vid, pid, dst, &n);
 }
