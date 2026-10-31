@@ -1,10 +1,15 @@
-/* SOURCES: ds_body.c sixaxis.c ../shim/ds3_report.c ../shim/shim.c */
+/* SOURCES: ds_body.c sixaxis.c ../shim/ds3_report.c ../shim/shim.c ../shim/entry.c */
 /*
- * Host tests for the kernel shim's decision logic (shim/shim.c): the F4
- * product-ID helper, the F2 input filter and the F1 DualSense start-up. The
- * functions take the data block and the already-extracted arguments
- * explicitly, so they are pure and testable with no kernel calls; shim/entry.c
- * (the kernel-ABI glue that extracts those arguments) is not exercised here.
+ * Host tests for the kernel shim: the decision logic in shim/shim.c (the F4
+ * product-ID helper, the F2 input filter and the F1 DualSense start-up) and the
+ * kernel-ABI glue in shim/entry.c that calls it. The decision functions take
+ * the data block and the already-extracted arguments explicitly, so they are
+ * pure and testable with no kernel calls. entry.c is linked in as well - its
+ * F1/F2 wrappers read the handle out of a plain byte buffer standing in for the
+ * driver object and call the original through a descriptor address, both of
+ * which a host function can fake - so which connections reach the DualSense
+ * path, which tail-call the original, and which connection id the start-up GET
+ * is sent to are all exercised here too.
  *
  * The synthetic 0x31 report is built from the DualSense Bluetooth offsets the
  * same way tests/test_ds3report.c builds it.
@@ -16,6 +21,12 @@
 #include "../shim/shim_abi.h"
 #include "../shim/ds3_report.h"
 #include "../shim/shim.h"
+
+/* shim/entry.c: the one data object the plugin and the blob share, and the two
+ * wrappers the kernel's redirects point at (the F4 helper is shim_pid_ok). */
+extern ds45_shim_data_t ds45_shim_data;
+int shim_startup(void *drv, long arg1);
+int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag);
 
 /* Sony USB identity. */
 #define VID_SONY        0x054C
@@ -81,32 +92,119 @@ static ds45_shim_data_t data_enabled(void)
 }
 
 /* ------------------------------------------------------------------------ */
-/* A fake get_report (F3): it records what GET was asked for and returns a
- * settable result, standing in for the plugin's real BT-HID sender.          */
+/* A fake of the kernel's Bluetooth HID transfer routine (note P1):
+ *     int h116ef0(u64 conn_id, int dir, int opclass, void *buf, int len)
+ * It records every argument - and what buf held at the time of the call, since
+ * the shim's buffer is reused - and returns a settable result.               */
 /* ------------------------------------------------------------------------ */
 
-static int     g_gr_calls;
-static void   *g_gr_ctx;
-static uint8_t g_gr_type;
-static uint8_t g_gr_id;
-static int     g_gr_rc;
+static int      g_send_calls;
+static uint64_t g_send_conn;
+static int      g_send_dir, g_send_opclass, g_send_len;
+static void    *g_send_buf;
+static uint8_t  g_send_pdu[8];
+static int      g_send_rc;
 
-static int fake_get_report(void *ctx, uint8_t report_type, uint8_t report_id)
+static int fake_send(uint64_t conn_id, int dir, int opclass, void *buf, int len)
 {
-	g_gr_calls++;
-	g_gr_ctx  = ctx;
-	g_gr_type = report_type;
-	g_gr_id   = report_id;
-	return g_gr_rc;
+	g_send_calls++;
+	g_send_conn    = conn_id;
+	g_send_dir     = dir;
+	g_send_opclass = opclass;
+	g_send_len     = len;
+	g_send_buf     = buf;
+	memset(g_send_pdu, 0xEE, sizeof(g_send_pdu));
+	if (buf && len > 0 && len <= (int)sizeof(g_send_pdu))
+		memcpy(g_send_pdu, buf, (size_t)len);
+	return g_send_rc;
 }
 
-static void gr_reset(int rc)
+static void send_reset(int rc)
 {
-	g_gr_calls = 0;
-	g_gr_ctx   = 0;
-	g_gr_type  = 0xFF;
-	g_gr_id    = 0xFF;
-	g_gr_rc    = rc;
+	g_send_calls   = 0;
+	g_send_conn    = 0;
+	g_send_dir     = -1;
+	g_send_opclass = -1;
+	g_send_len     = -1;
+	g_send_buf     = 0;
+	memset(g_send_pdu, 0xEE, sizeof(g_send_pdu));
+	g_send_rc      = rc;
+}
+
+/* Connection ids use all 64 bits, so a narrowing or a swapped argument shows. */
+#define CONN_ID_A   0x0123456789ABCDEFULL
+#define CONN_ID_B   0xFEDCBA9876543210ULL
+#define CONN_ID_C   0x00000000DEADBEEFULL
+
+/* ------------------------------------------------------------------------ */
+/* Fakes of the originals the glue tail-calls (F1 start-up, F2 input read).   */
+/* ------------------------------------------------------------------------ */
+
+#define ORIG_STARTUP_RC  0x1357        /* what the original start-up returns */
+#define ORIG_INPUT_LEN   64            /* what the original input read returns */
+
+static int   g_os_calls;
+static void *g_os_drv;
+static long  g_os_arg1;
+static int   g_oi_calls;
+static uint8_t g_oi_report[RPT_LEN];   /* the report the original read delivers */
+
+static int fake_orig_startup(void *drv, long arg1)
+{
+	g_os_calls++;
+	g_os_drv  = drv;
+	g_os_arg1 = arg1;
+	return ORIG_STARTUP_RC;
+}
+
+static int fake_orig_input(void *xport, uint8_t *dst, uint16_t len_in, int flag)
+{
+	(void)xport;
+	(void)len_in;
+	(void)flag;
+	g_oi_calls++;
+	memcpy(dst, g_oi_report, ORIG_INPUT_LEN);
+	return ORIG_INPUT_LEN;
+}
+
+/* The glue works on the real, global data block: reset it to enabled, with the
+ * fakes above as the originals and the send routine and no connections known. */
+static void glue_reset(void)
+{
+	memset(&ds45_shim_data, 0, sizeof(ds45_shim_data));
+	ds45_shim_data.magic        = DS45_SHIM_MAGIC;
+	ds45_shim_data.version      = DS45_SHIM_VERSION;
+	ds45_shim_data.enabled      = 1;
+	ds45_shim_data.cfg          = cfg_plain();
+	ds45_shim_data.orig_startup = (uint64_t)(uintptr_t)fake_orig_startup;
+	ds45_shim_data.orig_input   = (uint64_t)(uintptr_t)fake_orig_input;
+	ds45_shim_data.send_routine = (uint64_t)(uintptr_t)fake_send;
+	send_reset(2);
+	g_os_calls = 0;
+	g_os_drv   = 0;
+	g_os_arg1  = -1;
+	g_oi_calls = 0;
+}
+
+/* What the plugin records when a DualSense connects: the handle the hooks see,
+ * the connection id the send needs, and the slot's state last. */
+static void slot_set(int i, uint8_t handle, uint64_t conn_id)
+{
+	ds45_shim_data.conn_key[i]   = handle;
+	ds45_shim_data.conn_id[i]    = conn_id;
+	ds45_shim_data.conn_state[i] = 1;
+}
+
+/* A stand-in for the F1 driver object (handle byte at drv+0xAC) and the F2
+ * transport object (handle byte at xport+8). */
+#define F1_HANDLE_OFF   0xAC
+#define F2_HANDLE_OFF   0x08
+#define OBJ_LEN         0x100
+
+static void drv_make(uint8_t drv[OBJ_LEN], uint8_t handle)
+{
+	memset(drv, 0x5A, OBJ_LEN);        /* garbage around the handle byte */
+	drv[F1_HANDLE_OFF] = handle;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -254,46 +352,316 @@ static int test_input_identity_unknown_passthrough(void)
 /* F1: DualSense start-up                                                     */
 /* ------------------------------------------------------------------------ */
 
-/* Start-up issues exactly the feature-0x05 GET and returns F1's running
- * condition. (That this GET actually flips the hardware to 0x31 is the
- * unverified U2, tested on-console in a later task - not here.) */
-static int test_startup_issues_feature_05(void)
+/* Start-up sends the feature-0x05 GET through the kernel's transfer routine
+ * with the convention of note P1 - connection id in r3, control-out channel
+ * dir 2, report-transfer opclass 2, the PDU {0x43, 0x05} (GET_REPORT | feature,
+ * report id 5) of length 2 in the data block's OWN buffer - and returns F1's
+ * running condition. It sends only: no reply drain (P2). (That this GET really
+ * flips the hardware to 0x31 is the on-console R2, not tested here.) */
+static int test_startup_sends_feature_05_get(void)
 {
-	ds45_shim_data_t d = data_enabled();
-	int drv = 0;                   /* a stand-in driver object */
+	ds45_shim_data_t d = data_enabled(), want;
 	int rc;
 
-	d.get_report = (uint64_t)(uintptr_t)fake_get_report;
-	gr_reset(SHIM_F1_OK);          /* the GET succeeds */
+	d.send_routine = (uint64_t)(uintptr_t)fake_send;
+	send_reset(2);                 /* a successful send reports 2 bytes moved */
+	memcpy(&want, &d, sizeof(d));
 
-	rc = shim_startup_dualsense(&d, &drv, 1 /* arg1 != 0 */);
+	rc = shim_startup_dualsense(&d, CONN_ID_A, 1 /* arg1 != 0 */);
 
-	CHECK(g_gr_calls == 1);                     /* exactly one GET issued */
-	CHECK(g_gr_type == SHIM_HID_FEATURE);       /* a feature report (0x03) */
-	CHECK(g_gr_id == SHIM_DS_CALIB_REPORT_ID);  /* report id 0x05 */
-	CHECK(g_gr_ctx == (void *)&drv);            /* on this connection */
-	CHECK(rc == SHIM_F1_OK);                    /* F1's running condition */
+	CHECK(g_send_calls == 1);                 /* exactly one send, no reply drain */
+	CHECK(g_send_conn == CONN_ID_A);          /* r3: this connection, all 64 bits */
+	CHECK(g_send_dir == 2);                   /* r4: control channel, TX */
+	CHECK(g_send_opclass == 2);               /* r5: HID report transfer */
+	CHECK(g_send_len == 2);                   /* r7: the PDU length only */
+	CHECK(g_send_buf == (void *)d.pdu);       /* r6: blob-owned, never the driver's */
+	CHECK(g_send_pdu[0] == 0x43);             /* GET_REPORT | feature */
+	CHECK(g_send_pdu[1] == 0x05);             /* the calibration report id */
+	CHECK(rc == SHIM_F1_OK);                  /* F1's running condition */
 	CHECK(d.stat_startups == 1);
+
+	/* the only data-block bytes the start-up touched are the PDU and the counter */
+	want.pdu[0] = 0x43;
+	want.pdu[1] = 0x05;
+	want.stat_startups = 1;
+	CHECK(memcmp(&want, &d, sizeof(d)) == 0);
 	return 0;
 }
 
-/* When the GET fails the start-up propagates the error, bumps no counter and
- * does not crash (F1's negative-error path). */
-static int test_startup_get_report_fails(void)
+/* The send reports bytes moved on success (>= 0) and a negative 0x8001xxxx LV2
+ * error otherwise (note P1); every non-negative result is the running condition. */
+static int test_startup_send_success_codes(void)
+{
+	static const int ok[] = { 0, 2, 4 };
+	unsigned i;
+
+	for (i = 0; i < sizeof(ok) / sizeof(ok[0]); i++) {
+		ds45_shim_data_t d = data_enabled();
+
+		d.send_routine = (uint64_t)(uintptr_t)fake_send;
+		send_reset(ok[i]);
+
+		CHECK(shim_startup_dualsense(&d, CONN_ID_B, 1) == SHIM_F1_OK);
+		CHECK(g_send_calls == 1);
+		CHECK(d.stat_startups == 1);
+	}
+	return 0;
+}
+
+/* When the send fails the start-up propagates that error unchanged, counts
+ * nothing and does not retry (F1's negative-error path). */
+static int test_startup_send_fails(void)
+{
+	static const int err[] = {
+		(int)0x80010002U,          /* bad dir/len */
+		(int)0x8001000DU,          /* transfer error */
+		(int)0x80010028U,          /* transfer error */
+		(int)0x8001002DU,          /* wrong channel mode */
+	};
+	unsigned i;
+
+	for (i = 0; i < sizeof(err) / sizeof(err[0]); i++) {
+		ds45_shim_data_t d = data_enabled();
+		int rc;
+
+		d.send_routine = (uint64_t)(uintptr_t)fake_send;
+		send_reset(err[i]);
+
+		rc = shim_startup_dualsense(&d, CONN_ID_A, 1);
+
+		CHECK(g_send_calls == 1);          /* it did try, once */
+		CHECK(rc == err[i]);               /* the failure is propagated as is */
+		CHECK(rc < 0);
+		CHECK(d.stat_startups == 0);       /* counter unchanged */
+	}
+	return 0;
+}
+
+/* A data block with no send routine (a table row without one) cannot enable the
+ * pad: the start-up fails safe, sends nothing and does not crash. */
+static int test_startup_without_send_routine(void)
 {
 	ds45_shim_data_t d = data_enabled();
-	int drv = 0;
 	int rc;
 
-	d.get_report = (uint64_t)(uintptr_t)fake_get_report;
-	gr_reset(SHIM_F1_ERR);         /* the GET fails with an LV2 error */
+	send_reset(2);                 /* d.send_routine stays 0 */
 
-	rc = shim_startup_dualsense(&d, &drv, 1);
+	rc = shim_startup_dualsense(&d, CONN_ID_A, 1);
 
-	CHECK(g_gr_calls == 1);                /* it did go through get_report */
-	CHECK(rc == SHIM_F1_ERR);              /* the failure is propagated */
-	CHECK(rc != SHIM_F1_OK);
-	CHECK(d.stat_startups == 0);           /* counter unchanged */
+	CHECK(rc == SHIM_F1_ERR);
+	CHECK(g_send_calls == 0);
+	CHECK(d.stat_startups == 0);
+	CHECK(d.pdu[0] == 0 && d.pdu[1] == 0);
+	return 0;
+}
+
+/* A connection whose id was never captured (0) is not sent to: the kernel's
+ * routine would look a bogus id up. The start-up fails safe instead. */
+static int test_startup_without_conn_id(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	int rc;
+
+	d.send_routine = (uint64_t)(uintptr_t)fake_send;
+	send_reset(2);
+
+	rc = shim_startup_dualsense(&d, 0, 1);
+
+	CHECK(rc == SHIM_F1_ERR);
+	CHECK(g_send_calls == 0);
+	CHECK(d.stat_startups == 0);
+	return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* F1 glue (entry.c): which connections get the GET, and to which id          */
+/* ------------------------------------------------------------------------ */
+
+/* An enabled DualSense connection's start-up is sent to THAT connection's id,
+ * taken from the slot the plugin filled for the handle at drv+0xAC - not the
+ * first slot, not another DualSense's - and never reaches the original. */
+static int test_glue_startup_sends_to_the_slots_conn_id(void)
+{
+	uint8_t drv[OBJ_LEN];
+	int rc;
+
+	glue_reset();
+	slot_set(0, 0x11, CONN_ID_C);
+	slot_set(3, 0x2A, CONN_ID_A);
+	slot_set(5, 0x2B, CONN_ID_B);
+	drv_make(drv, 0x2A);
+
+	rc = shim_startup(drv, 1);
+
+	CHECK(rc == SHIM_F1_OK);
+	CHECK(g_send_calls == 1);
+	CHECK(g_send_conn == CONN_ID_A);               /* slot 3's, by handle 0x2A */
+	CHECK(g_send_dir == 2);
+	CHECK(g_send_opclass == 2);
+	CHECK(g_send_len == 2);
+	CHECK(g_send_buf == (void *)ds45_shim_data.pdu);
+	CHECK(g_send_pdu[0] == 0x43 && g_send_pdu[1] == 0x05);
+	CHECK(g_os_calls == 0);                        /* the original never ran */
+	CHECK(ds45_shim_data.stat_startups == 1);
+
+	/* a second DualSense, another handle: its own id */
+	send_reset(2);
+	drv_make(drv, 0x2B);
+	CHECK(shim_startup(drv, 1) == SHIM_F1_OK);
+	CHECK(g_send_calls == 1);
+	CHECK(g_send_conn == CONN_ID_B);
+	CHECK(ds45_shim_data.stat_startups == 2);
+	CHECK(g_os_calls == 0);
+	return 0;
+}
+
+/* A connection the plugin did not record (a DualShock 3, a Move navigation
+ * controller, anything not a DualSense) takes exactly the original path: the
+ * original is called with the very same arguments and its result returned, no
+ * send is made and the data block is not touched. */
+static int test_glue_startup_non_dualsense_tail_calls_original(void)
+{
+	uint8_t drv[OBJ_LEN];
+	ds45_shim_data_t before;
+	int rc;
+
+	glue_reset();
+	slot_set(2, 0x2A, CONN_ID_A);
+	drv_make(drv, 0x77);                           /* not in any slot */
+	memcpy(&before, &ds45_shim_data, sizeof(before));
+
+	rc = shim_startup(drv, 5);
+
+	CHECK(rc == ORIG_STARTUP_RC);
+	CHECK(g_os_calls == 1);
+	CHECK(g_os_drv == (void *)drv);
+	CHECK(g_os_arg1 == 5);
+	CHECK(g_send_calls == 0);
+	CHECK(memcmp(&before, &ds45_shim_data, sizeof(before)) == 0);
+	return 0;
+}
+
+/* d->enabled == 0 makes the start-up behave exactly like the original, even for
+ * a connection the plugin recorded as a DualSense. */
+static int test_glue_startup_disabled_tail_calls_original(void)
+{
+	uint8_t drv[OBJ_LEN];
+
+	glue_reset();
+	slot_set(0, 0x2A, CONN_ID_A);
+	ds45_shim_data.enabled = 0;
+	drv_make(drv, 0x2A);
+
+	CHECK(shim_startup(drv, 1) == ORIG_STARTUP_RC);
+	CHECK(g_os_calls == 1);
+	CHECK(g_send_calls == 0);
+	CHECK(ds45_shim_data.stat_startups == 0);
+	return 0;
+}
+
+/* The original returns early for arg1 == 0 (F1); the shim leaves that to it. */
+static int test_glue_startup_arg1_zero_tail_calls_original(void)
+{
+	uint8_t drv[OBJ_LEN];
+
+	glue_reset();
+	slot_set(0, 0x2A, CONN_ID_A);
+	drv_make(drv, 0x2A);
+
+	CHECK(shim_startup(drv, 0) == ORIG_STARTUP_RC);
+	CHECK(g_os_calls == 1);
+	CHECK(g_os_arg1 == 0);
+	CHECK(g_send_calls == 0);
+	return 0;
+}
+
+/* A slot whose state is cleared (the connection went away) is not a DualSense,
+ * whatever stale handle or id it still holds - a DS3 reusing the handle must
+ * take the original path. And a NULL driver object never crashes. */
+static int test_glue_startup_cleared_slot_and_null_drv(void)
+{
+	uint8_t drv[OBJ_LEN];
+
+	glue_reset();
+	slot_set(1, 0x2A, CONN_ID_A);
+	ds45_shim_data.conn_state[1] = 0;
+	drv_make(drv, 0x2A);
+
+	CHECK(shim_startup(drv, 1) == ORIG_STARTUP_RC);
+	CHECK(g_os_calls == 1);
+	CHECK(g_send_calls == 0);
+
+	slot_set(1, 0x2A, CONN_ID_A);
+	CHECK(shim_startup(0, 1) == ORIG_STARTUP_RC);
+	CHECK(g_os_calls == 2);
+	CHECK(g_os_drv == 0);
+	CHECK(g_send_calls == 0);
+	return 0;
+}
+
+/* A DualSense slot with no connection id captured yet fails the start-up safely
+ * (the pure function's guard): nothing is sent, the original is not run on the
+ * DualSense, and the driver sees F1's error. */
+static int test_glue_startup_slot_without_conn_id_fails_safe(void)
+{
+	uint8_t drv[OBJ_LEN];
+
+	glue_reset();
+	slot_set(4, 0x2A, 0);
+	drv_make(drv, 0x2A);
+
+	CHECK(shim_startup(drv, 1) == SHIM_F1_ERR);
+	CHECK(g_send_calls == 0);
+	CHECK(g_os_calls == 0);
+	CHECK(ds45_shim_data.stat_startups == 0);
+	return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* F2 glue (entry.c): it shares the slot lookup with F1, so guard it too       */
+/* ------------------------------------------------------------------------ */
+
+static int test_glue_input_translates_a_dualsense_slot(void)
+{
+	uint8_t xport[16], dst[OBJ_LEN], want[DS3_REPORT_LEN];
+	int rc;
+
+	glue_reset();
+	slot_set(6, 0x2A, CONN_ID_A);
+	memset(xport, 0, sizeof(xport));
+	xport[F2_HANDLE_OFF] = 0x2A;
+	report_neutral(g_oi_report);
+	ds3_neutral(want);
+	memset(dst, 0, sizeof(dst));
+
+	rc = shim_input(xport, dst, 64, 0);
+
+	CHECK(g_oi_calls == 1);
+	CHECK(rc == DS3_REPORT_LEN);
+	CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);
+	CHECK(ds45_shim_data.stat_translated == 1);
+	return 0;
+}
+
+static int test_glue_input_unknown_handle_untouched(void)
+{
+	uint8_t xport[16], dst[OBJ_LEN];
+	int rc;
+
+	glue_reset();
+	slot_set(6, 0x2A, CONN_ID_A);
+	memset(xport, 0, sizeof(xport));
+	xport[F2_HANDLE_OFF] = 0x77;                   /* a DS3's connection */
+	report_neutral(g_oi_report);
+	memset(dst, 0, sizeof(dst));
+
+	rc = shim_input(xport, dst, 64, 0);
+
+	CHECK(g_oi_calls == 1);
+	CHECK(rc == ORIG_INPUT_LEN);                   /* the original's result */
+	CHECK(memcmp(dst, g_oi_report, ORIG_INPUT_LEN) == 0);
+	CHECK(ds45_shim_data.stat_translated == 0);
+	CHECK(ds45_shim_data.stat_passed == 0);        /* never even entered the filter */
 	return 0;
 }
 
@@ -306,8 +674,19 @@ int run_tests(void)
 		test_input_short_passthrough,
 		test_input_disabled_passthrough,
 		test_input_identity_unknown_passthrough,
-		test_startup_issues_feature_05,
-		test_startup_get_report_fails,
+		test_startup_sends_feature_05_get,
+		test_startup_send_success_codes,
+		test_startup_send_fails,
+		test_startup_without_send_routine,
+		test_startup_without_conn_id,
+		test_glue_startup_sends_to_the_slots_conn_id,
+		test_glue_startup_non_dualsense_tail_calls_original,
+		test_glue_startup_disabled_tail_calls_original,
+		test_glue_startup_arg1_zero_tail_calls_original,
+		test_glue_startup_cleared_slot_and_null_drv,
+		test_glue_startup_slot_without_conn_id_fails_safe,
+		test_glue_input_translates_a_dualsense_slot,
+		test_glue_input_unknown_handle_untouched,
 	};
 	unsigned i;
 	int line;

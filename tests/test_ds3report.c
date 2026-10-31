@@ -837,7 +837,7 @@ static int test_abi_layout(void)
 	/* "DS45SHM1", most significant byte first */
 	for (i = 0; i < 8; i++)
 		CHECK((uint8_t)(DS45_SHIM_MAGIC >> (56 - 8 * i)) == (uint8_t)"DS45SHM1"[i]);
-	CHECK(DS45_SHIM_VERSION == 1);
+	CHECK(DS45_SHIM_VERSION == 2);     /* 2: the feature-0x05 GET fields */
 	CHECK(DS45_SHIM_CONNS == 8);
 
 	/* The plugin and the blob compile this header separately and meet in
@@ -858,14 +858,21 @@ static int test_abi_layout(void)
 	CHECK(offsetof(ds45_shim_data_t, enabled) == 12);
 	CHECK(offsetof(ds45_shim_data_t, orig_startup) == 16);
 	CHECK(offsetof(ds45_shim_data_t, orig_input) == 24);
-	CHECK(offsetof(ds45_shim_data_t, get_report) == 32);
+	CHECK(offsetof(ds45_shim_data_t, send_routine) == 32);
 	CHECK(offsetof(ds45_shim_data_t, cfg) == 40);
 	CHECK(offsetof(ds45_shim_data_t, conn_key) == 56);
 	CHECK(offsetof(ds45_shim_data_t, conn_state) == 120);
 	CHECK(offsetof(ds45_shim_data_t, stat_translated) == 128);
 	CHECK(offsetof(ds45_shim_data_t, stat_passed) == 132);
 	CHECK(offsetof(ds45_shim_data_t, stat_startups) == 136);
-	CHECK(sizeof(ds45_shim_data_t) == 144);
+	/* version 2 appends after the v1 block, so every v1 offset above is kept */
+	CHECK(offsetof(ds45_shim_data_t, send_opd) == 144);    /* { entry, toc, env } */
+	CHECK(offsetof(ds45_shim_data_t, conn_id) == 168);
+	CHECK(offsetof(ds45_shim_data_t, pdu) == 232);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->send_opd) == 24);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->conn_id) == 8 * DS45_SHIM_CONNS);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->pdu) == 8);
+	CHECK(sizeof(ds45_shim_data_t) == 240);
 	return 0;
 }
 

@@ -26,13 +26,23 @@
 
 /* F3 GET_REPORT of the DualSense calibration feature report. Reading HID
  * feature report 0x05 over Bluetooth is what switches a DualSense from its
- * minimal input report to the full motion report 0x31. The plugin supplies the
- * get_report primitive (it builds the 0x43/0x05 control-channel PDU and drives
- * it through the kernel BT-HID sender, fact sheet F3); the shim only has to ask
- * for the right report type and id. The type is the GET_REPORT header's low
- * nibble: 0x40 (GET_REPORT) | 0x03 (feature). */
+ * minimal input report to the full motion report 0x31. The kernel has no GET
+ * helper (the DS3 driver only ever SETs), so the shim builds the control-channel
+ * request PDU itself - one header byte, then the report id, no payload - and
+ * hands it to the kernel's own Bluetooth HID transfer routine (note
+ * 2026-10-31-ds3-route-get-primitive.md, P1). The header is the HIDP
+ * transaction GET_REPORT (0x40) | the report type (feature = 0x03) = 0x43. */
+#define SHIM_HIDP_GET_REPORT      0x40
 #define SHIM_HID_FEATURE          0x03
 #define SHIM_DS_CALIB_REPORT_ID   0x05
+#define SHIM_GET_PDU_LEN          2
+
+/* How the transfer routine is called for that PDU (P1, cross-checked against
+ * the driver's own SET sender, which also uses dir 2 / opclass 2): dir selects
+ * the L2CAP channel slot and its direction - 2 is the control channel's TX - and
+ * opclass 2 is the HID report transfer. */
+#define SHIM_SEND_DIR_CTRL_OUT    2
+#define SHIM_SEND_OPCLASS_REPORT  2
 
 /* F1 start-up return values. The original Bluetooth start-up handler returns 0
  * on its success path and a negative LV2 error on failure (fact sheet F1). The
@@ -43,12 +53,14 @@
 #define SHIM_F1_OK    0
 #define SHIM_F1_ERR   ((int)0x8001000CU)
 
-/* The plugin-supplied BT-HID GET_REPORT primitive held in
- * ds45_shim_data_t.get_report (as a function descriptor). It issues a
- * GET_REPORT of (report_type, report_id) on the connection ctx identifies and
- * returns 0 on success or a negative LV2 error. */
-typedef int (*shim_get_report_fn)(void *ctx, uint8_t report_type,
-                                  uint8_t report_id);
+/* The kernel's Bluetooth HID transfer routine (note P1), called through the
+ * function descriptor ds45_shim_data_t.send_routine points at:
+ *     int h116ef0(u64 conn_id, int dir, int opclass, void *buf, int len);
+ * It locks, resolves conn_id to a connection, and queues buf[0..len) on the
+ * channel dir selects. It returns >= 0 on success (bytes moved) and a negative
+ * 0x8001xxxx LV2 error otherwise. */
+typedef int (*shim_send_fn)(uint64_t conn_id, int dir, int opclass,
+                            void *buf, int len);
 
 /* 1 only for a DualSense (VID 0x054C, PID 0x0CE6). */
 int shim_is_dualsense(uint16_t vid, uint16_t pid);
@@ -69,13 +81,22 @@ int shim_pid_ok(uint32_t vid, uint32_t pid);
 int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
                       uint8_t *buf, uint16_t *len);
 
-/* F1 start-up for a DualSense: issue the feature-0x05 GET through
- * d->get_report so the pad begins emitting 0x31 reports, bump stat_startups on
- * success, and return F1's running condition (SHIM_F1_OK) or the GET's error.
- * drv is the F1 start-up argument (the connection the GET targets); arg1 is
+/* F1 start-up for a DualSense: send the feature-0x05 GET so the pad begins
+ * emitting 0x31 reports. It builds the PDU {0x43, 0x05} in d->pdu - the data
+ * block's own buffer, never the driver's shared one, which the lock this context
+ * does not hold protects - and calls the transfer routine through
+ * d->send_routine as (conn_id, SHIM_SEND_DIR_CTRL_OUT, SHIM_SEND_OPCLASS_REPORT,
+ * d->pdu, SHIM_GET_PDU_LEN). It does not read the reply: the send alone is what
+ * starts the stream (note P2), and the running transition comes from the input
+ * wrapper translating those reports. On a non-negative result it bumps
+ * stat_startups and returns F1's running condition (SHIM_F1_OK); on a negative
+ * one it returns that error unchanged. With no send routine, or no connection id
+ * (0 - the plugin has not recorded one), it sends nothing and returns
+ * SHIM_F1_ERR, so a DualSense start-up fails safe.
+ * conn_id is the connection's id as the transfer routine takes it (r3); arg1 is
  * taken for signature fidelity with F1 - entry.c has already routed the
  * original's arg1==0 early-return to d->orig_startup, so the running transition
  * never depends on it here. */
-int shim_startup_dualsense(ds45_shim_data_t *d, void *drv, long arg1);
+int shim_startup_dualsense(ds45_shim_data_t *d, uint64_t conn_id, long arg1);
 
 #endif /* DS45_SHIM_H */

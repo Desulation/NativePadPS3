@@ -10,7 +10,8 @@
  *   3. borrow the spare syscall slot to call the LV2 allocator once, restore it;
  *   4. range-check the allocation (in-window, and a 26-bit branch of the F4 sites);
  *   5. copy the blob qword by qword, rebasing relocated words;
- *   6. fill the data block (originals, get_report, cfg, enabled);
+ *   6. fill the data block (originals, the transfer routine's descriptor, cfg,
+ *      enabled);
  *   7. flush the instruction cache over the blob (F5);
  *   8. apply the product-ID branches and the two redirects transactionally.
  *
@@ -40,6 +41,15 @@
 /* The data block exactly fills the blob's tail (OFF_DATA .. BLOB_LEN); it is
  * written qword by qword, so its size must be a multiple of 8. */
 typedef char kshim_data_multiple_of_8[(sizeof(ds45_shim_data_t) % 8 == 0) ? 1 : -1];
+
+/* Everything the plugin reaches into the live block for is a whole, aligned
+ * qword: the version (adoption), the conn_state[] array - all of it, one byte
+ * per slot - and the per-slot key and id words (kshim_set_connection). */
+typedef char kshim_version_qword[(offsetof(ds45_shim_data_t, version) % 8 == 0) ? 1 : -1];
+typedef char kshim_conn_state_qword[(sizeof(((ds45_shim_data_t *)0)->conn_state) == 8 &&
+                                     offsetof(ds45_shim_data_t, conn_state) % 8 == 0) ? 1 : -1];
+typedef char kshim_conn_words_aligned[(offsetof(ds45_shim_data_t, conn_key) % 8 == 0 &&
+                                       offsetof(ds45_shim_data_t, conn_id) % 8 == 0) ? 1 : -1];
 
 /* What a successful (or adopted) install left behind, for kshim_remove. */
 static ds45_kjournal_t g_journal;
@@ -112,10 +122,12 @@ static int hash_ok(uint64_t addr, uint64_t expect)
 }
 
 /* The redirects already point at one of our blobs: both slots consistent with a
- * single base and that base's data block carries the magic. Fills *base. */
+ * single base and that base's data block carries the magic and this build's
+ * version. A blob left by a build with another data-block layout is not adopted:
+ * the plugin reaches into the block by this build's offsets. Fills *base. */
 static int already_installed(const ds45_shim_kernel_t *k, uint64_t *base)
 {
-	uint64_t sv, iv, b, magic;
+	uint64_t sv, iv, b, magic, ver;
 
 	if (ds45_lv2_read(k->startup_slot, &sv) || ds45_lv2_read(k->input_slot, &iv))
 		return 0;
@@ -128,16 +140,23 @@ static int already_installed(const ds45_shim_kernel_t *k, uint64_t *base)
 		return 0;
 	if (magic != DS45_SHIM_MAGIC)
 		return 0;
+	/* the version is the high word of its big-endian qword (enabled follows) */
+	if (ds45_lv2_read(b + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, version), &ver))
+		return 0;
+	if ((uint32_t)(ver >> 32) != DS45_SHIM_VERSION)
+		return 0;
 	*base = b;
 	return 1;
 }
 
 /* Build the data block the plugin owns, in PPU (big-endian) byte order. magic
- * and version are set to the same constants the blob ships; the per-connection
- * and counter fields start zeroed. Field offsets come from the shared ABI
- * struct, which has identical layout on the plugin, the blob and the host
- * (fixed-width fields at natural alignment, no pointers). */
-static void build_data_block(const ds45_shim_kernel_t *k, uint8_t *buf)
+ * and version are set to the same constants the blob ships; the per-connection,
+ * request-buffer and counter fields start zeroed. Field offsets come from the
+ * shared ABI struct, which has identical layout on the plugin, the blob and the
+ * host (fixed-width fields at natural alignment, no pointers). base is where the
+ * blob was loaded: the transfer routine's descriptor lives in this block, so
+ * send_routine holds an address inside the loaded copy. */
+static void build_data_block(const ds45_shim_kernel_t *k, uint64_t base, uint8_t *buf)
 {
 	uint8_t *cfg;
 
@@ -147,7 +166,19 @@ static void build_data_block(const ds45_shim_kernel_t *k, uint8_t *buf)
 	put_be32(buf + offsetof(ds45_shim_data_t, enabled), 1);
 	put_be64(buf + offsetof(ds45_shim_data_t, orig_startup), k->startup_expect);
 	put_be64(buf + offsetof(ds45_shim_data_t, orig_input), k->input_expect);
-	put_be64(buf + offsetof(ds45_shim_data_t, get_report), k->get_report_desc);
+
+	/* The kernel's Bluetooth HID transfer routine has no descriptor of its own
+	 * (it is called directly in-kernel, like the F5 flush routine), so the block
+	 * carries one - ELFv1 { entry, toc, env }, env 0 - and send_routine is its
+	 * address as loaded: the shim calls through send_routine exactly as it calls
+	 * the originals. A row with no transfer routine leaves both zero, and the
+	 * shim's DualSense start-up then fails safe. */
+	if (k->send_entry) {
+		put_be64(buf + offsetof(ds45_shim_data_t, send_opd), k->send_entry);
+		put_be64(buf + offsetof(ds45_shim_data_t, send_opd) + 8, k->send_toc);
+		put_be64(buf + offsetof(ds45_shim_data_t, send_routine),
+		         base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, send_opd));
+	}
 
 	cfg = buf + offsetof(ds45_shim_data_t, cfg);
 	cfg[offsetof(ds45_shim_cfg_t, deadzone)]     = (uint8_t)g_cfg.stick_deadzone;
@@ -280,8 +311,9 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 		}
 	}
 
-	/* 6. the data block (originals, get_report, cfg from g_cfg, enabled) */
-	build_data_block(k, db);
+	/* 6. the data block (originals, the transfer routine's descriptor, cfg from
+	 * g_cfg, enabled) */
+	build_data_block(k, base, db);
 	for (off = 0; off < sizeof(db); off += 8)
 		if (ds45_lv2_write(base + DS45_SHIM_OFF_DATA + off, be64(db + off))) {
 			DS45_TRACE("kshim_data_FAILED");
@@ -359,6 +391,89 @@ fail:
 kshim_result_t kshim_install(void)
 {
 	return kshim_install_from(ds45_shim_table, ds45_shim_table_count);
+}
+
+/* Rewrite one byte of conn_state[], which is DS45_SHIM_CONNS bytes = one
+ * big-endian qword (slot 0 its most significant byte), given the qword as just
+ * read. Nothing but the plugin ever writes it (the blob only reads), so the
+ * read-modify-write is safe. 0 once the write has read back, else -1. */
+static int conn_state_put(uint64_t state_addr, uint64_t cur, int slot, uint8_t v)
+{
+	int sh = 56 - 8 * slot;
+
+	return ds45_lv2_write(state_addr,
+	                      (cur & ~(0xFFULL << sh)) | ((uint64_t)v << sh)) ? -1 : 0;
+}
+
+int kshim_set_connection(uint8_t handle, uint64_t conn_id)
+{
+	const uint64_t db = g_base + DS45_SHIM_OFF_DATA;
+	const uint64_t state_addr = db + offsetof(ds45_shim_data_t, conn_state);
+	uint64_t state, key;
+	int i, slot = -1, free_slot = -1;
+
+	if (g_state != KSHIM_INSTALLED && g_state != KSHIM_ALREADY)
+		return -1;
+	if (ds45_lv2_read(state_addr, &state))
+		return -1;
+
+	/* Find the slot the shim would match for this handle - the first one that
+	 * is in use and holds it, as entry.c's lookup does - and the first free one. */
+	for (i = 0; i < DS45_SHIM_CONNS; i++) {
+		if (((state >> (56 - 8 * i)) & 0xFF) == 0) {
+			if (free_slot < 0)
+				free_slot = i;
+			continue;
+		}
+		if (ds45_lv2_read(db + offsetof(ds45_shim_data_t, conn_key) + 8 * (uint64_t)i,
+		                  &key))
+			return -1;
+		if ((uint8_t)key == handle) {
+			slot = i;
+			break;
+		}
+	}
+
+	if (conn_id == 0) {
+		/* Forget the handle: hide its slot from the shim first (its key and id
+		 * are only read once the state byte is set, so they can stay). */
+		if (slot < 0)
+			return 0;
+		if (conn_state_put(state_addr, state, slot, 0)) {
+			DS45_TRACE("kshim_conn_forget_FAILED");
+			return -1;
+		}
+		return 0;
+	}
+
+	if (slot >= 0) {
+		/* A reconnect: the slot is live, so only the id changes - one aligned
+		 * qword, which the shim reads in one piece. */
+		if (ds45_lv2_write(db + offsetof(ds45_shim_data_t, conn_id) + 8 * (uint64_t)slot,
+		                   conn_id)) {
+			DS45_TRACE("kshim_conn_update_FAILED");
+			return -1;
+		}
+		return 0;
+	}
+
+	if (free_slot < 0) {
+		DS45_TRACE("kshim_conn_full");
+		return -1;
+	}
+
+	/* A new connection: its id and handle first, then the state byte, which is
+	 * what makes the slot visible - so a write that does not stick never leaves
+	 * the shim a half-written connection. */
+	if (ds45_lv2_write(db + offsetof(ds45_shim_data_t, conn_id) + 8 * (uint64_t)free_slot,
+	                   conn_id) ||
+	    ds45_lv2_write(db + offsetof(ds45_shim_data_t, conn_key) + 8 * (uint64_t)free_slot,
+	                   handle) ||
+	    conn_state_put(state_addr, state, free_slot, 1)) {
+		DS45_TRACE("kshim_conn_set_FAILED");
+		return -1;
+	}
+	return 0;
 }
 
 void kshim_remove(void)

@@ -24,8 +24,9 @@
 #include "shim.h"
 
 /* The one object the plugin and the blob share at run time. The plugin writes
- * the configuration, the original descriptors, the get_report descriptor and
- * the per-connection identity into it when it installs the shim and reads the
+ * the configuration, the original descriptors, the transfer-routine descriptor
+ * and the per-connection identity and connection id into it (the first three
+ * when it installs the shim, the last as connections come up) and reads the
  * counters back; the blob reads the configuration from it.
  *
  * It carries its magic and version pre-filled so the installer can sanity-check
@@ -54,13 +55,14 @@ typedef int (*orig_input_fn)(void *xport, uint8_t *dst, uint16_t len_in,
 
 /* Resolve a connection handle to the identity the plugin recorded in the data
  * block. The plugin fills a slot when a controller connects - conn_key[i] holds
- * that connection's handle and conn_state[i] is non-zero for an enabled
- * DualSense - resolving VID/PID the confirmed way (the pad object at +0x68)
- * rather than from these hook arguments, which do not carry it. Deriving VID/
- * PID straight from the hook args is the deferred residual U1; the blob only
- * reads the slots the plugin fills. Returns 1 and the DualSense identity for a
- * matching enabled slot, else 0 (which makes the caller tail-call the
- * original). */
+ * that connection's handle, conn_id[i] the id the kernel's transfer routine
+ * takes for it, and conn_state[i] is non-zero for an enabled DualSense (set
+ * last) - resolving VID/PID the confirmed way (the pad object at +0x68) rather
+ * than from these hook arguments, which do not carry it. Deriving VID/PID
+ * straight from the hook args is the deferred residual U1; the blob only reads
+ * the slots the plugin fills. Returns the matching enabled slot's index, with
+ * the DualSense identity, else -1 (which makes the caller tail-call the
+ * original). The index reaches the rest of that connection's state. */
 static int entry_identity(uint8_t handle, uint16_t *vid, uint16_t *pid)
 {
 	int i;
@@ -70,24 +72,30 @@ static int entry_identity(uint8_t handle, uint16_t *vid, uint16_t *pid)
 		    (uint8_t)ds45_shim_data.conn_key[i] == handle) {
 			*vid = 0x054C;
 			*pid = 0x0CE6;
-			return 1;
+			return i;
 		}
 	}
-	return 0;
+	return -1;
 }
 
 /* F1: Bluetooth Sony-pad start-up. For an enabled DualSense, do its own enable
- * (shim_startup_dualsense issues the feature-0x05 GET); for everything else -
- * disabled, the original's arg1==0 early-return, an unknown connection or a
- * DualShock 3 - tail-call the original so it is untouched. */
+ * (shim_startup_dualsense sends the feature-0x05 GET to the connection id the
+ * plugin recorded for this handle: the hook argument carries only the 1-byte
+ * handle, not the connection object, so the id is not derivable here - fact
+ * sheet F1, note P3/R3); for everything else - disabled, the original's
+ * arg1==0 early-return, an unknown connection or a DualShock 3 - tail-call the
+ * original so it is untouched. */
 int shim_startup(void *drv, long arg1)
 {
 	uint16_t vid, pid;
+	int slot;
 
-	if (ds45_shim_data.enabled && arg1 != 0 && drv &&
-	    entry_identity(*((const uint8_t *)drv + F1_HANDLE_OFF), &vid, &pid) &&
-	    shim_is_dualsense(vid, pid))
-		return shim_startup_dualsense(&ds45_shim_data, drv, arg1);
+	if (ds45_shim_data.enabled && arg1 != 0 && drv) {
+		slot = entry_identity(*((const uint8_t *)drv + F1_HANDLE_OFF), &vid, &pid);
+		if (slot >= 0 && shim_is_dualsense(vid, pid))
+			return shim_startup_dualsense(&ds45_shim_data,
+			                              ds45_shim_data.conn_id[slot], arg1);
+	}
 
 	return ((orig_startup_fn)(uintptr_t)ds45_shim_data.orig_startup)(drv, arg1);
 }
@@ -105,7 +113,7 @@ int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 
 	if (!ds45_shim_data.enabled || !xport || !dst || rc < 0 || rc > 0x41)
 		return rc;
-	if (!entry_identity(*((const uint8_t *)xport + F2_HANDLE_OFF), &vid, &pid))
+	if (entry_identity(*((const uint8_t *)xport + F2_HANDLE_OFF), &vid, &pid) < 0)
 		return rc;
 
 	n = (uint16_t)rc;

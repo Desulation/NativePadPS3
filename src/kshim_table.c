@@ -42,17 +42,18 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		 * vtable+0x20) and the OPD it currently holds. */
 		0x800000000037CE38ULL, 0x800000000033A010ULL,
 
-		/* F3 - GET_REPORT feature-0x05 helper descriptor. The DS3 driver has
-		 * NO ready-made Bluetooth HID GET_REPORT path (the only candidate,
-		 * 0x102750/OPD 0x3408C8, is SET-only and hard-codes the 0x50 header),
-		 * so F3 supplies no usable descriptor: this is the deferred residual U2
-		 * (how the feature-report reply is read back, and whether feature 0x05
-		 * flips the pad to report 0x31, are both settled only by the Task 8
-		 * console experiment with the user present). Left 0 here; the shim's
-		 * shim_startup_dualsense returns SHIM_F1_ERR for a 0 get_report, so a
-		 * DualSense start-up safely fails until the primitive is wired, and a
-		 * DS3 is untouched either way. */
-		0ULL,
+		/* F3/P4 - the kernel's Bluetooth HID transfer routine, the one the DS3
+		 * driver itself sends and drains reports with (note
+		 * 2026-10-31-ds3-route-get-primitive.md, P1): entry 0x116EF0, called as
+		 * int h116ef0(conn_id, dir, opclass, buf, len). The DS3 driver has NO
+		 * GET_REPORT helper (0x102750/OPD 0x3408C8 is SET-only and hard-codes
+		 * the 0x50 header), so the shim builds the {0x43, 0x05} PDU itself and
+		 * sends it through this routine. The routine is OPD-less, like the F5
+		 * flush, so the row gives { entry, toc } and the installer builds the
+		 * descriptor in the data block; the toc is the one kernel TOC every OPD
+		 * on this firmware carries (fact sheet header, 0x3759C0). That the send
+		 * alone flips the pad to report 0x31 is the on-console residual R2. */
+		0x8000000000116EF0ULL, 0x80000000003759C0ULL,
 
 		/* F4 - product-ID acceptance. Two BRANCH redirects to the blob's
 		 * shim_pid_ok (OFF_PID_OK), each verified by the FNV hash of the

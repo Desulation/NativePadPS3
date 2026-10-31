@@ -34,7 +34,7 @@ typedef struct {
 	uint64_t flush_desc;                    /* 0 if F5 says the poke is coherent */
 	uint64_t startup_slot, startup_expect;  /* F1 */
 	uint64_t input_slot, input_expect;      /* F2 */
-	uint64_t get_report_desc;               /* F3 */
+	uint64_t send_entry, send_toc;          /* F3/P4: BT-HID transfer routine h116ef0 as { entry, toc }; entry 0 = none */
 	ds45_kpatch_t pid_patches[2];           /* F4, value of BRANCH = 0 -> shim_pid_ok */
 } ds45_shim_kernel_t;
 extern const ds45_shim_kernel_t ds45_shim_table[];
@@ -64,5 +64,27 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n);
  * blob stays allocated, since a driver thread may still be executing inside it.
  * A no-op when nothing is installed. */
 void kshim_remove(void);
+
+/* Record, in the installed shim's data block, that the Bluetooth connection
+ * with this handle (the byte the F1/F2 hooks see: drv+0xAC / xport+8) is an
+ * enabled DualSense, and the connection id the kernel's transfer routine takes
+ * for it. The shim's start-up sends its feature-0x05 GET to exactly that id
+ * (note P1); it passes the value through untouched and cannot derive it from the
+ * hook arguments, which carry only the handle (fact sheet F1), so it must be
+ * captured here, when the connection comes up.
+ *
+ * A handle already recorded is updated in place; otherwise the first free slot
+ * is used. conn_id == 0 forgets the handle (its slot stops matching, so a
+ * DualShock 3 that later reuses the handle takes the original path), and
+ * forgetting a handle that is not recorded writes nothing. A slot becomes
+ * visible to the shim only when its state byte is set, which is written last,
+ * and is hidden first when forgotten, so the shim never sees a half-written
+ * connection. Every write is read back. It read-modify-writes the state qword,
+ * so calls must not run concurrently; the shim only ever reads the block.
+ *
+ * Returns 0 once done, or -1 if nothing is installed, every slot is taken by
+ * another handle, or a write did not stick. Nothing calls this yet: where the
+ * composite id is read from at connect time is the open residual R3/U1. */
+int kshim_set_connection(uint8_t handle, uint64_t conn_id);
 
 #endif /* DS45_KSHIM_H */

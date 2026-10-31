@@ -9,8 +9,9 @@
  * VID/PID, the buffer and the length out of the F1/F2 argument lists) stays in
  * the untested glue in entry.c and these bodies stay pure and testable.
  *
- * The interfaces and the conventions used here are shim.h and fact sheet
- * F1-F4. Licensed under GPLv2 - see LICENSE.
+ * The interfaces and the conventions used here are shim.h, fact sheet F1-F4 and
+ * the GET-primitive note (docs/superpowers/notes/2026-10-31-ds3-route-get-
+ * primitive.md, P1-P5). Licensed under GPLv2 - see LICENSE.
  */
 
 #include "shim.h"
@@ -63,9 +64,9 @@ int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
 	return len ? (int)*len : 0;
 }
 
-int shim_startup_dualsense(ds45_shim_data_t *d, void *drv, long arg1)
+int shim_startup_dualsense(ds45_shim_data_t *d, uint64_t conn_id, long arg1)
 {
-	shim_get_report_fn get;
+	shim_send_fn send;
 	int rc;
 
 	/* arg1 is the F1 dispatch argument; entry.c has already sent the
@@ -76,18 +77,32 @@ int shim_startup_dualsense(ds45_shim_data_t *d, void *drv, long arg1)
 	if (!d)
 		return SHIM_F1_OK;
 
-	get = (shim_get_report_fn)(uintptr_t)d->get_report;
-	if (!get)
+	/* Without the transfer routine's descriptor, or a connection id to hand it
+	 * (0: the plugin has not recorded one), there is nothing safe to call - the
+	 * kernel routine would look the id up - so the start-up fails safe. */
+	send = (shim_send_fn)(uintptr_t)d->send_routine;
+	if (!send || conn_id == 0)
 		return SHIM_F1_ERR;
 
-	/* Kick off the pad's 0x31 report stream by reading its calibration
-	 * feature report (F3). The 3->running transition is then produced by the
-	 * input wrapper translating those reports, so on success the shim just
-	 * returns F1's running condition and lets the driver keep polling. */
-	rc = get(drv, SHIM_HID_FEATURE, SHIM_DS_CALIB_REPORT_ID);
-	if (rc == SHIM_F1_OK) {
-		d->stat_startups++;
-		return SHIM_F1_OK;
-	}
-	return rc;
+	/* Kick off the pad's 0x31 report stream by requesting its calibration
+	 * feature report (F3): GET_REPORT, feature, report id 5, no payload. The
+	 * PDU is built in the data block's own buffer - the driver's shared buffer
+	 * is guarded by a lock this context does not hold (note P3) - and the
+	 * routine copies the bytes into the channel's TX queue before it returns
+	 * (P2), so the buffer is not needed afterwards. Only the send is needed
+	 * (P2): the pad starts streaming on receiving it, so the reply is never
+	 * read. */
+	d->pdu[0] = (uint8_t)(SHIM_HIDP_GET_REPORT | SHIM_HID_FEATURE);
+	d->pdu[1] = SHIM_DS_CALIB_REPORT_ID;
+
+	rc = send(conn_id, SHIM_SEND_DIR_CTRL_OUT, SHIM_SEND_OPCLASS_REPORT,
+	          d->pdu, SHIM_GET_PDU_LEN);
+	if (rc < 0)
+		return rc;
+
+	/* The 3->running transition is produced by the input wrapper translating
+	 * the pad's reports, so on success the shim just returns F1's running
+	 * condition and lets the driver keep polling. */
+	d->stat_startups++;
+	return SHIM_F1_OK;
 }

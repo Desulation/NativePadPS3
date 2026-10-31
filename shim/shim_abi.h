@@ -16,7 +16,11 @@
 #include <stdint.h>
 
 #define DS45_SHIM_MAGIC   0x4453343553484D31ULL   /* "DS45SHM1" */
-#define DS45_SHIM_VERSION 1
+/* 2: appended send_opd, conn_id and pdu (the start-up feature-0x05 GET), and
+ * get_report became send_routine. The installer adopts a blob left by an
+ * earlier load only if its version matches, since the plugin reaches into the
+ * data block by these offsets. */
+#define DS45_SHIM_VERSION 2
 #define DS45_SHIM_CONNS   8
 
 typedef struct {
@@ -29,11 +33,25 @@ typedef struct {
 typedef struct {
 	uint64_t magic; uint32_t version; uint32_t enabled;
 	uint64_t orig_startup, orig_input;   /* original descriptors (F1, F2) */
-	uint64_t get_report;                 /* F3 helper descriptor */
+	/* The address of the function descriptor the shim calls the kernel's
+	 * Bluetooth HID transfer routine (note P1: int h116ef0(u64 conn_id, int dir,
+	 * int opclass, void *buf, int len)) through; 0 = none. That routine has no
+	 * descriptor of its own in the kernel, so the installer builds one in
+	 * send_opd below and points this at it. It replaces the former get_report
+	 * slot. */
+	uint64_t send_routine;
 	ds45_shim_cfg_t cfg;
 	uint64_t conn_key[DS45_SHIM_CONNS];  /* per-connection identity (F1/F2) */
 	uint8_t  conn_state[DS45_SHIM_CONNS];
 	uint32_t stat_translated, stat_passed, stat_startups; /* debug counters */
+
+	/* --- version 2: appended, so every offset above is unchanged --------- */
+	uint64_t send_opd[3];                /* { entry, toc, env } of that routine, ELFv1; env 0 */
+	/* The value the transfer routine takes as its connection id, per slot
+	 * (valid when conn_state[i] != 0). The blob passes it through untouched;
+	 * the plugin records it when the connection comes up (kshim_set_connection). */
+	uint64_t conn_id[DS45_SHIM_CONNS];
+	uint8_t  pdu[8];                     /* the request PDU the start-up builds and sends */
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */
