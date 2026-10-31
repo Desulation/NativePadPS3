@@ -218,7 +218,7 @@ static int test_pid_ok_table(void)
 	CHECK(shim_pid_ok(VID_SONY, PID_MOVE_NAV) == 1);
 	CHECK(shim_pid_ok(VID_SONY, PID_DUALSENSE) == 1);
 
-	/* rejected: a DS4, the wrong VID, the inline-site-only 0x03D5, and zeros */
+	/* rejected: a DS4, the wrong VID, a Move motion controller (0x03D5), zeros */
 	CHECK(shim_pid_ok(VID_SONY, PID_DS4) == 0);
 	CHECK(shim_pid_ok(0x054D, PID_DUALSENSE) == 0);
 	CHECK(shim_pid_ok(VID_SONY, 0x03D5) == 0);

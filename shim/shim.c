@@ -34,8 +34,10 @@ int shim_is_dualsense(uint16_t vid, uint16_t pid)
 
 /* F4 helper. A leaf of immediate comparisons only: no global and no TOC access,
  * so the kernel can branch to it with its own r2 (tools/shim_pack.py enforces
- * this over this function's code range). Keeps 0x0268 and 0x042F, adds 0x0CE6;
- * 0x03D5 is accepted only at the inline SDP site, not by this helper. */
+ * this over this function's code range). Keeps 0x0268 and 0x042F, adds 0x0CE6.
+ * The kernel's inline compare at the connection path is patched in place (WORD
+ * rows in kshim_table.c), not routed here: this is only ever reached by a branch
+ * to a function's first instruction, so its blr returns to the caller. */
 int shim_pid_ok(uint32_t vid, uint32_t pid)
 {
 	return vid == VID_SONY &&

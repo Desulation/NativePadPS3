@@ -41,10 +41,25 @@
  * test sees the installer take the row's toc rather than the allocator's. */
 #define SEND_ENTRY   0x8000000000403000ULL
 #define SEND_TOC     0x8000000000403800ULL
-#define PID0_SITE    (B + 0x7000)
-#define PID0_Q       0x2C0303D541820010ULL
-#define PID1_SITE    (B + 0x8000)
-#define PID1_Q       0x2C03054C2C040268ULL
+
+/* The three F4 product-ID sites, shaped like the DEX 4.92 row: the patched
+ * instruction is the LOW half of its qword (addr & 4 set) and the high half is a
+ * neighbouring instruction that has to survive. Two WORD rows (the inline compare
+ * and the inline fall-through branch) carry their own finished instruction; one
+ * BRANCH row (the helper's first instruction) becomes `b shim_pid_ok`. The
+ * original qwords are made-up patterns, not kernel bytes. */
+#define PID0_QA      (B + 0x7000)          /* WORD: the qword's address ... */
+#define PID0_SITE    (PID0_QA + 4)         /* ... and the instruction in it */
+#define PID0_Q       0x1A1A1A1A2B2B2B2BULL
+#define PID0_WORD    0x2F800CE6u           /* the table's value: never base-adjusted */
+#define PID1_QA      (B + 0x7008)          /* WORD */
+#define PID1_SITE    (PID1_QA + 4)
+#define PID1_Q       0x3C3C3C3C4D4D4D4DULL
+#define PID1_WORD    0x4BFFFC48u
+#define PID2_QA      (B + 0x8000)          /* BRANCH */
+#define PID2_SITE    (PID2_QA + 4)
+#define PID2_Q       0x5E5E5E5E6F6F6F6FULL
+#define HI32         0xFFFFFFFF00000000ULL
 
 /* The address the fake allocator hands back: in the 0x6xxxxx heap region F6
  * says pool-0x22 lands in, and clear of every table-entry address above. */
@@ -186,6 +201,8 @@ static void setup(void)
 	g_cfg.invert_g = 0;
 	g_cfg.accel_scale = 150;
 	g_cfg.gyro_scale = -50;
+	/* the shim is gated off by default (ENABLE_SHIM); every install test opts in */
+	g_cfg.enable_shim = 1;
 
 	/* fingerprint */
 	for (i = 0; i < DS45_FP_LEN; i++)
@@ -198,8 +215,9 @@ static void setup(void)
 	put_q(ALLOC_DESC + 8, KERNEL_TOC);
 	put_q(STARTUP_SLOT, STARTUP_ORIG);
 	put_q(INPUT_SLOT, INPUT_ORIG);
-	put_q(PID0_SITE, PID0_Q);
-	put_q(PID1_SITE, PID1_Q);
+	put_q(PID0_QA, PID0_Q);
+	put_q(PID1_QA, PID1_Q);
+	put_q(PID2_QA, PID2_Q);
 
 	/* synthetic table row */
 	memset(&g_ent, 0, sizeof(g_ent));
@@ -218,14 +236,18 @@ static void setup(void)
 	g_ent.input_expect = INPUT_ORIG;
 	g_ent.send_entry = SEND_ENTRY;
 	g_ent.send_toc = SEND_TOC;
-	g_ent.pid_patches[0].kind = DS45_KPATCH_BRANCH;
+	g_ent.pid_patches[0].kind = DS45_KPATCH_WORD;
 	g_ent.pid_patches[0].addr = PID0_SITE;
 	g_ent.pid_patches[0].expect = qhash(PID0_Q);
-	g_ent.pid_patches[0].value = 0;
-	g_ent.pid_patches[1].kind = DS45_KPATCH_BRANCH;
+	g_ent.pid_patches[0].value = PID0_WORD;
+	g_ent.pid_patches[1].kind = DS45_KPATCH_WORD;
 	g_ent.pid_patches[1].addr = PID1_SITE;
 	g_ent.pid_patches[1].expect = qhash(PID1_Q);
-	g_ent.pid_patches[1].value = 0;
+	g_ent.pid_patches[1].value = PID1_WORD;
+	g_ent.pid_patches[2].kind = DS45_KPATCH_BRANCH;
+	g_ent.pid_patches[2].addr = PID2_SITE;
+	g_ent.pid_patches[2].expect = qhash(PID2_Q);
+	g_ent.pid_patches[2].value = 0;
 }
 
 /* ----- tests ------------------------------------------------------------- */
@@ -340,7 +362,7 @@ static int check_blob_image(void)
 
 static int test_install_happy_path(void)
 {
-	uint32_t bw0 = 0, bw1 = 0;
+	uint32_t bw = 0;
 
 	setup();
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
@@ -349,12 +371,15 @@ static int test_install_happy_path(void)
 	CHECK(rd(STARTUP_SLOT) == BLOB_BASE + DS45_SHIM_OFF_STARTUP);
 	CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);
 
-	/* product-ID sites now branch to shim_pid_ok (high half of each qword) */
-	CHECK(kpatch_branch_word(PID0_SITE, BLOB_BASE + DS45_SHIM_OFF_PID_OK, &bw0) == 0);
-	CHECK(kpatch_branch_word(PID1_SITE, BLOB_BASE + DS45_SHIM_OFF_PID_OK, &bw1) == 0);
-	CHECK((uint32_t)(rd(PID0_SITE) >> 32) == bw0);
-	CHECK((uint32_t)(PID0_Q & 0xFFFFFFFFULL) == (uint32_t)rd(PID0_SITE)); /* low half kept */
-	CHECK((uint32_t)(rd(PID1_SITE) >> 32) == bw1);
+	/* the two WORD rows write their own finished instruction into the low half of
+	 * their qword - verbatim: not a branch, not the blob's address - and the high
+	 * half (the neighbouring instruction) is kept */
+	CHECK(rd(PID0_QA) == ((PID0_Q & HI32) | PID0_WORD));
+	CHECK(rd(PID1_QA) == ((PID1_Q & HI32) | PID1_WORD));
+
+	/* the BRANCH row becomes `b shim_pid_ok` (low half), high half kept */
+	CHECK(kpatch_branch_word(PID2_SITE, BLOB_BASE + DS45_SHIM_OFF_PID_OK, &bw) == 0);
+	CHECK(rd(PID2_QA) == ((PID2_Q & HI32) | bw));
 
 	/* the spare slot is back to the ni stub */
 	CHECK(rd(SPARE_SLOT) == SPARE_STUB);
@@ -378,21 +403,23 @@ static int test_install_happy_path(void)
  * failure (the freshly-allocated blob region is scratch and excluded - on a
  * hard poke fault the installer cannot rewrite it, and it is not part of the
  * pre-install kernel image). The spare slot is explicitly included. */
-struct snap { uint64_t startup, input, spare, pid0, pid1; };
+struct snap { uint64_t startup, input, spare, pid0, pid1, pid2; };
 
 static void take_snap(struct snap *s)
 {
 	s->startup = rd(STARTUP_SLOT);
 	s->input   = rd(INPUT_SLOT);
 	s->spare   = rd(SPARE_SLOT);
-	s->pid0    = rd(PID0_SITE);
-	s->pid1    = rd(PID1_SITE);
+	s->pid0    = rd(PID0_QA);
+	s->pid1    = rd(PID1_QA);
+	s->pid2    = rd(PID2_QA);
 }
 
 static int snap_eq(const struct snap *a, const struct snap *b)
 {
 	return a->startup == b->startup && a->input == b->input &&
-	       a->spare == b->spare && a->pid0 == b->pid0 && a->pid1 == b->pid1;
+	       a->spare == b->spare && a->pid0 == b->pid0 && a->pid1 == b->pid1 &&
+	       a->pid2 == b->pid2;
 }
 
 /* Where to start dropping pokes so the blob copy is cut off partway. The
@@ -484,14 +511,147 @@ static int test_install_fails_each_step(void)
 	CHECK(rd(INPUT_SLOT) != BLOB_BASE + DS45_SHIM_OFF_INPUT);
 	/* everything else is back to its original value */
 	CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
-	CHECK(rd(PID0_SITE) == before.pid0);
-	CHECK(rd(PID1_SITE) == before.pid1);
+	CHECK(rd(PID0_QA) == before.pid0);
+	CHECK(rd(PID1_QA) == before.pid1);
+	CHECK(rd(PID2_QA) == before.pid2);
 	CHECK(rd(SPARE_SLOT) == SPARE_STUB);
 	/* restore the test's artefact, then the whole set is byte-identical */
 	put_q(INPUT_SLOT, INPUT_ORIG);
 	take_snap(&after);
 	CHECK(snap_eq(&before, &after));
 
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* Step 2 checks every product-ID site, not just the first two: a kernel whose
+ * third site is not the qword the row was researched against is refused before
+ * anything is allocated or written. */
+static int test_install_refuses_each_unexpected_pid_site(void)
+{
+	static const uint64_t qa[3] = { PID0_QA, PID1_QA, PID2_QA };
+	const uint64_t other = 0xDEADBEEFDEADBEEFULL;    /* not what the row hashes */
+	int i, pokes;
+
+	for (i = 0; i < 3; i++) {
+		setup();
+		put_q(qa[i], other);
+		pokes = fake_lv2_poke_count;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+		CHECK(fake_lv2_poke_count == pokes);         /* nothing written */
+		CHECK(g_spare_calls == 0);                   /* nothing allocated */
+		CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
+		CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+		CHECK(rd(SPARE_SLOT) == SPARE_STUB);
+		CHECK(rd(qa[i]) == other);                   /* left exactly as found */
+	}
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* A WORD row is a finished instruction: it lands verbatim whatever address the
+ * blob was given. Only the BRANCH row follows the load base. (Setting a WORD
+ * row's value to the blob address would not even encode: the value is 32 bits.) */
+static int test_word_rows_do_not_follow_the_load_base(void)
+{
+	static const uint64_t base[2] = { BLOB_BASE, BLOB_BASE + 0x40000 };
+	uint64_t w0[2], w1[2], br[2];
+	uint32_t bw = 0;
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		setup();
+		g_alloc_ret = base[i];
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		w0[i] = rd(PID0_QA);
+		w1[i] = rd(PID1_QA);
+		br[i] = rd(PID2_QA);
+		CHECK(kpatch_branch_word(PID2_SITE, base[i] + DS45_SHIM_OFF_PID_OK, &bw) == 0);
+		CHECK(br[i] == ((PID2_Q & HI32) | bw));      /* the branch targets this base */
+		kshim_remove();
+	}
+	CHECK(w0[0] == ((PID0_Q & HI32) | PID0_WORD) && w0[1] == w0[0]);
+	CHECK(w1[0] == ((PID1_Q & HI32) | PID1_WORD) && w1[1] == w1[0]);
+	CHECK(br[0] != br[1]);                           /* ... and moves with it */
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* The final apply is one transaction of five patches - the three product-ID
+ * patches (two WORD, one BRANCH) and the two redirects. A write part-way that does
+ * not read back undoes the ones already made, whichever it is, and the kernel
+ * image ends byte-identical to how it was found. */
+static int test_install_rolls_back_a_partial_patch(void)
+{
+	struct snap before, after;
+	int pokes, apply_start, i;
+
+	/* calibrate on a clean install: remove writes back one qword per journal entry,
+	 * and the entries are the last writes the installer made */
+	setup();
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	pokes = fake_lv2_poke_count;
+	kshim_remove();
+	CHECK(fake_lv2_poke_count - pokes == 5);
+	apply_start = pokes - 5;
+
+	for (i = 0; i < 5; i++) {
+		setup();
+		take_snap(&before);
+		g_fault_at = apply_start + i;                /* drop the i-th patch write */
+		fake_lv2_poke_fail_after = g_fault_at;
+		fake_lv2_on_peek = clear_fault_after_failed_poke;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+		fake_lv2_on_peek = NULL;
+		fake_lv2_poke_fail_after = -1;
+		take_snap(&after);
+		CHECK(snap_eq(&before, &after));             /* every patch undone */
+		CHECK(rd(SPARE_SLOT) == SPARE_STUB);
+	}
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* The ENABLE_SHIM gate. With the flag off - its default - the installer does
+ * nothing at all: no read (not even the fingerprint), no write, no allocation,
+ * nothing recorded, even on a kernel whose row matches and would install. It runs
+ * only once the config turns it on. */
+static int test_install_is_gated_by_enable_shim(void)
+{
+	int peeks, pokes;
+
+	setup();
+	g_cfg.enable_shim = 0;
+	peeks = fake_lv2_peek_count;
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_OFF);
+	CHECK(fake_lv2_peek_count == peeks);             /* the kernel was not touched */
+	CHECK(fake_lv2_poke_count == pokes);
+	CHECK(g_spare_calls == 0);                       /* the spare syscall was not borrowed */
+	CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
+	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+	CHECK(rd(SPARE_SLOT) == SPARE_STUB);
+	CHECK(rd(PID0_QA) == PID0_Q && rd(PID1_QA) == PID1_Q && rd(PID2_QA) == PID2_Q);
+	CHECK(kshim_set_connection(0x2A, 0x1234) == -1); /* nothing is installed */
+	kshim_remove();                                  /* harmless */
+	CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
+
+	/* the same row and the same image install as soon as the flag is set */
+	g_cfg.enable_shim = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(rd(STARTUP_SLOT) == BLOB_BASE + DS45_SHIM_OFF_STARTUP);
+	kshim_remove();
+
+	/* kshim_install(), the built-in-table entry point the plugin's start-up calls,
+	 * is gated the same way: off, it reads nothing; on, it goes looking for its row
+	 * (the synthetic image matches none of the built-in fingerprints) */
+	g_cfg.enable_shim = 0;
+	peeks = fake_lv2_peek_count;
+	CHECK(kshim_install() == KSHIM_OFF);
+	CHECK(fake_lv2_peek_count == peeks);
+	g_cfg.enable_shim = 1;
+	CHECK(kshim_install() == KSHIM_NO_ENTRY);
+	CHECK(fake_lv2_peek_count > peeks);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }
@@ -519,19 +679,26 @@ static int test_second_install_adopts(void)
 static int test_remove_restores(void)
 {
 	struct snap before, after;
+	int pokes;
 
 	setup();
 	take_snap(&before);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	CHECK(rd(STARTUP_SLOT) != before.startup);   /* really changed */
+	CHECK(rd(PID0_QA) != PID0_Q && rd(PID1_QA) != PID1_Q && rd(PID2_QA) != PID2_Q);
 
+	/* the journal holds one entry per patch - the three product-ID patches and the
+	 * two redirects - so remove writes back exactly five qwords */
+	pokes = fake_lv2_poke_count;
 	kshim_remove();
+	CHECK(fake_lv2_poke_count - pokes == 5);
 	take_snap(&after);
 	CHECK(snap_eq(&before, &after));             /* redirects and patches back */
 	CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
 	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
-	CHECK(rd(PID0_SITE) == PID0_Q);
-	CHECK(rd(PID1_SITE) == PID1_Q);
+	CHECK(rd(PID0_QA) == PID0_Q);
+	CHECK(rd(PID1_QA) == PID1_Q);
+	CHECK(rd(PID2_QA) == PID2_Q);
 
 	/* the blob itself is left allocated (a driver thread may be inside it) */
 	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
@@ -545,11 +712,31 @@ static int test_remove_restores(void)
 /* The built-in table carries exactly the one researched DEX 4.92 row. */
 static int test_builtin_table(void)
 {
+	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
+
 	CHECK(ds45_shim_table_count == 1);
-	CHECK(ds45_shim_table[0].spare_syscall == 149u);
-	CHECK(ds45_shim_table[0].alloc_pool == 0x22ULL);
-	CHECK(ds45_shim_table[0].pid_patches[0].kind == DS45_KPATCH_BRANCH);
-	CHECK(ds45_shim_table[0].pid_patches[0].value == 0);   /* filled at install */
+	CHECK(k->spare_syscall == 149u);
+	CHECK(k->alloc_pool == 0x22ULL);
+
+	/* F4 (note 2026-10-31-ds3-route-pid-patch-fix.md, Option A): exactly three
+	 * product-ID rows, pinned verbatim. The two inline-site rows are WORD patches
+	 * with their finished instruction (cmpwi cr7,r0,0x0CE6 and b 0x11B234); only
+	 * the helper's entry is a BRANCH, whose target is filled in at install time.
+	 * A BRANCH at the inline site is the bug that wedged the console. */
+	CHECK(DS45_SHIM_PID_PATCHES == 3);
+	CHECK(sizeof k->pid_patches / sizeof k->pid_patches[0] == 3);
+	CHECK(k->pid_patches[0].kind == DS45_KPATCH_WORD);
+	CHECK(k->pid_patches[0].addr == 0x800000000011B5E4ULL);
+	CHECK(k->pid_patches[0].expect == 0xE8ADD0EDF3B2B3C1ULL);
+	CHECK(k->pid_patches[0].value == 0x2F800CE6ULL);
+	CHECK(k->pid_patches[1].kind == DS45_KPATCH_WORD);
+	CHECK(k->pid_patches[1].addr == 0x800000000011B5ECULL);
+	CHECK(k->pid_patches[1].expect == 0xF86140C9C3D7FB8DULL);
+	CHECK(k->pid_patches[1].value == 0x4BFFFC48ULL);
+	CHECK(k->pid_patches[2].kind == DS45_KPATCH_BRANCH);
+	CHECK(k->pid_patches[2].addr == 0x800000000029E2B4ULL);
+	CHECK(k->pid_patches[2].expect == 0xF1B8B3EFF22A78FCULL);
+	CHECK(k->pid_patches[2].value == 0);                    /* filled at install */
 
 	/* the kernel's BT-HID transfer routine h116ef0 (note P1/P4): its entry, and
 	 * the one kernel TOC every OPD on this firmware carries (fact sheet header) */
@@ -907,6 +1094,18 @@ int run_tests(void)
 	if (line)
 		return line;
 	line = test_install_fails_each_step();
+	if (line)
+		return line;
+	line = test_install_refuses_each_unexpected_pid_site();
+	if (line)
+		return line;
+	line = test_word_rows_do_not_follow_the_load_base();
+	if (line)
+		return line;
+	line = test_install_rolls_back_a_partial_patch();
+	if (line)
+		return line;
+	line = test_install_is_gated_by_enable_shim();
 	if (line)
 		return line;
 	line = test_second_install_adopts();

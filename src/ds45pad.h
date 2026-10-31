@@ -316,6 +316,12 @@ typedef struct {
 
 	int      diag;             /* write DS45_DIAG_FILE                    */
 	int      notify;           /* show XMB notifications                  */
+	/* ENABLE_SHIM (0/1): install the DS3-route kernel shim (kshim.c) when the
+	 * plugin loads. Off by default. The shim patches live kernel code, and a build
+	 * that gets a patch wrong can hang the console, so a deployed plugin never
+	 * installs it on its own: ds45pad.txt has to say ENABLE_SHIM = 1. That is also
+	 * the way out of a hang - remove the line (or set it to 0) and reboot. */
+	int      enable_shim;
 #ifdef DS45_LV2DUMP
 	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
 	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */

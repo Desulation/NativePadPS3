@@ -4,11 +4,13 @@
  * On a kernel that matches a table entry, kshim_install() places the
  * freestanding shim blob (src/shim_blob.h) in a fresh kernel allocation and
  * points the DS3 driver's Bluetooth start-up and input slots at it, after
- * redirecting the product-ID checks to the blob's acceptance helper. Every
- * target is verified against its expected value first, every write is read
- * back, and any failure undoes everything already written so the kernel image
- * is left exactly as it was found. It is entirely RAM-only and runs only once,
- * at load, on the VSH side.
+ * patching the product-ID checks (the inline compares in place, the helper
+ * redirected to the blob's acceptance function). Every target is verified
+ * against its expected value first, every write is read back, and any failure
+ * undoes everything already written so the kernel image is left exactly as it
+ * was found. It is entirely RAM-only and runs only once, at load, on the VSH
+ * side - and only when the config enables it (ENABLE_SHIM = 1; off by default),
+ * so a deployed build never patches the kernel unasked.
  *
  * The one firmware row and its F1-F6 addresses live in kshim_table.c; the
  * transactional engine is src/kpatch.h and the bounded LV2 access is
@@ -23,6 +25,11 @@
 #include <stdint.h>
 #include "kpatch.h"
 
+/* How many product-ID patches (F4) a row carries. They are installed together
+ * with the start-up and input redirects in one transactional apply, so this plus
+ * two must fit DS45_KPATCH_MAX (checked in kshim.c). */
+#define DS45_SHIM_PID_PATCHES 3
+
 /* One firmware. The addresses are the fact sheet's F1-F6 values; the
  * fingerprint is the same (fp_addr, fp_hash) scheme ds45_kernel_t uses, so a
  * row is only ever applied to the kernel it was researched against. */
@@ -35,7 +42,9 @@ typedef struct {
 	uint64_t startup_slot, startup_expect;  /* F1 */
 	uint64_t input_slot, input_expect;      /* F2 */
 	uint64_t send_entry, send_toc;          /* F3/P4: BT-HID transfer routine h116ef0 as { entry, toc }; entry 0 = none */
-	ds45_kpatch_t pid_patches[2];           /* F4, value of BRANCH = 0 -> shim_pid_ok */
+	/* F4. A WORD row carries its finished instruction and is written as given; a
+	 * BRANCH row's value is left 0 and the installer fills in shim_pid_ok. */
+	ds45_kpatch_t pid_patches[DS45_SHIM_PID_PATCHES];
 } ds45_shim_kernel_t;
 extern const ds45_shim_kernel_t ds45_shim_table[];
 extern const int ds45_shim_table_count;
@@ -43,6 +52,8 @@ extern const int ds45_shim_table_count;
 typedef enum { KSHIM_OFF = 0, KSHIM_INSTALLED, KSHIM_ALREADY, KSHIM_NO_ENTRY, KSHIM_FAILED } kshim_result_t;
 
 /* Install over the built-in ds45_shim_table.
+ *   KSHIM_OFF       the ENABLE_SHIM gate is shut (g_cfg.enable_shim == 0, the
+ *                   default): nothing was read, nothing written, nothing allocated.
  *   KSHIM_NO_ENTRY  no fingerprint matched; nothing read-modified, nothing written.
  *   KSHIM_ALREADY   the redirects already point at a blob carrying DS45_SHIM_MAGIC;
  *                   the existing install is adopted and nothing is written.

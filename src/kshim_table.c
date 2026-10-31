@@ -7,6 +7,18 @@
  * fingerprint (fp_addr, fp_hash) is the DEX 4.92 one from kernel.c's
  * ds45_kernel_table, reused so a row is only ever applied to the kernel it was
  * researched against.
+ *
+ * Rule for the F4 product-ID rows: a BRANCH row is only valid at the FIRST
+ * INSTRUCTION of a function whose calling convention the blob's target shares
+ * (called with `bl`, so LR is the caller's and the target's `blr` returns to
+ * it), or with a thunk that has been shown to honour the site's full register and
+ * control-flow contract. A plain `b` into the middle of a routine leaves LR
+ * pointing back into it: the blob's `blr` then re-runs the site forever, which is
+ * how the first DEX 4.92 build wedged the Bluetooth thread (note
+ * 2026-10-31-ds3-route-pid-patch-fix.md). The host tests call shim_pid_ok in
+ * isolation, so they cannot catch a bad site - this has to be checked by reading
+ * the kernel code around it. Everything else is a WORD row, which leaves the
+ * kernel's own control flow in charge.
  */
 
 #include "kpatch.h"
@@ -26,7 +38,7 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 
 		/* F6 - the LV2 allocator the driver itself uses (OPD 0x330998, entry
 		 * 0x681F4, kernel TOC at +8) and its pool 0x22; pool-0x22 objects land
-		 * in the 0x6xxxxx heap, within a 26-bit branch of both F4 sites. */
+		 * in the 0x6xxxxx heap, within a 26-bit branch of the F4 helper site. */
 		0x8000000000330998ULL, 0x22ULL,
 
 		/* F5 - the kernel's own dcbst/sync/icbi/isync range flush (entry
@@ -55,15 +67,20 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		 * alone flips the pad to report 0x31 is the on-console residual R2. */
 		0x8000000000116EF0ULL, 0x80000000003759C0ULL,
 
-		/* F4 - product-ID acceptance. Two BRANCH redirects to the blob's
-		 * shim_pid_ok (OFF_PID_OK), each verified by the FNV hash of the
-		 * 8-aligned qword holding its patch instruction. BRANCH value is left 0
-		 * here and filled with the blob load base + OFF_PID_OK at install time
-		 * (the target is not known until the blob is allocated).
-		 *   [0] inline SDP site: the 0x03D5 compare at 0x11B5E4, qword 0x11B5E0.
-		 *   [1] helper 0x29E2B4 first instruction, qword 0x29E2B0. */
+		/* F4 - product-ID acceptance (see 2026-10-31-ds3-route-pid-patch-fix.md).
+		 * Each row is verified by the FNV hash of the 8-aligned qword holding its
+		 * patch instruction.
+		 *   [0] inline site, qword 0x11B5E0: the third compare (0x03D5) becomes
+		 *       cmpwi cr7,r0,0x0CE6; the bne cr7,0x11B534 after it is kept.
+		 *   [1] inline site, qword 0x11B5E8: the fall-through "b 0x11B564" becomes
+		 *       "b 0x11B234" (known Sony pad, skip SDP) - reached only for PID 0x0CE6.
+		 *   [2] helper 0x29E2B4 first instruction -> BRANCH to shim_pid_ok (value
+		 *       filled with blob base + OFF_PID_OK at install). Function entry of a
+		 *       leaf with shim_pid_ok's ABI: the only kind of site a BRANCH row may
+		 *       target. */
 		{
-			{ DS45_KPATCH_BRANCH, 0x800000000011B5E4ULL, 0xE8ADD0EDF3B2B3C1ULL, 0ULL },
+			{ DS45_KPATCH_WORD,   0x800000000011B5E4ULL, 0xE8ADD0EDF3B2B3C1ULL, 0x2F800CE6ULL },
+			{ DS45_KPATCH_WORD,   0x800000000011B5ECULL, 0xF86140C9C3D7FB8DULL, 0x4BFFFC48ULL },
 			{ DS45_KPATCH_BRANCH, 0x800000000029E2B4ULL, 0xF1B8B3EFF22A78FCULL, 0ULL },
 		},
 	},

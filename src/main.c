@@ -464,11 +464,22 @@ static void ds45_thread(uint64_t arg)
 		 * runs through the PS3's own Sony-pad path. Entirely RAM-only, verified
 		 * and read back; a mismatch or a failure writes nothing and the pad
 		 * keeps today's generic behaviour. The result (and, in debug builds,
-		 * the failing step) is traced. */
-		ds45_boot_mark("kshim_install");
-		kshim = kshim_install();
-		DS45_TRACE_HEX("kshim", kshim);
-		(void)kshim;                 /* release: the trace compiles away */
+		 * the failing step) is traced.
+		 *
+		 * Gated by ENABLE_SHIM, which is off by default: the shim patches live
+		 * kernel code, so a freshly deployed build never does that on its own and
+		 * a bad one cannot hang the console at boot. The shim goes in only when
+		 * ds45pad.txt says ENABLE_SHIM = 1; to recover from a hang, remove that
+		 * line and reboot. With the gate shut the kernel is not touched at all
+		 * (kshim_install() refuses by itself as well). */
+		if (g_cfg.enable_shim) {
+			ds45_boot_mark("kshim_install");
+			kshim = kshim_install();
+			DS45_TRACE_HEX("kshim", kshim);
+			(void)kshim;             /* release: the trace compiles away */
+		} else {
+			DS45_TRACE("kshim_gated_off");
+		}
 	}
 
 	if (g_cfg.diag) {
@@ -630,7 +641,8 @@ static void ds45_stop_thread(uint64_t arg)
 	/* Switch the kernel shim's redirects back (and revert the product-ID
 	 * patches) so the DS3 driver stops calling into the blob; the blob itself
 	 * stays allocated, since a driver thread may still be executing inside it.
-	 * A no-op when nothing was installed (USB mode, or an unmatched kernel). */
+	 * A no-op when nothing was installed (USB mode, ENABLE_SHIM off, or an
+	 * unmatched kernel). */
 	kshim_remove();
 
 	/* Never in the game build. ds45_notify() resolves vshtask by walking the

@@ -72,6 +72,11 @@ void ds45_config_defaults(ds45_config_t *c)
 
 	c->diag   = 0;
 	c->notify = 0;   /* the boot trace is the safe way to confirm loading */
+
+	/* The kernel shim patches live kernel code, so it is never installed unless
+	 * ds45pad.txt says ENABLE_SHIM = 1 - deploying the plugin cannot hang the
+	 * console by itself (see ds45pad.h). */
+	c->enable_shim = 0;
 #ifdef DS45_LV2DUMP
 	c->dump_lv2 = 0;
 	c->capture_off = 0;
@@ -235,6 +240,12 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		if (parse_int(val, &n)) c->diag = n;
 	} else if (match(key, "NOTIFY")) {
 		if (parse_int(val, &n)) c->notify = n;
+#ifndef DS45_GAME
+	} else if (match(key, "ENABLE_SHIM")) {
+		/* VSH builds only: the in-game build has no kernel shim, nor any of its
+		 * strings. Anything but a number leaves the gate shut. */
+		if (parse_int(val, &n)) c->enable_shim = n != 0;
+#endif
 #ifdef DS45_LV2DUMP
 	} else if (match(key, "DUMP_LV2")) {
 		if (parse_int(val, &n)) c->dump_lv2 = n;
@@ -333,6 +344,11 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	ds45_boot_mark_hex("cfg_bt_source_port", (uint32_t)c->bt_source_port);
 	ds45_boot_mark_hex("cfg_ps_only", (uint32_t)c->ps_only);
 	ds45_boot_mark_hex("cfg_bt_ps_combo", (uint32_t)c->bt_ps_combo);
+#ifndef DS45_GAME
+	/* Whether the kernel shim may be installed at all: the one setting that
+	 * decides if the plugin ever writes kernel memory. */
+	ds45_boot_mark_hex("cfg_enable_shim", (uint32_t)c->enable_shim);
+#endif
 
 	return 0;
 }

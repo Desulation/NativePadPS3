@@ -3,17 +3,21 @@
  * See kshim.h, the fact sheet F1-F6 and the design spec's "Install".
  *
  * Install order (fixed):
+ *   0. the ENABLE_SHIM gate: with g_cfg.enable_shim off (its default) stop here -
+ *      nothing is read or written;
  *   1. match a table row by fingerprint;
- *   2. verify the redirect slots, the spare syscall slot and the product-ID
- *      sites against their expected values - writing nothing if any differs,
+ *   2. verify the redirect slots, the spare syscall slot and every product-ID
+ *      site against their expected values - writing nothing if any differs,
  *      unless the redirects already point at one of our blobs (adopt it);
  *   3. borrow the spare syscall slot to call the LV2 allocator once, restore it;
- *   4. range-check the allocation (in-window, and a 26-bit branch of the F4 sites);
+ *   4. range-check the allocation (in-window, and a 26-bit branch of each F4
+ *      BRANCH site; WORD sites hold a finished instruction and need no range);
  *   5. copy the blob qword by qword, rebasing relocated words;
  *   6. fill the data block (originals, the transfer routine's descriptor, cfg,
  *      enabled);
  *   7. flush the instruction cache over the blob (F5);
- *   8. apply the product-ID branches and the two redirects transactionally.
+ *   8. apply the product-ID patches (WORD rows as given, the BRANCH row aimed at
+ *      shim_pid_ok) and the two redirects transactionally.
  *
  * Every write is read back. Any failure restores the borrowed spare slot and
  * leaves every pre-existing kernel structure byte-identical to before (the
@@ -37,6 +41,11 @@
 
 /* 16 bytes past the blob for the flush OPD { entry, kernel TOC }. */
 #define KSHIM_FLUSH_OPD_LEN 16
+
+/* The final transactional apply: the row's product-ID patches, then the start-up
+ * and input redirects. The journal holds one entry for each. */
+#define KSHIM_FINAL_N (DS45_SHIM_PID_PATCHES + 2)
+typedef char kshim_final_fits_kpatch[(KSHIM_FINAL_N <= DS45_KPATCH_MAX) ? 1 : -1];
 
 /* The data block exactly fills the blob's tail (OFF_DATA .. BLOB_LEN); it is
  * written qword by qword, so its size must be a multiple of 8. */
@@ -123,6 +132,20 @@ static int hash_ok(uint64_t addr, uint64_t expect)
 	return ds45_fnv1a64(b, 8) == expect;
 }
 
+/* Every product-ID site still holds the qword its row was researched against.
+ * (Their new instruction is not known to kpatch until the blob is allocated for a
+ * BRANCH row, so the hash is checked here, ahead of the allocation, as well as by
+ * the final kpatch_apply.) */
+static int pid_sites_ok(const ds45_shim_kernel_t *k)
+{
+	int i;
+
+	for (i = 0; i < DS45_SHIM_PID_PATCHES; i++)
+		if (!hash_ok(k->pid_patches[i].addr, k->pid_patches[i].expect))
+			return 0;
+	return 1;
+}
+
 /* The redirects already point at one of our blobs: both slots consistent with a
  * single base and that base's data block carries the magic and this build's
  * version. A blob left by a build with another data-block layout is not adopted:
@@ -203,7 +226,7 @@ static void build_data_block(const ds45_shim_kernel_t *k, uint64_t base, uint8_t
 kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 {
 	const ds45_shim_kernel_t *k = NULL;
-	ds45_kpatch_t redir[3], final[4];
+	ds45_kpatch_t redir[3], final[KSHIM_FINAL_N];
 	ds45_kjournal_t j;
 	uint8_t db[sizeof(ds45_shim_data_t)];
 	uint64_t spare_slot, base = 0, alloc_size, kernel_toc, flush_opd, target;
@@ -214,6 +237,14 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	g_journal.n = 0;
 	g_base = 0;
 	j.n = 0;
+
+	/* 0. The ENABLE_SHIM gate. The shim patches live kernel code, so unless the
+	 * config explicitly asks for it (ENABLE_SHIM = 1; the default is off) this does
+	 * nothing at all: not a read, not a write, no allocation. A build that gets a
+	 * patch wrong can then never take the console down at boot just by being
+	 * deployed. */
+	if (!g_cfg.enable_shim)
+		return KSHIM_OFF;
 
 	/* 1. match a row by fingerprint */
 	if (tab)
@@ -231,9 +262,9 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	spare_slot = k->syscall_table + (uint64_t)k->spare_syscall * 8;
 
 	/* 2. verify the clean originals: the two redirects and the spare slot are
-	 * pointers; the two product-ID sites are verified by the hash of the qword
-	 * holding each patch instruction (their branch value is not known until the
-	 * blob is allocated, so kpatch cannot encode them yet). */
+	 * pointers; the product-ID sites are verified by the hash of the qword
+	 * holding each patch instruction (a BRANCH row's target is not known until
+	 * the blob is allocated, so kpatch cannot encode that one yet). */
 	redir[0].kind = DS45_KPATCH_PTR;
 	redir[0].addr = k->startup_slot;
 	redir[0].expect = k->startup_expect;
@@ -248,9 +279,7 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	redir[2].value = 0;
 
 	r = kpatch_verify(redir, 3);
-	if (r != 0 ||
-	    !hash_ok(k->pid_patches[0].addr, k->pid_patches[0].expect) ||
-	    !hash_ok(k->pid_patches[1].addr, k->pid_patches[1].expect)) {
+	if (r != 0 || !pid_sites_ok(k)) {
 		/* A failed verify may just mean the shim is already installed from an
 		 * earlier load: adopt it and write nothing. */
 		if (already_installed(k, &base)) {
@@ -287,18 +316,21 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	}
 
 	/* 4. the allocation must be writable (in-window, 8-aligned, whole region
-	 * inside the bound) and within a 26-bit branch of both F4 sites */
+	 * inside the bound) and within a 26-bit branch of every F4 BRANCH site. A WORD
+	 * row is a finished instruction that never points at the blob, so it has no
+	 * range to check. */
 	if ((base & 7) || base < DS45_LV2_BASE ||
 	    base > DS45_LV2_BOUND - alloc_size) {
 		DS45_TRACE("kshim_alloc_window");
 		goto fail;
 	}
 	target = base + DS45_SHIM_OFF_PID_OK;
-	if (kpatch_branch_word(k->pid_patches[0].addr, target, &bw) ||
-	    kpatch_branch_word(k->pid_patches[1].addr, target, &bw)) {
-		DS45_TRACE("kshim_alloc_range");
-		goto fail;
-	}
+	for (i = 0; i < DS45_SHIM_PID_PATCHES; i++)
+		if (k->pid_patches[i].kind == DS45_KPATCH_BRANCH &&
+		    kpatch_branch_word(k->pid_patches[i].addr, target, &bw)) {
+			DS45_TRACE("kshim_alloc_range");
+			goto fail;
+		}
 
 	/* 5. copy the blob, rebasing every relocated word to the load base */
 	for (off = 0; off < DS45_SHIM_BLOB_LEN; off += 8) {
@@ -348,24 +380,26 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 		}
 	}
 
-	/* 8. product-ID branches to shim_pid_ok, then the start-up and input
-	 * redirects - one transactional apply (verify all, write in order, revert
-	 * on any failure). A redirect that changed since step 2 fails this verify,
-	 * so nothing is written. */
-	final[0] = k->pid_patches[0];
-	final[0].value = target;
-	final[1] = k->pid_patches[1];
-	final[1].value = target;
-	final[2].kind = DS45_KPATCH_PTR;
-	final[2].addr = k->startup_slot;
-	final[2].expect = k->startup_expect;
-	final[2].value = base + DS45_SHIM_OFF_STARTUP;
-	final[3].kind = DS45_KPATCH_PTR;
-	final[3].addr = k->input_slot;
-	final[3].expect = k->input_expect;
-	final[3].value = base + DS45_SHIM_OFF_INPUT;
+	/* 8. the product-ID patches, then the start-up and input redirects - one
+	 * transactional apply (verify all, write in order, revert on any failure). A
+	 * WORD row carries its finished instruction and goes in exactly as the table
+	 * gives it; only a BRANCH row is aimed at shim_pid_ok. A site or a redirect
+	 * that changed since step 2 fails this verify, so nothing is written. */
+	for (i = 0; i < DS45_SHIM_PID_PATCHES; i++) {
+		final[i] = k->pid_patches[i];
+		if (final[i].kind == DS45_KPATCH_BRANCH)
+			final[i].value = target;
+	}
+	final[DS45_SHIM_PID_PATCHES].kind = DS45_KPATCH_PTR;
+	final[DS45_SHIM_PID_PATCHES].addr = k->startup_slot;
+	final[DS45_SHIM_PID_PATCHES].expect = k->startup_expect;
+	final[DS45_SHIM_PID_PATCHES].value = base + DS45_SHIM_OFF_STARTUP;
+	final[DS45_SHIM_PID_PATCHES + 1].kind = DS45_KPATCH_PTR;
+	final[DS45_SHIM_PID_PATCHES + 1].addr = k->input_slot;
+	final[DS45_SHIM_PID_PATCHES + 1].expect = k->input_expect;
+	final[DS45_SHIM_PID_PATCHES + 1].value = base + DS45_SHIM_OFF_INPUT;
 
-	r = kpatch_apply(final, 4, &j);
+	r = kpatch_apply(final, KSHIM_FINAL_N, &j);
 	if (r != 0) {
 		/* kpatch_apply has already reverted its own partial writes. */
 		DS45_TRACE_HEX("kshim_patch_step", (uint64_t)r);
@@ -503,8 +537,9 @@ void kshim_remove(void)
 	if (g_state != KSHIM_INSTALLED && g_state != KSHIM_ALREADY)
 		return;
 	/* Switch the redirects back and revert the product-ID patches (a fresh
-	 * install's journal has all four; an adopted one, only the redirects). The
-	 * blob stays allocated - a driver thread may still be inside it. */
+	 * install's journal has all five - the three product-ID patches and the two
+	 * redirects; an adopted one, only the redirects). The blob stays allocated - a
+	 * driver thread may still be inside it. */
 	kpatch_revert(&g_journal);
 	DS45_TRACE("kshim_removed");
 	g_state = KSHIM_OFF;
