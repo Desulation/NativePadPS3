@@ -44,6 +44,15 @@
 #define SHIM_SEND_DIR_CTRL_OUT    2
 #define SHIM_SEND_OPCLASS_REPORT  2
 
+/* How many times the start-up sends the GET for one connection (slot). The
+ * driver may call the start-up again and again for a connection - the original
+ * steps a persisted substate machine and the shim never advances it (fact sheet
+ * F1) - and every GET that goes out leaves a reply in a queue nothing drains if
+ * the pad never switches. So the sends are bounded rather than limited to one:
+ * a lost or refused GET can still be retried, a few times. The count is kept per
+ * slot in ds45_shim_data_t.start_tries and re-armed by the plugin. */
+#define SHIM_START_TRIES_MAX      8
+
 /* F1 start-up return values. The original Bluetooth start-up handler returns 0
  * on its success path and a negative LV2 error on failure (fact sheet F1). The
  * shim returns SHIM_F1_OK so the driver keeps and polls the pad; the real
@@ -81,22 +90,32 @@ int shim_pid_ok(uint32_t vid, uint32_t pid);
 int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
                       uint8_t *buf, uint16_t *len);
 
-/* F1 start-up for a DualSense: send the feature-0x05 GET so the pad begins
- * emitting 0x31 reports. It builds the PDU {0x43, 0x05} in d->pdu - the data
- * block's own buffer, never the driver's shared one, which the lock this context
- * does not hold protects - and calls the transfer routine through
- * d->send_routine as (conn_id, SHIM_SEND_DIR_CTRL_OUT, SHIM_SEND_OPCLASS_REPORT,
- * d->pdu, SHIM_GET_PDU_LEN). It does not read the reply: the send alone is what
- * starts the stream (note P2), and the running transition comes from the input
- * wrapper translating those reports. On a non-negative result it bumps
- * stat_startups and returns F1's running condition (SHIM_F1_OK); on a negative
- * one it returns that error unchanged. With no send routine, or no connection id
- * (0 - the plugin has not recorded one), it sends nothing and returns
+/* F1 start-up for the DualSense in data-block slot `slot`: send the
+ * feature-0x05 GET so the pad begins emitting 0x31 reports. It builds the PDU
+ * {0x43, 0x05} in d->pdu - the data block's own buffer, never the driver's
+ * shared one, which the lock this context does not hold protects - and calls the
+ * transfer routine through d->send_routine as (d->conn_id[slot],
+ * SHIM_SEND_DIR_CTRL_OUT, SHIM_SEND_OPCLASS_REPORT, d->pdu, SHIM_GET_PDU_LEN).
+ * It does not read the reply: the send alone is what starts the stream (note
+ * P2), and the running transition comes from the input wrapper translating those
+ * reports. On a non-negative result it bumps stat_startups and returns F1's
+ * running condition (SHIM_F1_OK); on a negative one it returns that error
+ * unchanged.
+ *
+ * With no send routine, no connection id for the slot (0 - the plugin has not
+ * recorded one) or a slot outside the table, it sends nothing and returns
  * SHIM_F1_ERR, so a DualSense start-up fails safe.
- * conn_id is the connection's id as the transfer routine takes it (r3); arg1 is
- * taken for signature fidelity with F1 - entry.c has already routed the
+ *
+ * Each send, accepted or not, spends one of the slot's SHIM_START_TRIES_MAX
+ * (d->start_tries[slot]). Once they are spent it sends nothing and returns
+ * SHIM_F1_OK - the value a successful start-up returns, so the driver keeps
+ * polling the pad exactly as before. It does not fall through to the original
+ * and does not return an error: either could cost the driver a pad that did
+ * switch. The plugin re-arms a slot by zeroing its count (kshim_set_connection).
+ *
+ * arg1 is taken for signature fidelity with F1 - entry.c has already routed the
  * original's arg1==0 early-return to d->orig_startup, so the running transition
  * never depends on it here. */
-int shim_startup_dualsense(ds45_shim_data_t *d, uint64_t conn_id, long arg1);
+int shim_startup_dualsense(ds45_shim_data_t *d, int slot, long arg1);
 
 #endif /* DS45_SHIM_H */

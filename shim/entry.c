@@ -79,12 +79,13 @@ static int entry_identity(uint8_t handle, uint16_t *vid, uint16_t *pid)
 }
 
 /* F1: Bluetooth Sony-pad start-up. For an enabled DualSense, do its own enable
- * (shim_startup_dualsense sends the feature-0x05 GET to the connection id the
- * plugin recorded for this handle: the hook argument carries only the 1-byte
- * handle, not the connection object, so the id is not derivable here - fact
- * sheet F1, note P3/R3); for everything else - disabled, the original's
- * arg1==0 early-return, an unknown connection or a DualShock 3 - tail-call the
- * original so it is untouched. */
+ * (shim_startup_dualsense, given the connection's slot, sends the feature-0x05
+ * GET to the connection id the plugin recorded in it: the hook argument carries
+ * only the 1-byte handle, not the connection object, so the id is not derivable
+ * here - fact sheet F1, note P3/R3 - and it bounds how often it sends, since
+ * the driver may call this again and again); for everything else - disabled,
+ * the original's arg1==0 early-return, an unknown connection or a DualShock 3 -
+ * tail-call the original so it is untouched. */
 int shim_startup(void *drv, long arg1)
 {
 	uint16_t vid, pid;
@@ -93,8 +94,7 @@ int shim_startup(void *drv, long arg1)
 	if (ds45_shim_data.enabled && arg1 != 0 && drv) {
 		slot = entry_identity(*((const uint8_t *)drv + F1_HANDLE_OFF), &vid, &pid);
 		if (slot >= 0 && shim_is_dualsense(vid, pid))
-			return shim_startup_dualsense(&ds45_shim_data,
-			                              ds45_shim_data.conn_id[slot], arg1);
+			return shim_startup_dualsense(&ds45_shim_data, slot, arg1);
 	}
 
 	return ((orig_startup_fn)(uintptr_t)ds45_shim_data.orig_startup)(drv, arg1);

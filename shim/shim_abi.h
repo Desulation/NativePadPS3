@@ -16,10 +16,10 @@
 #include <stdint.h>
 
 #define DS45_SHIM_MAGIC   0x4453343553484D31ULL   /* "DS45SHM1" */
-/* 2: appended send_opd, conn_id and pdu (the start-up feature-0x05 GET), and
- * get_report became send_routine. The installer adopts a blob left by an
- * earlier load only if its version matches, since the plugin reaches into the
- * data block by these offsets. */
+/* 2: appended send_opd, conn_id, pdu and start_tries (the start-up
+ * feature-0x05 GET), and get_report became send_routine. The installer adopts a
+ * blob left by an earlier load only if its version matches, since the plugin
+ * reaches into the data block by these offsets. */
 #define DS45_SHIM_VERSION 2
 #define DS45_SHIM_CONNS   8
 
@@ -52,6 +52,14 @@ typedef struct {
 	 * the plugin records it when the connection comes up (kshim_set_connection). */
 	uint64_t conn_id[DS45_SHIM_CONNS];
 	uint8_t  pdu[8];                     /* the request PDU the start-up builds and sends */
+	/* How many times the start-up has sent its GET for each slot - written by
+	 * the blob, one qword per slot so the plugin can zero one slot's count with
+	 * a single aligned write and no read-modify-write of its neighbours. The
+	 * driver may call the start-up again and again for one connection, so the
+	 * blob stops sending when a slot's count reaches SHIM_START_TRIES_MAX
+	 * (shim.h); kshim_set_connection zeroes it (re-arms the slot) before it
+	 * publishes a connection. */
+	uint64_t start_tries[DS45_SHIM_CONNS];
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */

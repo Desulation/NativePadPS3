@@ -268,7 +268,7 @@ static int test_no_entry_writes_nothing(void)
  * copied verbatim, the data block filled, and the flush OPD built. */
 static int check_blob_image(void)
 {
-	uint8_t db[240];                 /* sizeof(ds45_shim_data_t), 8-aligned */
+	uint8_t db[304];                 /* sizeof(ds45_shim_data_t), 8-aligned */
 	const uint8_t *cfg;
 	uint32_t off;
 	int i;
@@ -321,9 +321,12 @@ static int check_blob_image(void)
 	          -50 ? 0 : __LINE__);
 	/* per-connection, request-buffer and counter fields start cleared */
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, conn_key)) == 0 ? 0 : __LINE__);
-	for (i = 0; i < DS45_SHIM_CONNS; i++)
+	for (i = 0; i < DS45_SHIM_CONNS; i++) {
 		CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, conn_id) + 8 * i) ==
 		          0 ? 0 : __LINE__);
+		CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, start_tries) + 8 * i) ==
+		          0 ? 0 : __LINE__);
+	}
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, conn_state)) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pdu)) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_translated)) == 0 ? 0 : __LINE__);
@@ -560,7 +563,7 @@ static int test_builtin_table(void)
  * pointer to it zero - the shim's DualSense start-up then fails safe. */
 static int test_install_without_send_routine(void)
 {
-	uint8_t db[240];
+	uint8_t db[304];
 	int i;
 
 	setup();
@@ -630,6 +633,22 @@ static uint64_t slot_id(int i)
 	return db_field(offsetof(ds45_shim_data_t, conn_id) + 8 * (size_t)i);
 }
 
+/* The blob's count of start-up sends for slot i (start_tries[] is a qword per
+ * slot, so the plugin can zero one without touching its neighbours). */
+static uint64_t slot_tries(int i)
+{
+	return db_field(offsetof(ds45_shim_data_t, start_tries) + 8 * (size_t)i);
+}
+
+/* What the blob does as it sends: bump the slot's count. Used to put the live
+ * block in a state the plugin has to deal with - a spent budget, or the stale
+ * count a slot's previous occupant left behind. */
+static void blob_sent(int i, uint64_t n)
+{
+	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, start_tries) +
+	      8 * (size_t)i, n);
+}
+
 /* conn_state[] is DS45_SHIM_CONNS bytes = one big-endian qword: byte 0 is its
  * most significant byte. */
 static int slot_state(int i)
@@ -638,15 +657,20 @@ static int slot_state(int i)
 	              (56 - 8 * i)) & 0xFF);
 }
 
-/* Nothing in the data block outside the three per-connection arrays changed. */
+/* Nothing in the data block outside the per-connection arrays changed. */
 static int rest_of_block_intact(void)
 {
-	uint8_t db[240];
+	uint8_t db[304];
 	const uint8_t *cfg;
+	int i;
 
 	CHECK_SUB(sizeof(ds45_shim_data_t) == sizeof db ? 0 : __LINE__);
 	CHECK_SUB(ds45_lv2_read_bytes(BLOB_BASE + DS45_SHIM_OFF_DATA, db,
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
+	/* in the tests that use this the blob never ran, so every budget is full */
+	for (i = 0; i < DS45_SHIM_CONNS; i++)
+		CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, start_tries) + 8 * i) ==
+		          0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) ==
@@ -761,12 +785,17 @@ static int test_set_connection_table_full(void)
 }
 
 /* A slot becomes visible to the shim only when its state byte is set, and that
- * is written last: if any earlier write does not stick, the shim never sees a
- * half-written connection. */
+ * is written last - after its id, its handle and the re-arm of its send budget:
+ * if any earlier write does not stick, the shim never sees a half-written
+ * connection (nor one that would start with a stale, possibly spent, budget). */
 static int test_set_connection_publishes_last(void)
 {
 	setup();
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+
+	/* slot 0 still carries a count its previous occupant left behind, so a
+	 * dropped re-arm is visible (a dropped write of 0 over 0 would read back) */
+	blob_sent(0, 6);
 
 	/* the id lands, the handle write is dropped */
 	fake_lv2_poke_fail_after = fake_lv2_poke_count + 1;
@@ -774,15 +803,25 @@ static int test_set_connection_publishes_last(void)
 	fake_lv2_poke_fail_after = -1;
 	CHECK(slot_state(0) == 0);
 
-	/* the id and the handle land, the state write is dropped */
+	/* the id and the handle land, the re-arm is dropped */
 	fake_lv2_poke_fail_after = fake_lv2_poke_count + 2;
 	CHECK(kshim_set_connection(0x2A, CONN_A) == -1);
 	fake_lv2_poke_fail_after = -1;
 	CHECK(slot_state(0) == 0);
+	CHECK(slot_tries(0) == 6);                 /* really not re-armed */
+
+	/* the id, the handle and the re-arm land, the state write is dropped: the
+	 * slot is armed but still not visible */
+	fake_lv2_poke_fail_after = fake_lv2_poke_count + 3;
+	CHECK(kshim_set_connection(0x2A, CONN_A) == -1);
+	fake_lv2_poke_fail_after = -1;
+	CHECK(slot_state(0) == 0);
+	CHECK(slot_tries(0) == 0);
 
 	/* and it works once the writes stick */
 	CHECK(kshim_set_connection(0x2A, CONN_A) == 0);
 	CHECK(slot_state(0) == 1 && slot_id(0) == CONN_A && slot_key(0) == 0x2A);
+	CHECK(slot_tries(0) == 0);
 
 	/* forgetting clears the state FIRST: a dropped write leaves the slot
 	 * still matching rather than half-torn-down... */
@@ -795,6 +834,61 @@ static int test_set_connection_publishes_last(void)
 	CHECK(kshim_set_connection(0x2A, 0) == 0);
 	CHECK(slot_state(0) == 0);
 
+	kshim_remove();
+	return 0;
+}
+
+/* The shim sends its start-up GET at most SHIM_START_TRIES_MAX times per slot
+ * (the blob counts them in start_tries[slot]; shim.c's own tests cover the cap).
+ * kshim_set_connection is what gives a connection a fresh budget: it zeroes the
+ * slot's count - one qword, no neighbour touched - when it publishes a new
+ * connection, and when a handle comes back with a different id. The same
+ * connection reported again changes nothing, so a caller that reports it on
+ * every rescan cannot keep refilling the budget. */
+static int test_set_connection_rearms_the_send_budget(void)
+{
+	int pokes;
+
+	setup();
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+
+	/* a first connection starts with a full budget; the shim then spends it all */
+	CHECK(kshim_set_connection(0x2A, CONN_A) == 0);
+	CHECK(slot_tries(0) == 0);
+	blob_sent(0, 8);
+
+	/* the same connection reported again: no write at all, budget not refilled */
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_set_connection(0x2A, CONN_A) == 0);
+	CHECK(fake_lv2_poke_count == pokes);
+	CHECK(slot_tries(0) == 8);
+
+	/* the handle comes back with a new id (the pad reconnected): that is a new
+	 * connection, so slot 0's budget is refilled - and only slot 0's. Slots 1
+	 * and 2 hold counts the blob left on them; slot 1 is not in use. */
+	blob_sent(1, 5);
+	blob_sent(2, 8);
+	CHECK(kshim_set_connection(0x2A, CONN_B) == 0);
+	CHECK(slot_id(0) == CONN_B && slot_state(0) == 1);
+	CHECK(slot_tries(0) == 0);
+	CHECK(slot_tries(1) == 5 && slot_tries(2) == 8);
+
+	/* a new connection taking a free slot whose previous occupant left a count
+	 * behind (slot 1: 5) starts with a full budget */
+	CHECK(kshim_set_connection(0x2B, CONN_C) == 0);
+	CHECK(slot_key(1) == 0x2B && slot_state(1) == 1);
+	CHECK(slot_tries(1) == 0);
+	CHECK(slot_tries(0) == 0 && slot_tries(2) == 8);   /* neighbours untouched */
+
+	/* forgetting a connection leaves its count alone; publishing the handle
+	 * again is a new connection and refills it */
+	blob_sent(1, 4);
+	CHECK(kshim_set_connection(0x2B, 0) == 0);
+	CHECK(slot_state(1) == 0 && slot_tries(1) == 4);
+	CHECK(kshim_set_connection(0x2B, CONN_C) == 0);
+	CHECK(slot_state(1) == 1 && slot_tries(1) == 0);
+
+	CHECK(fake_lv2_out_of_bounds == 0);
 	kshim_remove();
 	return 0;
 }
@@ -840,6 +934,9 @@ int run_tests(void)
 	if (line)
 		return line;
 	line = test_set_connection_publishes_last();
+	if (line)
+		return line;
+	line = test_set_connection_rearms_the_send_budget();
 	if (line)
 		return line;
 

@@ -64,9 +64,10 @@ int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
 	return len ? (int)*len : 0;
 }
 
-int shim_startup_dualsense(ds45_shim_data_t *d, uint64_t conn_id, long arg1)
+int shim_startup_dualsense(ds45_shim_data_t *d, int slot, long arg1)
 {
 	shim_send_fn send;
+	uint64_t conn_id;
 	int rc;
 
 	/* arg1 is the F1 dispatch argument; entry.c has already sent the
@@ -76,13 +77,27 @@ int shim_startup_dualsense(ds45_shim_data_t *d, uint64_t conn_id, long arg1)
 
 	if (!d)
 		return SHIM_F1_OK;
+	if (slot < 0 || slot >= DS45_SHIM_CONNS)
+		return SHIM_F1_ERR;
 
 	/* Without the transfer routine's descriptor, or a connection id to hand it
 	 * (0: the plugin has not recorded one), there is nothing safe to call - the
 	 * kernel routine would look the id up - so the start-up fails safe. */
+	conn_id = d->conn_id[slot];
 	send = (shim_send_fn)(uintptr_t)d->send_routine;
 	if (!send || conn_id == 0)
 		return SHIM_F1_ERR;
+
+	/* The driver may call the start-up again and again for one connection (the
+	 * original steps a persisted substate machine and this never advances it),
+	 * and each GET sent leaves a reply nobody drains if the pad never switches.
+	 * So a slot gets SHIM_START_TRIES_MAX sends, accepted or not, and then the
+	 * hook just answers OK: not an error, and not the original - either could
+	 * cost the driver a pad that did switch. The plugin re-arms the slot by
+	 * zeroing its count. */
+	if (d->start_tries[slot] >= SHIM_START_TRIES_MAX)
+		return SHIM_F1_OK;
+	d->start_tries[slot]++;
 
 	/* Kick off the pad's 0x31 report stream by requesting its calibration
 	 * feature report (F3): GET_REPORT, feature, report id 5, no payload. The

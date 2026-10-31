@@ -80,7 +80,17 @@ void kshim_remove(void);
  * visible to the shim only when its state byte is set, which is written last,
  * and is hidden first when forgotten, so the shim never sees a half-written
  * connection. Every write is read back. It read-modify-writes the state qword,
- * so calls must not run concurrently; the shim only ever reads the block.
+ * so calls must not run concurrently.
+ *
+ * The shim sends its start-up GET at most SHIM_START_TRIES_MAX times per slot
+ * and counts the sends in start_tries[slot]. This call gives a connection a
+ * fresh budget: it zeroes the slot's count - before the state byte publishes a
+ * new connection, and after the id of a recorded handle changes (the pad came
+ * back as a new connection). Reporting the same handle with the same id again
+ * writes nothing, and so refills nothing, so a caller may report a connection
+ * on every rescan without defeating the cap; to retry a connection whose
+ * budget is spent, forget it (conn_id 0) and record it again. Forgetting leaves
+ * the count alone.
  *
  * Returns 0 once done, or -1 if nothing is installed, every slot is taken by
  * another handle, or a write did not stick. Nothing calls this yet: where the

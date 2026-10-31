@@ -869,10 +869,12 @@ static int test_abi_layout(void)
 	CHECK(offsetof(ds45_shim_data_t, send_opd) == 144);    /* { entry, toc, env } */
 	CHECK(offsetof(ds45_shim_data_t, conn_id) == 168);
 	CHECK(offsetof(ds45_shim_data_t, pdu) == 232);
+	CHECK(offsetof(ds45_shim_data_t, start_tries) == 240); /* blob-written, a qword per slot */
 	CHECK(sizeof(((ds45_shim_data_t *)0)->send_opd) == 24);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->conn_id) == 8 * DS45_SHIM_CONNS);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->pdu) == 8);
-	CHECK(sizeof(ds45_shim_data_t) == 240);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->start_tries) == 8 * DS45_SHIM_CONNS);
+	CHECK(sizeof(ds45_shim_data_t) == 304);
 	return 0;
 }
 

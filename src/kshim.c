@@ -44,12 +44,14 @@ typedef char kshim_data_multiple_of_8[(sizeof(ds45_shim_data_t) % 8 == 0) ? 1 : 
 
 /* Everything the plugin reaches into the live block for is a whole, aligned
  * qword: the version (adoption), the conn_state[] array - all of it, one byte
- * per slot - and the per-slot key and id words (kshim_set_connection). */
+ * per slot - and the per-slot key, id and send-count words
+ * (kshim_set_connection). */
 typedef char kshim_version_qword[(offsetof(ds45_shim_data_t, version) % 8 == 0) ? 1 : -1];
 typedef char kshim_conn_state_qword[(sizeof(((ds45_shim_data_t *)0)->conn_state) == 8 &&
                                      offsetof(ds45_shim_data_t, conn_state) % 8 == 0) ? 1 : -1];
 typedef char kshim_conn_words_aligned[(offsetof(ds45_shim_data_t, conn_key) % 8 == 0 &&
-                                       offsetof(ds45_shim_data_t, conn_id) % 8 == 0) ? 1 : -1];
+                                       offsetof(ds45_shim_data_t, conn_id) % 8 == 0 &&
+                                       offsetof(ds45_shim_data_t, start_tries) % 8 == 0) ? 1 : -1];
 
 /* What a successful (or adopted) install left behind, for kshim_remove. */
 static ds45_kjournal_t g_journal;
@@ -409,7 +411,7 @@ int kshim_set_connection(uint8_t handle, uint64_t conn_id)
 {
 	const uint64_t db = g_base + DS45_SHIM_OFF_DATA;
 	const uint64_t state_addr = db + offsetof(ds45_shim_data_t, conn_state);
-	uint64_t state, key;
+	uint64_t state, key, old_id;
 	int i, slot = -1, free_slot = -1;
 
 	if (g_state != KSHIM_INSTALLED && g_state != KSHIM_ALREADY)
@@ -447,10 +449,25 @@ int kshim_set_connection(uint8_t handle, uint64_t conn_id)
 	}
 
 	if (slot >= 0) {
-		/* A reconnect: the slot is live, so only the id changes - one aligned
-		 * qword, which the shim reads in one piece. */
+		/* The slot is live. The same id again is the same connection: nothing
+		 * to write, and above all no fresh send budget - a caller that reports
+		 * the connection on every rescan must not keep refilling it. */
+		if (ds45_lv2_read(db + offsetof(ds45_shim_data_t, conn_id) + 8 * (uint64_t)slot,
+		                  &old_id)) {
+			DS45_TRACE("kshim_conn_read_FAILED");
+			return -1;
+		}
+		if (old_id == conn_id)
+			return 0;
+
+		/* A different id: the handle has come back as a new connection. Its id
+		 * is one aligned qword, which the shim reads in one piece; then its
+		 * send budget is refilled, so the id is never paired with a budget the
+		 * previous connection spent. */
 		if (ds45_lv2_write(db + offsetof(ds45_shim_data_t, conn_id) + 8 * (uint64_t)slot,
-		                   conn_id)) {
+		                   conn_id) ||
+		    ds45_lv2_write(db + offsetof(ds45_shim_data_t, start_tries) + 8 * (uint64_t)slot,
+		                   0)) {
 			DS45_TRACE("kshim_conn_update_FAILED");
 			return -1;
 		}
@@ -462,13 +479,18 @@ int kshim_set_connection(uint8_t handle, uint64_t conn_id)
 		return -1;
 	}
 
-	/* A new connection: its id and handle first, then the state byte, which is
-	 * what makes the slot visible - so a write that does not stick never leaves
-	 * the shim a half-written connection. */
+	/* A new connection: its id and handle, then a full send budget (the slot may
+	 * hold the count its previous occupant left behind), and last the state
+	 * byte, which is what makes the slot visible - so a write that does not
+	 * stick never leaves the shim a half-written connection or a spent budget.
+	 * The budget is a qword of its own, so zeroing it needs no read-modify-write
+	 * that could undo the blob's count for a neighbouring slot. */
 	if (ds45_lv2_write(db + offsetof(ds45_shim_data_t, conn_id) + 8 * (uint64_t)free_slot,
 	                   conn_id) ||
 	    ds45_lv2_write(db + offsetof(ds45_shim_data_t, conn_key) + 8 * (uint64_t)free_slot,
 	                   handle) ||
+	    ds45_lv2_write(db + offsetof(ds45_shim_data_t, start_tries) + 8 * (uint64_t)free_slot,
+	                   0) ||
 	    conn_state_put(state_addr, state, free_slot, 1)) {
 		DS45_TRACE("kshim_conn_set_FAILED");
 		return -1;
