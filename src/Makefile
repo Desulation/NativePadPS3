@@ -61,10 +61,11 @@ endif
 # on "Load" forever - so usb.c, passthru.c and the pad-LDD code, which are all
 # VSH-only anyway, must be absent from the in-game build rather than merely
 # unused by it.
-SRCS_VSH  = libc.c util.c hook.c config.c ds4.c dualsense.c sticks.c padldd.c \
-            usb.c passthru.c lv2.c kernel.c btcheck.c diag.c main.c \
-            $(SRCS_VSH_DEBUG)
-SRCS_GAME = libc.c util.c hook.c config.c sticks.c gamehook.c diag.c main.c
+SRCS_VSH  = libc.c util.c hook.c config.c ds4.c dualsense.c ds_body.c sixaxis.c \
+            sticks.c padldd.c usb.c passthru.c lv2.c kernel.c btcheck.c diag.c \
+            main.c $(SRCS_VSH_DEBUG)
+SRCS_GAME = libc.c util.c hook.c config.c sticks.c sixaxis.c ds_body.c gamehook.c \
+            diag.c main.c
 
 LIBS_VSH  = -lusbd_stub -lio_stub -lfs_stub -llv2_stub
 LIBS_GAME = -lio_stub -lfs_stub -llv2_stub

@@ -17,6 +17,8 @@
 #include <stddef.h>
 #include <cell/pad.h>   /* CellPadData in the VSH detour prototypes below */
 #include "report_queue.h"
+#include "ds45_state.h" /* ds45_state_t, DS45_B_*, ds45_map_t, DualSense layout */
+#include "sixaxis.h"    /* DS45_SENSOR_CENTER, sixaxis_from_accel/gyro */
 
 #ifdef DS45_DEBUG
 #define DS45PAD_VERSION "1.0.1-ps-usb-candidate-debug"
@@ -123,9 +125,8 @@
 #define DS45_DEV_TYPE_STANDARD  0
 #define DS45_DEV_TYPE_LDD       5
 
-/* Neutral values for a DS3 at rest. */
-#define DS45_STICK_CENTER       0x0080
-#define DS45_SENSOR_CENTER      0x0200  /* 512, sensors are 10-bit */
+/* DS45_STICK_CENTER (ds45_state.h) and DS45_SENSOR_CENTER (sixaxis.h), the
+ * neutral values of a DS3 at rest, are in headers the kernel shim builds. */
 
 /* ------------------------------------------------------------------------ */
 /* Controller models                                                         */
@@ -152,70 +153,10 @@ typedef enum {
 /* ------------------------------------------------------------------------ */
 /* Normalised controller state                                               */
 /*                                                                           */
-/* Both HID parsers fill this in; a single translation stage turns it into   */
-/* CellPadData. Keeping the parsers free of any libpad knowledge is what     */
-/* lets the DS4 and DualSense paths share all downstream behaviour.          */
+/* ds45_state_t, its DS45_B_* bits and ds45_map_t are in ds45_state.h, which */
+/* has no SDK dependency so the kernel shim can build against it too. It is  */
+/* included at the top of this file.                                         */
 /* ------------------------------------------------------------------------ */
-
-typedef struct {
-	uint16_t x;      /* 0..1919 (DS4) / 0..1919 (DualSense) */
-	uint16_t y;      /* 0..941  (DS4) / 0..1079 (DualSense) */
-	uint8_t  id;
-	uint8_t  active;
-} ds45_touch_t;
-
-typedef struct {
-	/* Sticks: 0..255, 0x80 centred, Y grows downwards (same as a DS3). */
-	uint8_t  lx, ly, rx, ry;
-
-	/* Triggers: 0..255 analog travel. */
-	uint8_t  l2, r2;
-
-	/* Digital buttons, DS45_BTN_* independent bitfield. */
-	uint32_t buttons;
-
-	/* Motion, raw signed sensor units straight off the controller. */
-	int16_t  gyro[3];   /* pitch, yaw, roll */
-	int16_t  accel[3];  /* x, y, z          */
-
-	/* Touchpad. */
-	ds45_touch_t touch[2];
-
-	/* Power: level 0..10, charging/full flags. */
-	uint8_t  battery;
-	uint8_t  charging;
-	uint8_t  full;
-
-	uint8_t  valid;         /* report parsed successfully              */
-	uint8_t  sticks_valid;  /* the stick values came from the device,
-	                         * not from an unpopulated report - the
-	                         * calibration must never learn from those */
-} ds45_state_t;
-
-/* ds45_state_t.buttons bits (parser-neutral, not the libpad layout) */
-#define DS45_B_CROSS      0x00000001
-#define DS45_B_CIRCLE     0x00000002
-#define DS45_B_SQUARE     0x00000004
-#define DS45_B_TRIANGLE   0x00000008
-#define DS45_B_L1         0x00000010
-#define DS45_B_R1         0x00000020
-#define DS45_B_L2         0x00000040
-#define DS45_B_R2         0x00000080
-#define DS45_B_SHARE      0x00000100  /* Share / Create        */
-#define DS45_B_OPTIONS    0x00000200
-#define DS45_B_L3         0x00000400
-#define DS45_B_R3         0x00000800
-#define DS45_B_PS         0x00001000
-#define DS45_B_TOUCHPAD   0x00002000  /* touchpad click        */
-#define DS45_B_MUTE       0x00004000  /* DualSense mic mute    */
-#define DS45_B_UP         0x00008000
-#define DS45_B_RIGHT      0x00010000
-#define DS45_B_DOWN       0x00020000
-#define DS45_B_LEFT       0x00040000
-#define DS45_B_FN_L       0x00080000  /* DualSense Edge        */
-#define DS45_B_FN_R       0x00100000
-#define DS45_B_PADDLE_L   0x00200000
-#define DS45_B_PADDLE_R   0x00400000
 
 /* ------------------------------------------------------------------------ */
 /* Output (rumble / lightbar / player LEDs)                                   */
@@ -292,16 +233,8 @@ typedef enum {
 	DS45_PSCOMBO_L3_R3,
 } ds45_pscombo_t;
 
-/* Symbolic targets a physical control can be remapped onto. */
-typedef enum {
-	DS45_MAP_NONE = 0,
-	DS45_MAP_CROSS, DS45_MAP_CIRCLE, DS45_MAP_SQUARE, DS45_MAP_TRIANGLE,
-	DS45_MAP_L1, DS45_MAP_R1, DS45_MAP_L2, DS45_MAP_R2,
-	DS45_MAP_L3, DS45_MAP_R3,
-	DS45_MAP_START, DS45_MAP_SELECT, DS45_MAP_PS,
-	DS45_MAP_UP, DS45_MAP_RIGHT, DS45_MAP_DOWN, DS45_MAP_LEFT,
-	DS45_MAP_MAX
-} ds45_map_t;
+/* ds45_map_t, the symbolic targets a physical control can be remapped onto
+ * (DS45_MAP_*), is in ds45_state.h: the kernel shim honours two of the maps. */
 
 typedef struct {
 	/* Master switch. With this off the plugin loads, writes its boot trace
@@ -459,7 +392,8 @@ extern ds45_pad_t g_pads[DS45_MAX_PADS];
 /* Module interfaces                                                         */
 /* ------------------------------------------------------------------------ */
 
-/* ds4.c / dualsense.c - HID report translation */
+/* ds4.c / dualsense.c - HID report translation. The DualSense field decoding
+ * itself is ds_body.c (dualsense_parse_bt_body, declared in ds45_state.h). */
 int  ds4_parse(const uint8_t *buf, int len, ds45_link_t link, ds45_state_t *st);
 int  ds4_build_output(uint8_t *buf, int cap, ds45_link_t link,
                       const ds45_output_t *out);

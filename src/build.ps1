@@ -35,7 +35,7 @@ function Invoke-BuildTool([string]$Program, [string[]]$Arguments) {
     & $Program @Arguments
     if ($LASTEXITCODE -ne 0) { throw "Build tool failed ($LASTEXITCODE): $Program" }
 }
-$sources = @('libc','util','hook','config','sticks','diag','main')
+$sources = @('libc','util','hook','config','sticks','sixaxis','ds_body','diag','main')
 $libs = @('-lio_stub','-lfs_stub','-llv2_stub')
 $compat = Join-Path $PSScriptRoot '../patches/compat_pad.h'
 $flags = @('-mprx','-Os','-ffunction-sections','-fdata-sections','-fno-builtin-printf','-nodefaultlibs','-std=gnu99','-Wall','-Wno-unused-parameter','-I',$include)

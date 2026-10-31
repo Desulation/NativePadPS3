@@ -48,14 +48,14 @@ if [ "$VARIANT" = "game" ]; then
 	# A game process loads libio and libfs but *not* libusbd, so the in-game
 	# build must not contain a single reference to it - otherwise the loader
 	# cannot resolve the module and PS3MAPI hangs on "Load" forever.
-	SRCS="libc.c util.c hook.c config.c sticks.c gamehook.c diag.c main.c"
+	SRCS="libc.c util.c hook.c config.c sticks.c sixaxis.c ds_body.c gamehook.c diag.c main.c"
 	LDLIBS="-lio_stub -lfs_stub"
 else
 	EXTRA=""
 	OUT="ds45pad_vsh.sprx"
 	AUTH="$AUTH_VSH"
-	SRCS="libc.c util.c hook.c config.c ds4.c dualsense.c sticks.c padldd.c \
-	      usb.c passthru.c lv2.c kernel.c btcheck.c diag.c main.c"
+	SRCS="libc.c util.c hook.c config.c ds4.c dualsense.c ds_body.c sixaxis.c \
+	      sticks.c padldd.c usb.c passthru.c lv2.c kernel.c btcheck.c diag.c main.c"
 	LDLIBS="-lusbd_stub -lio_stub -lfs_stub -llv2_stub"
 fi
 

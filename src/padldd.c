@@ -242,35 +242,6 @@ static int clamp(int v, int lo, int hi)
 	return v;
 }
 
-static uint16_t sensor_from_accel(int16_t raw, int scale, int invert)
-{
-	/* DS4/DualSense report 8192 LSB per g. A DualShock 3 sits at 512 with
-	 * roughly 113 LSB per g, so the physically correct conversion is
-	 * 512 + raw * 113 / 8192. Divide before applying the user scale to keep
-	 * the intermediate inside 32 bits. */
-	int v = ((int)raw * 113) / 8192;
-
-	v = (v * scale) / 100;
-	if (invert)
-		v = -v;
-
-	return (uint16_t)clamp(v + DS45_SENSOR_CENTER, 0, 1023);
-}
-
-static uint16_t sensor_from_gyro(int16_t raw, int scale, int invert)
-{
-	/* The gyro scale has no clean physical equivalent on a DS3 - the raw
-	 * DS4/DualSense counts are divided down to land inside the 10 bit range
-	 * and GYRO_SCALE tunes it from there. */
-	int v = ((int)raw) / 32;
-
-	v = (v * scale) / 100;
-	if (invert)
-		v = -v;
-
-	return (uint16_t)clamp(v + DS45_SENSOR_CENTER, 0, 1023);
-}
-
 /* Pressure for a digital button. In RAMP mode the value climbs while the
  * button is held, which gives games that read analog pressure (Metal Gear
  * Solid 4 and friends) something to work with. */
@@ -404,13 +375,13 @@ void ldd_translate(ds45_pad_t *pad, const ds45_state_t *st, uint16_t *button)
 		if (g_cfg.swap_xy) { ax = 1; ay = 0; }
 
 		button[DS45_BTN_SENSOR_X] =
-			sensor_from_accel(st->accel[ax], g_cfg.accel_scale, g_cfg.invert_x);
+			sixaxis_from_accel(st->accel[ax], g_cfg.accel_scale, g_cfg.invert_x);
 		button[DS45_BTN_SENSOR_Y] =
-			sensor_from_accel(st->accel[ay], g_cfg.accel_scale, g_cfg.invert_y);
+			sixaxis_from_accel(st->accel[ay], g_cfg.accel_scale, g_cfg.invert_y);
 		button[DS45_BTN_SENSOR_Z] =
-			sensor_from_accel(st->accel[2], g_cfg.accel_scale, g_cfg.invert_z);
+			sixaxis_from_accel(st->accel[2], g_cfg.accel_scale, g_cfg.invert_z);
 		button[DS45_BTN_SENSOR_G] =
-			sensor_from_gyro(st->gyro[1], g_cfg.gyro_scale, g_cfg.invert_g);
+			sixaxis_from_gyro(st->gyro[1], g_cfg.gyro_scale, g_cfg.invert_g);
 	} else {
 		button[DS45_BTN_SENSOR_X] = DS45_SENSOR_CENTER;
 		button[DS45_BTN_SENSOR_Y] = DS45_SENSOR_CENTER;
