@@ -28,6 +28,8 @@ uint64_t fake_now_us;
 static uint8_t *lv2_pages[LV2_PAGES];
 int fake_lv2_out_of_bounds;
 int fake_lv2_peek_count;
+int fake_lv2_poke_count;
+int fake_lv2_poke_fail_after = -1;
 
 void fake_lv2_reset(void)
 {
@@ -38,6 +40,8 @@ void fake_lv2_reset(void)
 	}
 	fake_lv2_out_of_bounds = 0;
 	fake_lv2_peek_count = 0;
+	fake_lv2_poke_count = 0;
+	fake_lv2_poke_fail_after = -1;
 }
 
 void fake_lv2_set(uint64_t addr, const uint8_t *bytes, int len)
@@ -91,6 +95,24 @@ static uint64_t lv2_peek(uint64_t addr)
 	return v;
 }
 
+static void lv2_poke(uint64_t addr, uint64_t value)
+{
+	uint8_t b[8];
+	int i, dropped = fake_lv2_poke_fail_after >= 0 &&
+	                 fake_lv2_poke_count >= fake_lv2_poke_fail_after;
+
+	fake_lv2_poke_count++;
+	if ((addr & 7) || addr < DS45_LV2_BASE || addr > DS45_LV2_BOUND - 8) {
+		fake_lv2_out_of_bounds++;
+		return;
+	}
+	if (dropped)
+		return;
+	for (i = 0; i < 8; i++)               /* big-endian, like the PPU */
+		b[i] = (uint8_t)(value >> (56 - 8 * i));
+	fake_lv2_set(addr, b, 8);
+}
+
 uint64_t (*fake_syscall8)(uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);
 int      fake_sc8_calls;
 uint64_t fake_sc8_a1[FAKE_SC8_LOG];
@@ -101,6 +123,9 @@ uint64_t fake_syscall(int n, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4)
 	switch (n) {
 	case 6:
 		return lv2_peek(a1);
+	case 7:
+		lv2_poke(a1, a2);
+		return 0;
 	case 8:
 		if (fake_sc8_calls < FAKE_SC8_LOG) {
 			fake_sc8_a1[fake_sc8_calls] = a1;

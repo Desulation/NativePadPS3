@@ -25,12 +25,21 @@ extern int fake_lv2_out_of_bounds;
 /* Count of all syscall-6 reads, in or out of bounds. */
 extern int fake_lv2_peek_count;
 
+/* Syscall 7 (poke) stores one big-endian qword into the fake image.
+ * fake_lv2_poke_count counts all syscall-7 calls (dropped ones included);
+ * fake_lv2_poke_fail_after >= 0 lets that many pokes through and silently
+ * drops every later one (so a read-back fails); -1 = never drop. Both are
+ * reset by fake_reset_all(). A poke that is misaligned or outside the window
+ * is dropped and also counted in fake_lv2_out_of_bounds. */
+extern int fake_lv2_poke_count;
+extern int fake_lv2_poke_fail_after;
+
 /* Called after every syscall-6 read (in or out of bounds) when set; a test
  * can change the image from here to simulate a concurrent kernel write.
  * Cleared by fake_reset_all(). */
 extern void (*fake_lv2_on_peek)(uint64_t addr);
 
-/* Syscall dispatcher behind system_call_N. 6 = peek; 8 = fake_syscall8 if
+/* Syscall dispatcher behind system_call_N. 6 = peek; 7 = poke; 8 = fake_syscall8 if
  * set, else -1 (every syscall-8 call is logged either way); anything else
  * = -1. */
 uint64_t fake_syscall(int n, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);

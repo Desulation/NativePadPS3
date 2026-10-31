@@ -1,5 +1,5 @@
 /*
- * DS45PAD - bounded LV2 (kernel) memory reads. See lv2.h.
+ * DS45PAD - bounded LV2 (kernel) memory reads and writes. See lv2.h.
  */
 
 #include <stddef.h>
@@ -11,6 +11,12 @@ uint64_t ds45_peek(uint64_t addr)
 {
 	system_call_1(6, addr);
 	return_to_user_prog(uint64_t);
+}
+
+/* Syscall 7 (sys_cfw_poke). Raw and unchecked, hence static. */
+static void ds45_poke(uint64_t addr, uint64_t value)
+{
+	system_call_2(7, addr, value);
 }
 
 int ds45_lv2_read(uint64_t addr, uint64_t *out)
@@ -45,6 +51,17 @@ int ds45_lv2_read_bytes(uint64_t addr, uint8_t *out, int len)
 	}
 
 	return 0;
+}
+
+int ds45_lv2_write(uint64_t addr, uint64_t value)
+{
+	if ((addr & 7) || addr < DS45_LV2_BASE || addr > DS45_LV2_BOUND - 8)
+		return -1;
+
+	ds45_poke(addr, value);
+
+	/* The poke returns nothing useful; trust only what the kernel now holds. */
+	return ds45_peek(addr) == value ? 0 : -1;
 }
 
 uint64_t ds45_fnv1a64(const uint8_t *p, int n)
