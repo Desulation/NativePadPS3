@@ -1,5 +1,6 @@
 /*
- * DS45PAD kernel shim - DualSense Bluetooth report 0x31 to a DualShock 3 report.
+ * DS45PAD kernel shim - DualSense Bluetooth reports 0x31 and 0x01 to a
+ * DualShock 3 report.
  *
  * Built twice: natively by the host tests, and freestanding into the shim blob
  * that runs inside the PS3 kernel's DS3 driver. So no SDK, no libc (hence the
@@ -122,27 +123,21 @@ static void put_be16(uint8_t *p, uint16_t v)
 	p[1] = (uint8_t)(v & 0xFF);
 }
 
-int ds3_report_from_dualsense(const uint8_t *in, int in_len,
-                              const ds45_shim_cfg_t *cfg,
-                              uint8_t out[DS3_REPORT_LEN])
+/* Write the whole DS3 report but the sensor words (left 0) from the decoded
+ * buttons, triggers and sticks in *st: the part both DualSense reports share.
+ * Reads only lx, ly, rx, ry, l2, r2 and buttons. */
+static void write_ds3(const ds45_state_t *st, const ds45_shim_cfg_t *cfg,
+                      uint8_t *out)
 {
-	ds45_state_t st;
 	uint32_t b;
-	int i, ax, ay;
+	int i;
 
-	if (!in || !cfg || !out)
-		return -1;
-	if (dualsense_parse_bt_body(in, in_len, &st) != 0)
-		return -1;
-
-	/* st has all of the report now, so from here on out may be the buffer
-	 * in points into. */
 	for (i = 0; i < DS3_REPORT_LEN; i++)
 		out[i] = 0;
 	out[DS3_ID] = 0x01;
 
 	/* --- digital buttons ----------------------------------------------- */
-	b = st.buttons;
+	b = st->buttons;
 	if (b & DS45_B_SHARE)    press(out, DS45_MAP_SELECT);   /* Create  */
 	if (b & DS45_B_OPTIONS)  press(out, DS45_MAP_START);
 	if (b & DS45_B_L3)       press(out, DS45_MAP_L3);
@@ -163,8 +158,8 @@ int ds3_report_from_dualsense(const uint8_t *in, int in_len,
 	 * travel itself, and only the digital bit follows the DualSense's flag. */
 	if (b & DS45_B_L2)       out[DS3_DIGITAL2] |= D2_L2;
 	if (b & DS45_B_R2)       out[DS3_DIGITAL2] |= D2_R2;
-	out[PR_L2] = st.l2;
-	out[PR_R2] = st.r2;
+	out[PR_L2] = st->l2;
+	out[PR_R2] = st->r2;
 
 	/* The remappable extras go last, so a mapped L2 or R2 reads full pressure
 	 * whatever the real trigger is doing. */
@@ -172,10 +167,36 @@ int ds3_report_from_dualsense(const uint8_t *in, int in_len,
 	if (b & DS45_B_MUTE)     press(out, cfg->map_mute);
 
 	/* --- sticks -------------------------------------------------------- */
-	out[DS3_STICKS + 0] = stick(st.lx, cfg->deadzone);
-	out[DS3_STICKS + 1] = stick(st.ly, cfg->deadzone);
-	out[DS3_STICKS + 2] = stick(st.rx, cfg->deadzone);
-	out[DS3_STICKS + 3] = stick(st.ry, cfg->deadzone);
+	out[DS3_STICKS + 0] = stick(st->lx, cfg->deadzone);
+	out[DS3_STICKS + 1] = stick(st->ly, cfg->deadzone);
+	out[DS3_STICKS + 2] = stick(st->rx, cfg->deadzone);
+	out[DS3_STICKS + 3] = stick(st->ry, cfg->deadzone);
+}
+
+/* All four sensor words at the DS3's rest value. */
+static void sensors_centre(uint8_t *out)
+{
+	int i;
+
+	for (i = 0; i < 4; i++)
+		put_be16(out + DS3_SENSORS + 2 * i, DS45_SENSOR_CENTER);
+}
+
+int ds3_report_from_dualsense(const uint8_t *in, int in_len,
+                              const ds45_shim_cfg_t *cfg,
+                              uint8_t out[DS3_REPORT_LEN])
+{
+	ds45_state_t st;
+	int ax, ay;
+
+	if (!in || !cfg || !out)
+		return -1;
+	if (dualsense_parse_bt_body(in, in_len, &st) != 0)
+		return -1;
+
+	/* st has all of the report now, so from here on out may be the buffer
+	 * in points into. */
+	write_ds3(&st, cfg, out);
 
 	/* --- motion -------------------------------------------------------- */
 	if (cfg->sixaxis) {
@@ -191,9 +212,44 @@ int ds3_report_from_dualsense(const uint8_t *in, int in_len,
 		put_be16(out + DS3_SENSORS + 6,
 		         sixaxis_from_gyro(st.gyro[1], cfg->gyro_scale, cfg->invert_g));
 	} else {
-		for (i = 0; i < 4; i++)
-			put_be16(out + DS3_SENSORS + 2 * i, DS45_SENSOR_CENTER);
+		sensors_centre(out);
 	}
 
+	return 0;
+}
+
+/* Byte offsets in the basic report, and the bits of its third button byte
+ * that are buttons (PS and the touchpad click; the rest are not). */
+#define BASIC_STICKS    1     /* LX, LY, RX, RY */
+#define BASIC_BUTTONS   5     /* 3 bytes, the DualSense button byte layout */
+#define BASIC_L2        8
+#define BASIC_R2        9
+#define BASIC_B2_MASK   0x03
+
+int ds3_report_from_dualsense_basic(const uint8_t *in, int in_len,
+                                    const ds45_shim_cfg_t *cfg,
+                                    uint8_t out[DS3_REPORT_LEN])
+{
+	ds45_state_t st;
+
+	if (!in || !cfg || !out)
+		return -1;
+	if (in_len < DS_BASIC_LEN || in[0] != DS_BASIC_REPORT_ID)
+		return -1;
+
+	/* Only the fields write_ds3() reads. */
+	st.lx = in[BASIC_STICKS + 0];
+	st.ly = in[BASIC_STICKS + 1];
+	st.rx = in[BASIC_STICKS + 2];
+	st.ry = in[BASIC_STICKS + 3];
+	st.l2 = in[BASIC_L2];
+	st.r2 = in[BASIC_R2];
+	st.buttons = dualsense_decode_buttons(in[BASIC_BUTTONS + 0],
+	                                      in[BASIC_BUTTONS + 1],
+	                                      in[BASIC_BUTTONS + 2] & BASIC_B2_MASK);
+
+	/* everything is read: out may be the buffer in points into */
+	write_ds3(&st, cfg, out);
+	sensors_centre(out);
 	return 0;
 }

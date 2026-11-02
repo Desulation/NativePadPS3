@@ -141,6 +141,11 @@ typedef enum {
  * has already checked the length. */
 void dualsense_decode_common(const uint8_t *c, ds45_state_t *st);
 
+/* The three DualSense button bytes (hat + face, shoulders + sticks + Create /
+ * Options, PS + touchpad + Mute + Edge extras) as DS45_B_* bits. The common
+ * payload and the basic report 0x01 share this byte layout. */
+uint32_t dualsense_decode_buttons(uint8_t b0, uint8_t b1, uint8_t b2);
+
 /* A Bluetooth 0x31 report with no CRC check. Returns 0 and fills *st, or -1
  * (and clears st->valid) when buf is NULL, buf[0] is not 0x31 or len is below
  * DS_BT_BODY_MIN. Never reads past buf[len - 1]. */

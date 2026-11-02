@@ -830,6 +830,316 @@ static int test_fuzz(void)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* The basic report 0x01 a DualSense sends before it is switched to 0x31      */
+/* ------------------------------------------------------------------------ */
+
+#define BASIC_GUARD 32                 /* guard bytes after the input in the fuzz */
+
+/* Sticks centred, hat released, no buttons, triggers at rest. */
+static void basic_neutral(uint8_t r[DS_BASIC_LEN])
+{
+	static const uint8_t k[DS_BASIC_LEN] = { 0x01, 0x80, 0x80, 0x80, 0x80, 0x08, 0, 0, 0, 0 };
+
+	memcpy(r, k, DS_BASIC_LEN);
+}
+
+/* Translate the basic report r and compare all 49 bytes with e. */
+static int basic_translates_to(const uint8_t *r, const ds45_shim_cfg_t *c,
+                               const uint8_t *e, const char *what)
+{
+	uint8_t out[DS3_REPORT_LEN];
+	int i;
+
+	memset(out, SENTINEL, sizeof(out));
+	if (ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, c, out) != 0) {
+		printf("  %s: rejected\n", what);
+		return 0;
+	}
+	for (i = 0; i < DS3_REPORT_LEN; i++) {
+		if (out[i] != e[i]) {
+			printf("  %s: byte %d is 0x%02X, expected 0x%02X\n",
+			       what, i, out[i], e[i]);
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static int test_basic_neutral(void)
+{
+	uint8_t r[DS_BASIC_LEN], out[DS3_REPORT_LEN], want[DS3_REPORT_LEN];
+	ds45_shim_cfg_t c = cfg_plain();
+	int i;
+
+	CHECK(DS_BASIC_REPORT_ID == 0x01);
+	CHECK(DS_BASIC_LEN == 10);
+
+	basic_neutral(r);
+	memset(out, SENTINEL, sizeof(out));
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
+	CHECK(out[0] == 0x01);
+	for (i = 6; i <= 9; i++)
+		CHECK(out[i] == 0x80);
+	CHECK(out[2] == 0 && out[3] == 0 && out[4] == 0);
+	for (i = 0; i < 4; i++)                       /* 02 00 02 00 02 00 02 00 */
+		CHECK(out[41 + 2 * i] == 0x02 && out[42 + 2 * i] == 0x00);
+
+	/* every other byte is 0: the same report the 0x31 path gives at rest */
+	ds3_neutral(want);
+	CHECK(memcmp(out, want, sizeof(want)) == 0);
+
+	/* the basic report has no motion data: centre whatever cfg->sixaxis says */
+	c.sixaxis = 0;
+	CHECK(basic_translates_to(r, &c, want, "basic neutral, sixaxis off"));
+
+	/* the sticks pass through, and the deadzone applies to them */
+	c = cfg_plain();
+	r[1] = 0x10; r[2] = 0x20; r[3] = 0xE0; r[4] = 0xF0;
+	want[6] = 0x10; want[7] = 0x20; want[8] = 0xE0; want[9] = 0xF0;
+	CHECK(basic_translates_to(r, &c, want, "basic sticks"));
+	c.deadzone = 10;
+	r[1] = 0x80 + 12;                             /* inside: centred      */
+	r[4] = 0x80 - 13;                             /* outside: passes      */
+	want[6] = 0x80;
+	want[9] = 0x80 - 13;
+	CHECK(basic_translates_to(r, &c, want, "basic deadzone"));
+	return 0;
+}
+
+static int test_basic_buttons(void)
+{
+	uint8_t r[DS_BASIC_LEN], out[DS3_REPORT_LEN], want[DS3_REPORT_LEN];
+	ds45_shim_cfg_t c = cfg_plain();
+
+	/* Cross: its bit and its full pressure byte, nothing else */
+	basic_neutral(r);
+	r[5] = 0x28;
+	ds3_neutral(want);
+	want[3] = 0x40;
+	want[24] = 255;
+	CHECK(basic_translates_to(r, &c, want, "basic Cross"));
+
+	/* Options is Start */
+	basic_neutral(r);
+	r[6] = 0x20;
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
+	CHECK(out[2] & 0x08);
+	ds3_neutral(want);
+	want[2] = 0x08;
+	CHECK(memcmp(out, want, sizeof(want)) == 0);
+
+	/* PS */
+	basic_neutral(r);
+	r[7] = 0x01;
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
+	CHECK(out[4] & 0x01);
+	ds3_neutral(want);
+	want[4] = 0x01;
+	CHECK(memcmp(out, want, sizeof(want)) == 0);
+
+	/* hat 2 is Right, with its pressure byte */
+	basic_neutral(r);
+	r[5] = 0x02;
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
+	CHECK(out[2] & 0x20);
+	ds3_neutral(want);
+	want[2] = 0x20;
+	want[15] = 255;
+	CHECK(memcmp(out, want, sizeof(want)) == 0);
+
+	/* Create is Select; the rest of byte 6 and the face buttons */
+	basic_neutral(r);
+	r[5] = 0x08 | 0x10 | 0x40 | 0x80;            /* Square Circle Triangle */
+	r[6] = 0x01 | 0x02 | 0x10 | 0x40 | 0x80;     /* L1 R1 Create L3 R3 */
+	ds3_neutral(want);
+	want[2] = 0x01 | 0x02 | 0x04;                 /* Select L3 R3 */
+	want[3] = 0x04 | 0x08 | 0x10 | 0x20 | 0x80;   /* L1 R1 Triangle Circle Square */
+	want[20] = want[21] = want[22] = want[23] = want[25] = 255;
+	CHECK(basic_translates_to(r, &c, want, "basic face and shoulders"));
+
+	/* touchpad click follows cfg->map_touchpad */
+	basic_neutral(r);
+	r[7] = 0x02;
+	ds3_neutral(want);
+	CHECK(basic_translates_to(r, &c, want, "basic touchpad, map NONE"));
+	c.map_touchpad = DS45_MAP_PS;
+	want[4] = 0x01;
+	CHECK(basic_translates_to(r, &c, want, "basic touchpad -> PS"));
+
+	/* the rest of byte 7 is not a button (a DS4-style counter): it must not
+	 * reach the Mute mapping or anything else */
+	c = cfg_plain();
+	c.map_mute = DS45_MAP_PS;
+	basic_neutral(r);
+	r[7] = 0xFC;
+	ds3_neutral(want);
+	CHECK(basic_translates_to(r, &c, want, "basic byte 7 upper bits"));
+	return 0;
+}
+
+static int test_basic_triggers(void)
+{
+	uint8_t r[DS_BASIC_LEN], out[DS3_REPORT_LEN], want[DS3_REPORT_LEN];
+	ds45_shim_cfg_t c = cfg_plain();
+
+	/* analog travel only: the pressure bytes, no digital bits */
+	basic_neutral(r);
+	r[8] = 0x40;
+	r[9] = 0xFF;
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
+	CHECK(out[18] == 0x40);
+	CHECK(out[19] == 0xFF);
+	ds3_neutral(want);
+	want[18] = 0x40;
+	want[19] = 0xFF;
+	CHECK(memcmp(out, want, sizeof(want)) == 0);
+
+	/* the digital bits follow the report's own L2/R2 flags */
+	r[6] = 0x04 | 0x08;
+	want[3] = 0x01 | 0x02;
+	CHECK(basic_translates_to(r, &c, want, "basic L2 R2 digital"));
+	return 0;
+}
+
+static int test_basic_refuses(void)
+{
+	uint8_t r[DS_BASIC_LEN], out[DS3_REPORT_LEN], ee[DS3_REPORT_LEN];
+	ds45_shim_cfg_t c = cfg_plain();
+	int id, len;
+
+	memset(ee, 0xEE, sizeof(ee));
+	basic_neutral(r);
+
+	memset(out, 0xEE, sizeof(out));
+	CHECK(ds3_report_from_dualsense_basic(NULL, DS_BASIC_LEN, &c, out) == -1);
+	CHECK(memcmp(out, ee, sizeof(out)) == 0);
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, NULL, out) == -1);
+	CHECK(memcmp(out, ee, sizeof(out)) == 0);
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, NULL) == -1);
+
+	r[0] = 0x31;
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == -1);
+	CHECK(memcmp(out, ee, sizeof(out)) == 0);
+	for (id = 0; id < 256; id++) {
+		if (id == DS_BASIC_REPORT_ID)
+			continue;
+		r[0] = (uint8_t)id;
+		CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == -1);
+		CHECK(memcmp(out, ee, sizeof(out)) == 0);
+	}
+	r[0] = DS_BASIC_REPORT_ID;
+
+	CHECK(ds3_report_from_dualsense_basic(r, 9, &c, out) == -1);
+	CHECK(memcmp(out, ee, sizeof(out)) == 0);
+	for (len = -3; len < DS_BASIC_LEN; len++) {
+		CHECK(ds3_report_from_dualsense_basic(r, len, &c, out) == -1);
+		CHECK(memcmp(out, ee, sizeof(out)) == 0);
+	}
+
+	/* and at the length it is accepted */
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
+	CHECK(out[0] == 0x01);
+	return 0;
+}
+
+/* The shim will translate the basic report in place too. */
+static int test_basic_in_place(void)
+{
+	uint8_t src[DS3_REPORT_LEN], buf[DS3_REPORT_LEN], want[DS3_REPORT_LEN];
+	ds45_shim_cfg_t c = cfg_plain();
+	int n, i;
+
+	g_rng = 0xBA51C001u;
+	for (n = 0; n < 500; n++) {
+		for (i = 0; i < DS3_REPORT_LEN; i++)
+			src[i] = (uint8_t)rnd();
+		src[0] = DS_BASIC_REPORT_ID;
+		c.deadzone = (uint8_t)(rnd() % 30);
+		c.map_touchpad = (uint8_t)(rnd() % DS45_MAP_MAX);
+		c.map_mute = (uint8_t)(rnd() % DS45_MAP_MAX);
+
+		CHECK(ds3_report_from_dualsense_basic(src, DS3_REPORT_LEN, &c, want) == 0);
+		memcpy(buf, src, sizeof(buf));
+		CHECK(ds3_report_from_dualsense_basic(buf, DS3_REPORT_LEN, &c, buf) == 0);
+		CHECK(memcmp(buf, want, DS3_REPORT_LEN) == 0);
+	}
+	return 0;
+}
+
+static int test_basic_fuzz_all_lengths(void)
+{
+	/* the input sits at the end of area[0..0x41), the guard bytes follow it */
+	uint8_t area[0x41 + BASIC_GUARD], out[DS3_REPORT_LEN], out2[DS3_REPORT_LEN];
+	int len, n, i, ok, r1, r2;
+
+	g_rng = 0xF0221001u;
+	for (len = 0; len <= 0x41; len++) {
+		uint8_t *in = area + 0x41 - len;
+
+		for (n = 0; n < 1000; n++) {
+			ds45_shim_cfg_t c;
+
+			for (i = 0; i < (int)sizeof(area); i++)
+				area[i] = (uint8_t)rnd();
+			if (len > 0 && (rnd() & 1))
+				in[0] = DS_BASIC_REPORT_ID;    /* half the time a plausible ID */
+
+			c.deadzone = (uint8_t)rnd();
+			c.map_touchpad = (uint8_t)(rnd() % 24);
+			c.map_mute = (uint8_t)(rnd() % 24);
+			c.sixaxis = (uint8_t)(rnd() % 3);
+			c.swap_xy = (uint8_t)(rnd() % 3);
+			c.invert_x = (uint8_t)(rnd() % 3);
+			c.invert_y = (uint8_t)(rnd() % 3);
+			c.invert_z = (uint8_t)(rnd() % 3);
+			c.invert_g = (uint8_t)(rnd() % 3);
+			c.accel_scale = (int16_t)rnd();
+			c.gyro_scale = (int16_t)rnd();
+
+			ok = len >= DS_BASIC_LEN && in[0] == DS_BASIC_REPORT_ID;
+
+			/* guard pattern one */
+			memset(area + 0x41, 0x00, BASIC_GUARD);
+			memset(out, SENTINEL, sizeof(out));
+			r1 = ds3_report_from_dualsense_basic(in, len, &c, out);
+			CHECK(r1 == (ok ? 0 : -1));
+
+			/* guard pattern two, and every byte before the input changed
+			 * too: the output must not move */
+			memset(area + 0x41, 0xFF, BASIC_GUARD);
+			for (i = 0; i < 0x41 - len; i++)
+				area[i] = (uint8_t)~area[i];
+			memset(out2, SENTINEL, sizeof(out2));
+			r2 = ds3_report_from_dualsense_basic(in, len, &c, out2);
+			CHECK(r2 == r1);
+			CHECK(memcmp(out, out2, DS3_REPORT_LEN) == 0);
+
+			if (!ok) {
+				for (i = 0; i < DS3_REPORT_LEN; i++)
+					CHECK(out[i] == SENTINEL);
+				continue;
+			}
+
+			/* the shape of the report, as for 0x31 */
+			CHECK(out[0] == 0x01);
+			for (i = 0; i < DS3_REPORT_LEN; i++)
+				if (!layout_byte(i))
+					CHECK(out[i] == 0);
+			for (i = 0; i < 4; i++)
+				CHECK(out[41 + 2 * i] == 0x02 && out[42 + 2 * i] == 0x00);
+			for (i = 0; i < 4; i++) {
+				int v = in[1 + i];
+				int d = v < 0x80 ? 0x80 - v : v - 0x80;
+				int want = (d * 100 <= c.deadzone * 128) ? 0x80 : v;
+
+				CHECK(out[6 + i] == want);
+			}
+		}
+	}
+	return 0;
+}
+
 static int test_abi_layout(void)
 {
 	int i;
@@ -1088,7 +1398,9 @@ int run_tests(void)
 		test_map_touchpad_to_ps, test_map_every_target, test_map_over_trigger,
 		test_deadzone, test_motion_scale, test_sixaxis_values,
 		test_rejects_wrong_id_and_short, test_in_place, test_no_read_past_len,
-		test_fuzz, test_abi_layout, test_parse_fields, test_parse_links_agree,
+		test_fuzz, test_basic_neutral, test_basic_buttons, test_basic_triggers,
+		test_basic_refuses, test_basic_in_place, test_basic_fuzz_all_lengths,
+		test_abi_layout, test_parse_fields, test_parse_links_agree,
 	};
 	unsigned i;
 	int line;

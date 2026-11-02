@@ -45,10 +45,44 @@ static void decode_touch(const uint8_t *p, ds45_touch_t *t)
 	t->y      = (uint16_t)((p[2] & 0xF0) >> 4) | ((uint16_t)p[3] << 4);
 }
 
+uint32_t dualsense_decode_buttons(uint8_t b0, uint8_t b1, uint8_t b2)
+{
+	uint32_t buttons = 0;
+
+	decode_hat(b0 & 0x0F, &buttons);
+	if (b0 & 0x10) buttons |= DS45_B_SQUARE;
+	if (b0 & 0x20) buttons |= DS45_B_CROSS;
+	if (b0 & 0x40) buttons |= DS45_B_CIRCLE;
+	if (b0 & 0x80) buttons |= DS45_B_TRIANGLE;
+
+	if (b1 & 0x01) buttons |= DS45_B_L1;
+	if (b1 & 0x02) buttons |= DS45_B_R1;
+	if (b1 & 0x04) buttons |= DS45_B_L2;
+	if (b1 & 0x08) buttons |= DS45_B_R2;
+	if (b1 & 0x10) buttons |= DS45_B_SHARE;    /* Create */
+	if (b1 & 0x20) buttons |= DS45_B_OPTIONS;
+	if (b1 & 0x40) buttons |= DS45_B_L3;
+	if (b1 & 0x80) buttons |= DS45_B_R3;
+
+	if (b2 & 0x01) buttons |= DS45_B_PS;
+	if (b2 & 0x02) buttons |= DS45_B_TOUCHPAD;
+	if (b2 & 0x04) buttons |= DS45_B_MUTE;
+
+	/* DualSense Edge extras. Mainline Linux does not decode these; the bit
+	 * positions below are the community documented layout and are worth
+	 * re-checking with the diagnostic dump on an actual Edge. */
+	if (b2 & 0x10) buttons |= DS45_B_FN_L;
+	if (b2 & 0x20) buttons |= DS45_B_FN_R;
+	if (b2 & 0x40) buttons |= DS45_B_PADDLE_L;
+	if (b2 & 0x80) buttons |= DS45_B_PADDLE_R;
+
+	return buttons;
+}
+
 void dualsense_decode_common(const uint8_t *c, ds45_state_t *st)
 {
 	int i;
-	uint8_t b0, b1, b2, b3, status0, charge;
+	uint8_t status0, charge;
 
 	st->lx = c[DS_C_LX];
 	st->ly = c[DS_C_LY];
@@ -57,39 +91,10 @@ void dualsense_decode_common(const uint8_t *c, ds45_state_t *st)
 	st->l2 = c[DS_C_L2];
 	st->r2 = c[DS_C_R2];
 
-	b0 = c[DS_C_BUTTONS + 0];
-	b1 = c[DS_C_BUTTONS + 1];
-	b2 = c[DS_C_BUTTONS + 2];
-	b3 = c[DS_C_BUTTONS + 3];
-	(void)b3;
-
-	st->buttons = 0;
-	decode_hat(b0 & 0x0F, &st->buttons);
-	if (b0 & 0x10) st->buttons |= DS45_B_SQUARE;
-	if (b0 & 0x20) st->buttons |= DS45_B_CROSS;
-	if (b0 & 0x40) st->buttons |= DS45_B_CIRCLE;
-	if (b0 & 0x80) st->buttons |= DS45_B_TRIANGLE;
-
-	if (b1 & 0x01) st->buttons |= DS45_B_L1;
-	if (b1 & 0x02) st->buttons |= DS45_B_R1;
-	if (b1 & 0x04) st->buttons |= DS45_B_L2;
-	if (b1 & 0x08) st->buttons |= DS45_B_R2;
-	if (b1 & 0x10) st->buttons |= DS45_B_SHARE;    /* Create */
-	if (b1 & 0x20) st->buttons |= DS45_B_OPTIONS;
-	if (b1 & 0x40) st->buttons |= DS45_B_L3;
-	if (b1 & 0x80) st->buttons |= DS45_B_R3;
-
-	if (b2 & 0x01) st->buttons |= DS45_B_PS;
-	if (b2 & 0x02) st->buttons |= DS45_B_TOUCHPAD;
-	if (b2 & 0x04) st->buttons |= DS45_B_MUTE;
-
-	/* DualSense Edge extras. Mainline Linux does not decode these; the bit
-	 * positions below are the community documented layout and are worth
-	 * re-checking with the diagnostic dump on an actual Edge. */
-	if (b2 & 0x10) st->buttons |= DS45_B_FN_L;
-	if (b2 & 0x20) st->buttons |= DS45_B_FN_R;
-	if (b2 & 0x40) st->buttons |= DS45_B_PADDLE_L;
-	if (b2 & 0x80) st->buttons |= DS45_B_PADDLE_R;
+	/* the fourth button byte is a counter: ignored */
+	st->buttons = dualsense_decode_buttons(c[DS_C_BUTTONS + 0],
+	                                       c[DS_C_BUTTONS + 1],
+	                                       c[DS_C_BUTTONS + 2]);
 
 	for (i = 0; i < 3; i++) {
 		st->gyro[i]  = rd16le(c + DS_C_GYRO  + i * 2);
