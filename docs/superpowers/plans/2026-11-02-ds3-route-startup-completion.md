@@ -20,7 +20,7 @@
 - Shim code rules (spec 1): never blocks or allocates, no unbounded loops, touches only DualSense connections, bounds-checked against the actual read length, needs nothing from the plugin process after install.
 - Builds: all four variants (`vsh`/`game` x release/debug) build; the shim is VSH-only (absent from game builds). Host tests: `pwsh tests/run_tests.ps1` all PASS before every commit.
 - Console work: webMAN at most 2-3 requests per second (a ~30 Hz peek loop hung the console on 2026-11-01); fast sampling uses the plugin's `CAPTURE_PTR`/`CAPTURE_LV2` capture.
-- Commits end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; branch `feat/any-firmware`; never push without asking.
+- Commits end with the `Co-Authored-By:` line for the session's Claude model (recent commits: `Claude Opus 4.8 <noreply@anthropic.com>`); branch `feat/any-firmware`; never push without asking.
 
 ## Review Focus
 
