@@ -270,6 +270,34 @@ Added 2026-11-02 after console step 1 hung: the blob was allocated in the heap p
 - [ ] **Step 5: Run** `pwsh tests/run_tests.ps1` and `python -I tools/test_shim_pack.py` - all PASS; build all four variants - four successes; game `.sprx` contain no `kshim`/`PROBE_EXEC` strings.
 - [ ] **Step 6: Commit** - "feat: place the shim blob in executable kernel memory at a fixed base".
 
+### Task 7: Debug tracing and input-hook isolation (spec Amendment 3)
+
+Added 2026-11-02 after console step 1: the shim installed and ran (no freeze), but a DS3 (which must be untouched) broke on Bluetooth re-pair and the network dropped, while the XMB stayed alive. Disassembly shows the DS3 pass-through is correct, so this adds on-hardware tracing (surviving a network drop) and an isolation switch to localise the runtime cause. Runs **before** Task 5. Debug/VSH only; release behaviour unchanged except the data block grows (version 5).
+
+**Files:**
+- Modify: `shim/shim_abi.h`, `shim/shim.h`, `shim/shim.c`, `shim/entry.c`, `src/kshim.c`, `src/config.c`, `src/ds45pad.h`, `src/main.c`, `tests/test_shim.c`, `tests/test_kshim.c`, `tests/test_config.c`, `tests/test_ds3report.c` (ABI layout)
+
+**Interfaces:**
+- `ds45_shim_data_t` (shim_abi.h) gains, appended after `pid_reserved` (so every current offset is kept), `DS45_SHIM_VERSION` -> 5:
+
+```c
+	uint32_t dbg_event_calls, dbg_enable_calls, dbg_input_calls, dbg_input_padmiss; /* 208..220 */
+	uint32_t dbg_event_ds, dbg_enable_ds, dbg_input_ds, dbg_last_pid;               /* 224..236 */
+	uint64_t dbg_last_vtable;                                                       /* 240; size 248 */
+```
+
+- shim.c bumps the counters (lock-free, like the existing `stat_*`): `shim_event_complete` -> `dbg_event_calls` at entry (after the `!d` guard), `dbg_event_ds` when the pad is a DualSense; `shim_enable_complete` likewise with `dbg_enable_*`. New `void shim_input_note(ds45_shim_data_t *d, const uint8_t *pad);` (declared in shim.h): bumps `dbg_input_calls`; `pad==NULL` -> `dbg_input_padmiss++`; else records `dbg_last_vtable = ld64(pad)` and `dbg_last_pid = (pad[0x68]<<24)|(pad[0x69]<<16)|(pad[0x6A]<<8)|pad[0x6B]` (the big-endian VID||PID), and `dbg_input_ds++` when `shim_pad_is_dualsense(d,pad)`.
+- `shim/entry.c` `shim_input`: after `pad = shim_pad_from_xport(...)`, call `shim_input_note(&ds45_shim_data, pad)` before `shim_pad_is_dualsense`. No other behaviour change.
+- Config: `SHIM_INPUT_HOOK` key -> `g_cfg.shim_input_hook` (VSH builds only, default 1, any non-zero = 1), parsed like `SHIM_INLINE_PID`.
+- `src/kshim.c` `kshim_install`: apply the input redirect (`0x37CE38`) only when `g_cfg.shim_input_hook`; otherwise install the helper (and inline, event, enable) but leave the input slot original and omit it from the journal. Rollback/remove are journal-driven and already handle the subset. `orig_input` is still filled in the data block.
+- `src/main.c` (debug only): each housekeeping tick, when the shim is installed, read the data block's `dbg_*` and `stat_*` counters (via `ds45_lv2_read` at the install base) and append one line, e.g. `shimdbg ev=<..> en=<..> in=<..> inds=<..> padmiss=<..> xl=<..> lastpid=<..> lastvt=<..>`, so a network drop still leaves the trajectory on the HDD trace.
+
+- [ ] **Step 1: Failing tests.** `tests/test_shim.c`: `test_dbg_counts_event` (a DualSense completion bumps `dbg_event_calls` and `dbg_event_ds`; a DS3 bumps `dbg_event_calls` only), `test_dbg_counts_enable` likewise, `test_input_note` (NULL pad -> `dbg_input_calls`+`dbg_input_padmiss`; a DS3 pad -> `dbg_input_calls`, `dbg_last_pid==0x054C0268`, `dbg_last_vtable==pad_vtable`, `dbg_input_ds==0`; a DualSense pad -> `dbg_input_ds==1`, `dbg_last_pid==0x054C0CE6`). `tests/test_kshim.c`: `test_input_hook_gated` (`shim_input_hook=0` -> `0x37CE38` untouched and absent from the journal, while event/enable/helper are written; `kshim_remove` restores the rest; `=1` -> input slot written as today). `tests/test_config.c`: `test_shim_input_hook_key` (default 1; `=0`->0; `=abc`->1 unchanged... i.e. junk leaves the default). `tests/test_ds3report.c`: extend the ABI layout test to the new offsets and `sizeof == 248`, version 5.
+- [ ] **Step 2: Run** `pwsh tests/run_tests.ps1 -Filter shim` / `-Filter config` - FAIL (undeclared fields/key).
+- [ ] **Step 3: Implement** the fields (version 5), the counter bumps and `shim_input_note`, the `SHIM_INPUT_HOOK` gate in config and install, and the main.c debug trace line.
+- [ ] **Step 4: Run** `pwsh tests/run_tests.ps1`, `python -I tools/test_shim_pack.py`, and the four builds - all PASS; game `.sprx` contain no `kshim`/`SHIM_INPUT_HOOK`/`shimdbg` strings.
+- [ ] **Step 5: Commit** - "debug: shim diagnostic counters, on-disk trace and input-hook isolation".
+
 ### Task 5: Console test steps (with the user, DEX 4.92)
 
 **Files:**
@@ -280,7 +308,7 @@ Added 2026-11-02 after console step 1 hung: the blob was allocated in the heap p
 - Produces: ledger entries with each step's result; the recorded basic report bytes (Task 2 layout confirmed or corrected).
 
 - [ ] **Step 0: Executability probe (no hooks).** Config `ENABLE=1`, `ENABLE_SHIM=0`, `PROBE_EXEC=1`. Expect the trace `exec_probe=0x5AED` (the stub's magic), proving `0x57C000` executes. Peek `0x57C000` reads back zero afterwards (the probe cleans up) and no hook slot changed. If the console hangs here, the region is not executable — stop; do not proceed to step 1. (This is the one new install-nothing call; it replaces trusting the heap.)
-- [ ] **Step 1: Install, DualSense off.** Config `ENABLE=1`, `ENABLE_SHIM=1`, `SHIM_INLINE_PID=0`, `PROBE_EXEC=0`. Expect trace `kshim_installed`; peek `0x37CFF8` = `exec_base`+`OFF_EVENT` (`exec_base` = `0x57C000`), `0x37CFB0` = `exec_base`+`OFF_ENABLE`, `0x37CE38` = `exec_base`+`OFF_INPUT`, the blob's magic `DS45SHM1` at `0x57C000`+`OFF_DATA`, `0x29E2C8` = `4E80002068800CE6`, `0x37CFE8` unchanged `800000000033A208`. A DS3 over USB and over Bluetooth still drives the XMB.
+- [ ] **Step 1: Install, DualSense off.** Config `ENABLE=1`, `ENABLE_SHIM=1`, `SHIM_INLINE_PID=0`, `PROBE_EXEC=0`. Expect trace `kshim_installed`; peek `0x37CFF8` = `exec_base`+`OFF_EVENT` (`exec_base` = `0x57C000`), `0x37CFB0` = `exec_base`+`OFF_ENABLE`, `0x37CE38` = `exec_base`+`OFF_INPUT`, the blob's magic `DS45SHM1` at `0x57C000`+`OFF_DATA`, `0x29E2C8` = `4E80002068800CE6`, `0x37CFE8` unchanged `800000000033A208`. A DS3 over USB and over Bluetooth still drives the XMB. **Isolation (Amendment 3, DS3-break diagnosis):** on the first pass set `SHIM_INPUT_HOOK=0` so only the helper/event/enable install, and watch the `shimdbg ...` trace line while reconnecting the DS3 over Bluetooth; take a `DUMP_LV2=1` baseline right after install, before touching any controller. If the DS3 survives with the input hook off but breaks with `SHIM_INPUT_HOOK=1`, the input hook is the cause; if it breaks either way, the event/enable/helper path is. Read the result from the on-disk trace after recovery, never from a live peek burst.
 - [ ] **Step 2: Completion.** Add `CAPTURE_PTR=0x51B268`, `CAPTURE_LV2=0x60`, `CAPTURE_LEN=128`; flip the DualSense's link-key type to `0x01` with the pad off; power it on. Pass: the capture shows the object staying for more than 5 s with +0x80/+0x82 = the template's versions, +0x88..+0x8F = `00 00 00 01 D5 00 44 53` and +0xD8 cleared; the data block's `stat_completed` = 1 and `stat_enabled` = 1; the pad manager's port table (`mgr+0xE0`, count `mgr+0xF0`) holds the DualSense's slot. If `stat_completed` = 1 but `stat_enabled` stays 0, the DualSense never answered `0xF4`: record it and stop (design question for the user). If no object forms, repeat with `SHIM_INLINE_PID=1` and record that the inline site is needed.
 - [ ] **Step 3: Input.** Point the capture at the shared buffer (`CAPTURE_LV2=0x4326C8`, `CAPTURE_LEN=72`, no `CAPTURE_PTR`) and record one raw basic report before translation (temporarily `enabled=0` via a data-block poke, then back to 1). Compare with Task 2's layout; if it differs, fix the translator (Task 2 tests first) before continuing. Then check buttons, sticks and L2/R2 in the XMB and in one game.
 - [ ] **Step 4: Together and teardown.** DS3 + DualSense: both have ports and independent input; then both DualSense pads (#1 and #2) together: different identities, both ported; DualSense off/on three times, each reconnect completes (`stat_completed` and `stat_enabled` increment); plugin unload restores `0x37CFF8`, `0x37CFB0`, `0x37CE38` and the helper word.

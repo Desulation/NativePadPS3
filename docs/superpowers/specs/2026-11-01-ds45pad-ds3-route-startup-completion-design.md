@@ -145,6 +145,36 @@ with no hooks wired, the smallest possible blast radius, and tells us the region
 is unusable before anything touches the connect path. The probe is debug-build
 only and installs nothing.
 
+## Amendment 3 (2026-11-02): debug tracing and hook isolation
+
+Console step 1 installed and ran (no freeze - Amendment 2 holds), but a DS3,
+which the shim must leave untouched, stopped working when it reconnected over
+Bluetooth (no re-pair, USB then dead too) and the network went down while the
+XMB stayed alive. Offline disassembly of every path a DS3 takes (the helper PID
+word, the event and enable handlers, the input read method `0xC9D60`) showed the
+shim's DS3 pass-through is correct, so the cause is a runtime interaction, not a
+visible logic bug. To find it without live memory-read bursts (which cannot be
+read once the network drops), the debug build gains:
+
+- **Diagnostic counters** in the data block, bumped lock-free by the hooks: per
+  hook, how many times it was entered and how many times it matched the DualSense
+  identity; the input hook's pad-lookup misses; and the last VID/PID and pad
+  vtable the input hook identified. These answer "did the hooks fire for the DS3,
+  and what did they see".
+- **On-disk trace of the counters:** the plugin's debug housekeeping appends them
+  to `dev_hdd0/tmp/ds45pad_boot.txt` each tick. The file is flushed to the HDD, so
+  it survives a network drop; after recovery it is read over FTP.
+- **Hook isolation:** a debug config key `SHIM_INPUT_HOOK` (default 1) gates
+  whether the input redirect (`0x37CE38`) is installed, so the start-up/enable
+  completion can be tested with the input hook off - the input hook is the only
+  one that runs on every poll and shares the Bluetooth transport vtable, so it is
+  the prime suspect. The existing `DUMP_LV2` capture takes a full post-install
+  baseline before any controller is touched.
+
+Debug-only; the release behaviour and the shipping data the installer writes are
+unchanged apart from the data block growing (version 5). The counters live in the
+shared data block for one ABI across builds; the game build installs no shim.
+
 ## Design
 
 ### 1. Start-up completion (kernel side)
