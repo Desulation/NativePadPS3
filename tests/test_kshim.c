@@ -33,8 +33,7 @@
 #define SPARE_STUB   0x80000000003621B0ULL                  /* ni stub OPD */
 #define ALLOC_DESC   (B + 0x3000)
 #define ALLOC_ENTRY  0x80000000000681F4ULL
-#define KERNEL_TOC   0x80000000003759C0ULL
-#define ALLOC_POOL   0x22ULL
+#define KERNEL_TOC   0x80000000003759C0ULL   /* at ALLOC_DESC + 8: the kernel TOC */
 #define FLUSH_ENTRY  0x80000000000029B8ULL
 #define ENABLE_SLOT  (B + 0x6000)
 #define ENABLE_ORIG  0x800000000033A310ULL
@@ -74,11 +73,12 @@
 #define PID1_WORD    0x4BFFFC48u
 #define HI32         0xFFFFFFFF00000000ULL
 
-/* The address the fake allocator hands back: in the 0x6xxxxx heap region F6
- * says pool-0x22 lands in, and clear of every table-entry address above. */
+/* The fixed executable base the blob is placed at (design Amendment 2): an
+ * in-window address clear of every table-entry address above, standing in for
+ * the real DEX 4.92 free zero tail. EXEC_BOUND leaves a 0x4000 region, like the
+ * real 0x57C000..0x580000. */
 #define BLOB_BASE    (B + 0x600000)
-/* An allocation the installer must reject: past the 8 MiB window. */
-#define BLOB_BAD     (B + 0x4000000ULL)
+#define EXEC_BOUND   (BLOB_BASE + 0x4000)
 
 #define TOCTOU_VAL   0x8000000000BAD008ULL   /* a "concurrent" slot change */
 
@@ -183,8 +183,10 @@ void ds45_boot_mark_hex(const char *stage, uint32_t value)
 
 static int      g_spare_calls;
 static uint64_t g_spare_a1[4], g_spare_a2[4];
-static uint64_t g_alloc_ret;    /* what the first (allocator) call returns */
 
+/* The install borrows the spare slot once, for the 0x29B8 cache flush; its
+ * result is ignored. The blob is placed at a fixed executable base, so there is
+ * no allocator call any more. */
 static uint64_t spare_handler(uint64_t a1, uint64_t a2)
 {
 	if (g_spare_calls < 4) {
@@ -192,9 +194,27 @@ static uint64_t spare_handler(uint64_t a1, uint64_t a2)
 		g_spare_a2[g_spare_calls] = a2;
 	}
 	g_spare_calls++;
-	/* Call 1 is the allocation (returns the base); any later call is the
-	 * cache flush, whose result the installer ignores. */
-	return g_spare_calls == 1 ? g_alloc_ret : 0;
+	return 0;
+}
+
+/* The probe borrows the spare slot twice: the 0x29B8 flush, then one call into
+ * the leaf stub at exec_base. The real dispatcher double-derefs the slot (slot
+ * -> OPD -> entry); the fake does not model that, so do it here: read the OPD
+ * the probe pointed the slot at, and when its entry lands inside the exec
+ * region emulate running `li r3,imm; blr` by returning the stub's li immediate.
+ * The flush call (entry 0x29B8, outside the region) returns 0. */
+static int g_probe_calls;
+static uint64_t probe_spare_handler(uint64_t a1, uint64_t a2)
+{
+	uint64_t opd, entry;
+
+	(void)a1; (void)a2;
+	g_probe_calls++;
+	opd = rd(SPARE_SLOT);
+	entry = rd(opd);
+	if (entry >= BLOB_BASE && entry < EXEC_BOUND)
+		return (uint64_t)((uint32_t)(rd(entry) >> 32) & 0xFFFF);
+	return 0;
 }
 
 /* ----- the LV2 write log -------------------------------------------------- */
@@ -241,9 +261,9 @@ static void setup(void)
 
 	fake_reset_all();
 	g_spare_calls = 0;
+	g_probe_calls = 0;
 	memset(g_spare_a1, 0, sizeof(g_spare_a1));
 	memset(g_spare_a2, 0, sizeof(g_spare_a2));
-	g_alloc_ret = BLOB_BASE;
 	fake_spare_syscall = (int)SPARE_NUM;
 	fake_spare_handler = spare_handler;
 
@@ -297,7 +317,8 @@ static void setup(void)
 	g_ent.spare_syscall = SPARE_NUM;
 	g_ent.spare_slot_expect = SPARE_STUB;
 	g_ent.alloc_desc = ALLOC_DESC;
-	g_ent.alloc_pool = ALLOC_POOL;
+	g_ent.exec_base = BLOB_BASE;
+	g_ent.exec_bound = EXEC_BOUND;
 	g_ent.flush_desc = FLUSH_ENTRY;
 	g_ent.event_slot = EVENT_SLOT;
 	g_ent.event_expect = EVENT_ORIG;
@@ -327,7 +348,7 @@ static void setup(void)
 }
 
 /* Snapshot of everything the installer is responsible for leaving untouched on
- * failure (the freshly-allocated blob region is scratch and excluded). */
+ * failure (the fixed blob region is scratch and excluded). */
 struct snap { uint64_t event, enable, startup, input, spare, helper, pid0, pid1,
                        ecode, ncode; };
 
@@ -349,6 +370,10 @@ static int snap_eq(const struct snap *a, const struct snap *b)
 {
 	return memcmp(a, b, sizeof(*a)) == 0;
 }
+
+/* A refusal before anything is written, borrowed or allocated (defined below,
+ * forward-declared so the install-placement tests can use it). */
+static int refused_untouched(const struct snap *before, int pokes);
 
 /* ----- tests ------------------------------------------------------------- */
 
@@ -489,15 +514,159 @@ static int test_install_writes_v3(void)
 	/* the blob, data block and flush OPD are correct */
 	CHECK(check_blob_image() == 0);
 
-	/* the allocator and the flush both went through the spare slot */
-	CHECK(g_spare_calls == 2);
-	CHECK(g_spare_a1[0] == DS45_SHIM_BLOB_LEN + 16);   /* alloc size */
-	CHECK(g_spare_a2[0] == ALLOC_POOL);
-	CHECK(g_spare_a1[1] == BLOB_BASE);                 /* flush addr */
-	CHECK(g_spare_a2[1] == DS45_SHIM_BLOB_LEN);        /* flush len */
+	/* only the flush went through the spare slot: the allocator is gone, the
+	 * blob is placed at the fixed exec_base */
+	CHECK(g_spare_calls == 1);
+	CHECK(g_spare_a1[0] == BLOB_BASE);                 /* flush addr = exec_base */
+	CHECK(g_spare_a2[0] == DS45_SHIM_BLOB_LEN);        /* flush len */
 
 	CHECK(fake_lv2_out_of_bounds == 0);
 	kshim_remove();
+	return 0;
+}
+
+/* The blob is placed at the row's fixed exec_base, with no allocator call: the
+ * three redirects and the data block land there, and the spare-call log records
+ * only the flush. */
+static int test_install_uses_exec_base(void)
+{
+	setup();
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+	CHECK(rd(ENABLE_SLOT) == BLOB_BASE + DS45_SHIM_OFF_ENABLE);
+	CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);
+	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
+	CHECK((uint32_t)(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
+	                    offsetof(ds45_shim_data_t, version)) >> 32) ==
+	      DS45_SHIM_VERSION);
+
+	/* the allocator syscall was never called: the only spare call is the flush */
+	CHECK(g_spare_calls == 1);
+	CHECK(g_spare_a1[0] == BLOB_BASE);
+	CHECK(g_spare_a2[0] == DS45_SHIM_BLOB_LEN);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	kshim_remove();
+	return 0;
+}
+
+/* Before any write the installer verifies the whole region
+ * [exec_base, exec_base + blob + flush OPD) reads as zero; a single non-zero
+ * qword anywhere in it refuses the install with the image byte-identical and
+ * nothing borrowed. A non-zero qword just past the region does not block it. */
+static int test_install_refuses_nonzero_region(void)
+{
+	struct snap before;
+
+	setup();                                 /* non-zero at the very start */
+	put_q(BLOB_BASE, 0x0000000100000000ULL);
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+
+	setup();                                 /* non-zero in the flush OPD, at the end */
+	put_q(BLOB_BASE + DS45_SHIM_BLOB_LEN + 8, 0x0000000000000001ULL);
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+
+	setup();                                 /* just past the checked region: harmless */
+	put_q(BLOB_BASE + DS45_SHIM_BLOB_LEN + 16, 0x0000000000000001ULL);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN + 16) == 1);   /* left untouched */
+	kshim_remove();
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* exec_base + blob + flush OPD must end at or before exec_bound, exec_base must
+ * be 8-aligned and inside the window; any of those failing refuses the install
+ * before anything is read, written or borrowed. */
+static int test_install_refuses_over_bound(void)
+{
+	struct snap before;
+
+	setup();                                 /* no room for the flush OPD */
+	g_ent.exec_bound = BLOB_BASE + DS45_SHIM_BLOB_LEN;
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+
+	setup();                                 /* exactly enough room installs */
+	g_ent.exec_bound = BLOB_BASE + DS45_SHIM_BLOB_LEN + 16;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	kshim_remove();
+
+	setup();                                 /* a misaligned base is refused */
+	g_ent.exec_base = BLOB_BASE + 4;
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* Unload zeroes the fixed blob region (it cannot be freed), restoring the
+ * pristine zero fill so a later install's zero-check passes; the redirects and
+ * the word edits are restored as before. */
+static int test_remove_zeroes_blob(void)
+{
+	uint64_t off, size;
+	int g;
+
+	for (g = 0; g < 2; g++) {
+		setup();
+		g_cfg.shim_inline_pid = g;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
+
+		kshim_remove();
+
+		/* the whole region [exec_base, exec_base + blob + flush OPD) reads zero */
+		size = (uint64_t)DS45_SHIM_BLOB_LEN + 16;   /* flush_desc set in setup */
+		for (off = 0; off < size; off += 8)
+			CHECK(rd(BLOB_BASE + off) == 0);
+
+		/* the redirects and the helper word are back */
+		CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
+		CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
+		CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+		CHECK(rd(HELPER_QA) == HELPER_Q);
+		CHECK(fake_lv2_out_of_bounds == 0);
+	}
+	return 0;
+}
+
+/* The executability pre-flight pokes a two-word leaf stub (li r3,MAGIC; blr) at
+ * exec_base, flushes it, calls it once through the borrowed spare slot and
+ * reports what it returned; the fake spare-call returns the stub's li immediate,
+ * so the probe reports MAGIC and leaves exec_base (and the two scratch OPDs)
+ * zeroed with the spare slot restored. A non-zero region is refused before any
+ * call. */
+static int test_exec_probe_stub(void)
+{
+	uint64_t out = 0xDEAD;
+
+	setup();
+	fake_spare_handler = probe_spare_handler;
+	CHECK(kshim_exec_probe(&g_ent, &out) == 0);
+	CHECK(out == 0x5AED);
+	CHECK(g_probe_calls == 2);                /* the flush, then the one exec call */
+
+	/* exec_base is left pristine: the stub and both scratch OPDs are zeroed */
+	CHECK(rd(BLOB_BASE) == 0);
+	CHECK(rd(BLOB_BASE + 8) == 0 && rd(BLOB_BASE + 16) == 0);
+	CHECK(rd(BLOB_BASE + 24) == 0 && rd(BLOB_BASE + 32) == 0);
+	/* the borrowed spare slot is back to the ni stub */
+	CHECK(rd(SPARE_SLOT) == SPARE_STUB);
+	CHECK(fake_lv2_out_of_bounds == 0);
+
+	/* a non-zero region is refused before the stub is poked or any call made */
+	setup();
+	fake_spare_handler = probe_spare_handler;
+	put_q(BLOB_BASE, 0x1234ULL);
+	out = 0xDEAD;
+	CHECK(kshim_exec_probe(&g_ent, &out) != 0);
+	CHECK(g_probe_calls == 0);                /* no call was made */
+	CHECK(out == 0);                          /* cleared */
+	CHECK(rd(BLOB_BASE) == 0x1234ULL);        /* untouched */
+	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }
 
@@ -535,8 +704,8 @@ static int test_inline_rows_gated(void)
 	return 0;
 }
 
-/* A refusal before anything is allocated: nothing written, nothing borrowed,
- * the image exactly as found. */
+/* A refusal before anything is written or borrowed: the image exactly as
+ * found (the fixed blob region is scratch and not in the snap). */
 static int refused_untouched(const struct snap *before, int pokes)
 {
 	struct snap after;
@@ -664,30 +833,13 @@ static void toctou_on_peek(uint64_t addr)
 		put_q(INPUT_SLOT, TOCTOU_VAL);   /* a concurrent kernel write */
 }
 
-static int test_install_fails_each_step(void)
+/* A redirect slot that changes between the step-2 verify and the step-8 apply
+ * fails that apply's own verify, so nothing lasting is written and the image is
+ * left as found (the blob copy to the fixed region is scratch, not in the snap). */
+static int test_install_fails_on_toctou(void)
 {
 	struct snap before, after;
 
-	/* (a) allocation returns 0 */
-	setup();
-	take_snap(&before);
-	g_alloc_ret = 0;
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
-	CHECK(g_spare_calls == 1);             /* allocated, never flushed */
-	take_snap(&after);
-	CHECK(snap_eq(&before, &after));
-
-	/* (b) allocation out of the window */
-	setup();
-	take_snap(&before);
-	g_alloc_ret = BLOB_BAD;
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
-	CHECK(g_spare_calls == 1);             /* no flush: rejected before the copy */
-	take_snap(&after);
-	CHECK(snap_eq(&before, &after));
-	CHECK(fake_lv2_out_of_bounds == 0);
-
-	/* (c) the input redirect slot changes after it was verified */
 	setup();
 	take_snap(&before);
 	fake_lv2_on_peek = toctou_on_peek;
@@ -697,6 +849,7 @@ static int test_install_fails_each_step(void)
 	put_q(INPUT_SLOT, INPUT_ORIG);         /* undo the test's artefact */
 	take_snap(&after);
 	CHECK(snap_eq(&before, &after));
+	CHECK(rd(SPARE_SLOT) == SPARE_STUB);   /* the borrowed slot is restored */
 
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
@@ -734,13 +887,14 @@ static int test_rollback_each_step(void)
 		n = g ? 6 : 4;                 /* helper, [2 inline,] event, enable, input */
 
 		/* calibrate on a clean install: remove writes back one qword per journal
-		 * entry, and the entries are the last writes the installer made */
+		 * entry (the last writes the installer made) and then zeroes the fixed
+		 * blob region (blob + flush OPD) */
 		setup();
 		g_cfg.shim_inline_pid = g;
 		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 		pokes = fake_lv2_poke_count;
 		kshim_remove();
-		CHECK(fake_lv2_poke_count - pokes == n);
+		CHECK(fake_lv2_poke_count - pokes == n + (DS45_SHIM_BLOB_LEN + 16) / 8);
 		apply_start = pokes - n;
 
 		for (i = 0; i < n; i++)
@@ -748,22 +902,23 @@ static int test_rollback_each_step(void)
 	}
 
 	/* the data block: its first qword the blob does not already hold (the blob
-	 * ships magic/version; orig_event at +16 is zero in it). Pokes 1-2 borrow and
-	 * restore the spare slot, then BLOB_LEN/8 blob qwords. */
+	 * ships magic/version; orig_event at +16 is zero in it). With no allocator
+	 * the blob copy is the installer's first write, so the data block begins at
+	 * poke BLOB_LEN/8. */
 	CHECK(offsetof(ds45_shim_data_t, orig_event) == 16);
-	CHECK(fail_at(2 + DS45_SHIM_BLOB_LEN / 8 + 2, 0) == 0);
+	CHECK(fail_at(DS45_SHIM_BLOB_LEN / 8 + 2, 0) == 0);
 
 	/* a blob qword well into the copy whose written value is non-zero */
 	for (off = 64; off < DS45_SHIM_OFF_DATA; off += 8)
 		if (blob_q(off) != 0 || is_reloc(off))
 			break;
 	CHECK(off < DS45_SHIM_OFF_DATA);
-	CHECK(fail_at(2 + (int)(off / 8), 0) == 0);
+	CHECK(fail_at((int)(off / 8), 0) == 0);
 	return 0;
 }
 
 /* The ENABLE_SHIM gate. With the flag off - its default - the installer does
- * nothing at all: no read (not even the fingerprint), no write, no allocation. */
+ * nothing at all: no read (not even the fingerprint), no write, nothing borrowed. */
 static int test_install_is_gated_by_enable_shim(void)
 {
 	int peeks, pokes;
@@ -938,7 +1093,7 @@ static int test_adopt_requires_the_same_version(void)
 	pokes = fake_lv2_poke_count;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
 	CHECK(fake_lv2_poke_count == pokes);   /* zero pokes */
-	CHECK(g_spare_calls == 0);             /* nothing allocated */
+	CHECK(g_spare_calls == 0);             /* nothing borrowed */
 	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);   /* left as found */
 
 	/* the current version is adopted */
@@ -963,10 +1118,12 @@ static int test_remove_restores_all(void)
 		CHECK(rd(INPUT_SLOT) != INPUT_ORIG && rd(HELPER_QA) != HELPER_Q);
 		CHECK(g ? rd(PID0_QA) != PID0_Q : rd(PID0_QA) == PID0_Q);
 
-		/* one entry per patch: helper, [two inline,] event, enable, input */
+		/* one revert per patch (helper, [two inline,] event, enable, input),
+		 * then the fixed blob region is zeroed (blob + flush OPD) */
 		pokes = fake_lv2_poke_count;
 		kshim_remove();
-		CHECK(fake_lv2_poke_count - pokes == (g ? 6 : 4));
+		CHECK(fake_lv2_poke_count - pokes ==
+		      (g ? 6 : 4) + (DS45_SHIM_BLOB_LEN + 16) / 8);
 		take_snap(&after);
 		CHECK(snap_eq(&before, &after));
 		CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
@@ -975,8 +1132,9 @@ static int test_remove_restores_all(void)
 		CHECK(rd(HELPER_QA) == HELPER_Q);
 		CHECK(rd(PID0_QA) == PID0_Q && rd(PID1_QA) == PID1_Q);
 
-		/* the blob itself is left allocated (a driver thread may be inside it) */
-		CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
+		/* the fixed blob region is zeroed on unload (it cannot be freed) */
+		CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == 0);
+		CHECK(rd(BLOB_BASE) == 0);
 
 		/* remove again is a harmless no-op */
 		pokes = fake_lv2_poke_count;
@@ -986,8 +1144,8 @@ static int test_remove_restores_all(void)
 	return 0;
 }
 
-/* A WORD row is a finished instruction: it lands verbatim whatever address the
- * blob was given, while the redirects follow the load base. */
+/* A WORD row is a finished instruction: it lands verbatim whatever base the
+ * blob is placed at, while the redirects follow that base. */
 static int test_word_rows_do_not_follow_the_load_base(void)
 {
 	static const uint64_t base[2] = { BLOB_BASE, BLOB_BASE + 0x40000 };
@@ -996,7 +1154,8 @@ static int test_word_rows_do_not_follow_the_load_base(void)
 
 	for (i = 0; i < 2; i++) {
 		setup();
-		g_alloc_ret = base[i];
+		g_ent.exec_base = base[i];
+		g_ent.exec_bound = base[i] + 0x4000;
 		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 		h[i] = rd(HELPER_QA);
 		ev[i] = rd(EVENT_SLOT);
@@ -1031,7 +1190,10 @@ static int test_builtin_table(void)
 
 	CHECK(ds45_shim_table_count == 1);
 	CHECK(k->spare_syscall == 149u);
-	CHECK(k->alloc_pool == 0x22ULL);
+
+	/* the fixed executable region: the free zero tail 0x57C000..0x580000 */
+	CHECK(k->exec_base == 0x800000000057C000ULL);
+	CHECK(k->exec_bound == 0x8000000000580000ULL);
 
 	CHECK(k->event_slot == 0x800000000037CFF8ULL);
 	CHECK(k->event_expect == 0x800000000033A2B0ULL);
@@ -1172,10 +1334,12 @@ static int test_builtin_row_on_pristine_image(void)
 			CHECK(in_image(qa[i], n));
 			q[i] = rd(qa[i]);
 		}
-		/* ... and what is planted lies past it, so it masks no image byte */
+		/* ... and what is planted lies past it, so it masks no image byte; the
+		 * fixed exec region (0x57C000..) is past the code image too, so it reads
+		 * zero and the installer's zero-check passes */
 		CHECK(!in_image(k->event_slot, n) && !in_image(k->enable_slot, n) &&
 		      !in_image(k->input_slot, n) && !in_image(spare, n) &&
-		      !in_image(k->alloc_desc, n) && BLOB_BASE >= B + (uint64_t)n);
+		      !in_image(k->alloc_desc, n) && k->exec_base >= B + (uint64_t)n);
 		put_q(k->event_slot, k->event_expect);
 		put_q(k->enable_slot, k->enable_expect);
 		put_q(k->input_slot, k->input_expect);
@@ -1187,9 +1351,9 @@ static int test_builtin_row_on_pristine_image(void)
 
 		CHECK(kshim_install_from(ds45_shim_table, ds45_shim_table_count) ==
 		      KSHIM_INSTALLED);
-		CHECK(rd(k->event_slot) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
-		CHECK(rd(k->enable_slot) == BLOB_BASE + DS45_SHIM_OFF_ENABLE);
-		CHECK(rd(k->input_slot) == BLOB_BASE + DS45_SHIM_OFF_INPUT);
+		CHECK(rd(k->event_slot) == k->exec_base + DS45_SHIM_OFF_EVENT);
+		CHECK(rd(k->enable_slot) == k->exec_base + DS45_SHIM_OFF_ENABLE);
+		CHECK(rd(k->input_slot) == k->exec_base + DS45_SHIM_OFF_INPUT);
 		CHECK(rd(qa[0]) != q[0]);
 		CHECK((rd(qa[1]) != q[1]) == (inl != 0));
 		CHECK((rd(qa[2]) != q[2]) == (inl != 0));
@@ -1212,13 +1376,18 @@ int run_tests(void)
 		test_blob_tail_is_the_data_block,
 		test_no_entry_writes_nothing,
 		test_install_writes_v3,
+		test_install_uses_exec_base,
+		test_install_refuses_nonzero_region,
+		test_install_refuses_over_bound,
 		test_inline_rows_gated,
 		test_event_code_hash_mismatch,
 		test_enable_code_hash_mismatch,
 		test_code_hash_is_of_the_aligned_qword,
 		test_enable_slot_mismatch,
-		test_install_fails_each_step,
+		test_install_fails_on_toctou,
 		test_rollback_each_step,
+		test_remove_zeroes_blob,
+		test_exec_probe_stub,
 		test_install_is_gated_by_enable_shim,
 		test_adopt_via_event_slot,
 		test_adopt_skips_corrupt_orig,

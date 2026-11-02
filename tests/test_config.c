@@ -139,6 +139,31 @@ static int test_shim_inline_pid_key(void)
 	return 0;
 }
 
+/* PROBE_EXEC arms the debug-only executability pre-flight (design Amendment 2).
+ * Off by default; any non-zero number turns it on, anything that is not a
+ * number leaves it off - exactly like ENABLE_SHIM / SHIM_INLINE_PID. */
+static int test_probe_exec_key(void)
+{
+	ds45_config_t c;
+
+	ds45_config_defaults(&c);
+	CHECK(c.probe_exec == 0);
+	c = cfg_from("ENABLE_SHIM = 1\n");
+	CHECK(c.probe_exec == 0);
+
+	c = cfg_from("PROBE_EXEC = 1\n");
+	CHECK(c.probe_exec == 1);
+	CHECK(c.enable_shim == 0);                             /* a separate key */
+	c = cfg_from("probe_exec = 7\n");
+	CHECK(c.probe_exec == 1);
+
+	c = cfg_from("PROBE_EXEC = abc\n");
+	CHECK(c.probe_exec == 0);
+	c = cfg_from("PROBE_EXEC = 1\nPROBE_EXEC = 0\n");
+	CHECK(c.probe_exec == 0);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int r;
@@ -149,5 +174,6 @@ int run_tests(void)
 	if ((r = test_shim_ignores_what_it_cannot_parse()) != 0) return r;
 	if ((r = test_shim_key_is_independent_of_enable()) != 0) return r;
 	if ((r = test_shim_inline_pid_key()) != 0) return r;
+	if ((r = test_probe_exec_key()) != 0) return r;
 	return 0;
 }

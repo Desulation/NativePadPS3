@@ -2,7 +2,8 @@
  * DS45PAD - install the DS3-route kernel shim on a fingerprinted kernel.
  *
  * On a kernel that matches a table entry, kshim_install() places the
- * freestanding shim blob (src/shim_blob.h) in a fresh kernel allocation, fills
+ * freestanding shim blob (src/shim_blob.h) at a fixed base in executable kernel
+ * memory (the CFW payload's free zero tail; design Amendment 2), fills
  * its data block (the original descriptors, the pad class and manager, the DS3
  * info template, the config), applies the product-ID word edits and points the
  * DS3 driver's start-up event handler, enable event handler and Bluetooth input
@@ -44,7 +45,14 @@ typedef struct {
 	const char *name;
 	uint64_t fp_addr, fp_hash;
 	uint64_t syscall_table; uint32_t spare_syscall; uint64_t spare_slot_expect;
-	uint64_t alloc_desc; uint64_t alloc_pool;
+	/* The LV2 allocator's OPD. No allocation is done any more (design Amendment
+	 * 2): only its +8 is read, for the kernel TOC the flush and probe OPDs need. */
+	uint64_t alloc_desc;
+	/* The fixed executable region the blob is placed in, [exec_base, exec_bound)
+	 * - on DEX 4.92 the CFW payload's free zero tail 0x57C000..0x580000. The blob
+	 * (plus the flush OPD) is written at exec_base after the region is verified to
+	 * read zero; a reboot clears it, unload zeroes it. */
+	uint64_t exec_base, exec_bound;
 	uint64_t flush_desc;                        /* 0 if the poke is coherent */
 	uint64_t event_slot, event_expect;          /* 0x37CFF8 / 0x33A2B0 OPD */
 	uint64_t event_code_addr, event_code_hash;  /* 0xCACF0 / 0x16E42A0B1EBFEFFA */
@@ -70,9 +78,10 @@ typedef enum { KSHIM_OFF = 0, KSHIM_INSTALLED, KSHIM_ALREADY, KSHIM_NO_ENTRY, KS
  *                   carrying DS45_SHIM_MAGIC and this build's version; the existing
  *                   install is adopted and nothing is written.
  *   KSHIM_INSTALLED the shim is now installed.
- *   KSHIM_FAILED    a target was not as expected, an allocation was unusable, or a
- *                   write did not read back; everything already written is undone and
- *                   the kernel image is byte-identical to before.
+ *   KSHIM_FAILED    a target was not as expected, the fixed exec region did not
+ *                   read zero or did not fit under exec_bound, or a write did not
+ *                   read back; everything already written is undone and the kernel
+ *                   image is byte-identical to before.
  * The two inline product-ID words are applied only when g_cfg.shim_inline_pid is
  * set (config key SHIM_INLINE_PID). Debug builds trace the failing step. */
 kshim_result_t kshim_install(void);
@@ -88,8 +97,24 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n);
  * qword (pid_orig) and which sites it applied (pid_applied), and adoption
  * journals a site only if that original hashes to the row's expected value and
  * the site still holds it with the row's instruction applied; any other site is
- * left as found. The blob stays allocated, since a driver thread may still be
- * executing inside it. A no-op when nothing is installed. */
+ * left as found. After the redirects are switched back, the fixed blob region is
+ * zeroed: it cannot be freed, so zeroing restores the pristine fill a later
+ * install's zero-check needs (RAM-only; a reboot clears it regardless). The
+ * redirects are switched back first, so no driver thread enters the blob after
+ * it is zeroed. A no-op when nothing is installed. */
 void kshim_remove(void);
+
+#ifdef DS45_DEBUG
+/* Executability pre-flight (design Amendment 2, console step 0): poke a two-word
+ * leaf stub `li r3,<magic>; blr` at k->exec_base, flush it, point the borrowed
+ * spare slot at an OPD { exec_base, kernel TOC } and call it once, and report
+ * what it returned in *out (expect 0x5AED, proving the region executes). Returns
+ * 0 when the plumbing worked - whatever the stub returned - or non-zero on a
+ * verify/poke/read failure; *out is 0 unless the call was made. Leaves exec_base
+ * and its two scratch OPDs zeroed and the spare slot restored. Debug builds only;
+ * it installs nothing and the kernel is not otherwise touched. main.c traces the
+ * result. */
+int kshim_exec_probe(const ds45_shim_kernel_t *k, uint64_t *out);
+#endif
 
 #endif /* DS45_KSHIM_H */

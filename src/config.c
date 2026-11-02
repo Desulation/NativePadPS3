@@ -78,6 +78,7 @@ void ds45_config_defaults(ds45_config_t *c)
 	 * console by itself (see ds45pad.h). */
 	c->enable_shim = 0;
 	c->shim_inline_pid = 0;
+	c->probe_exec = 0;
 #ifdef DS45_LV2DUMP
 	c->dump_lv2 = 0;
 	c->capture_off = 0;
@@ -250,6 +251,11 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		/* VSH builds only, like ENABLE_SHIM: also apply the inline product-ID
 		 * words. Any non-zero number turns it on; anything else leaves it off. */
 		if (parse_int(val, &n)) c->shim_inline_pid = n != 0;
+	} else if (match(key, "PROBE_EXEC")) {
+		/* VSH builds only, like ENABLE_SHIM: run the debug-only executability
+		 * pre-flight instead of installing the shim. Any non-zero number turns
+		 * it on; anything else leaves it off. */
+		if (parse_int(val, &n)) c->probe_exec = n != 0;
 #endif
 #ifdef DS45_LV2DUMP
 	} else if (match(key, "DUMP_LV2")) {
@@ -359,6 +365,7 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	 * decides if the plugin ever writes kernel memory. */
 	ds45_boot_mark_hex("cfg_enable_shim", (uint32_t)c->enable_shim);
 	ds45_boot_mark_hex("cfg_shim_inline_pid", (uint32_t)c->shim_inline_pid);
+	ds45_boot_mark_hex("cfg_probe_exec", (uint32_t)c->probe_exec);
 #endif
 
 	return 0;

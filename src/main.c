@@ -453,6 +453,7 @@ static void ds45_thread(uint64_t arg)
 	if (g_cfg.mode != DS45_MODE_USB) {
 		ds45_kmatch_t kmatch;
 		kshim_result_t kshim;
+		int probe_ran = 0;
 
 		ds45_boot_mark("kernel_resolve");
 		kmatch = kernel_resolve(NULL);
@@ -472,12 +473,38 @@ static void ds45_thread(uint64_t arg)
 		 * ds45pad.txt says ENABLE_SHIM = 1; to recover from a hang, remove that
 		 * line and reboot. With the gate shut the kernel is not touched at all
 		 * (kshim_install() refuses by itself as well). */
-		if (g_cfg.enable_shim) {
+#ifdef DS45_DEBUG
+		/* Executability pre-flight (design Amendment 2, console step 0): before
+		 * any hook is installed, a debug build with PROBE_EXEC = 1 proves the
+		 * fixed executable region runs one leaf stub on the plugin's own one-shot
+		 * syscall thread - the smallest possible blast radius. It installs nothing
+		 * this boot, and runs only on a matched kernel (the region is
+		 * firmware-specific), exactly where the shim would otherwise install. */
+		if (g_cfg.probe_exec) {
+			const ds45_shim_kernel_t *ek =
+				ds45_shim_table_count > 0 ? &ds45_shim_table[0] : NULL;
+			uint64_t exec_out = 0;
+
+			probe_ran = 1;
+			ds45_boot_mark("exec_probe");
+			if (ek && kernel_fingerprint_matches(ek->fp_addr, ek->fp_hash)) {
+				int pr = kshim_exec_probe(ek, &exec_out);
+
+				if (pr == 0)
+					DS45_TRACE_HEX("exec_probe", exec_out);
+				else
+					DS45_TRACE_HEX("exec_probe_FAILED", (uint64_t)pr);
+			} else {
+				DS45_TRACE("exec_probe_no_entry");
+			}
+		}
+#endif
+		if (!probe_ran && g_cfg.enable_shim) {
 			ds45_boot_mark("kshim_install");
 			kshim = kshim_install();
 			DS45_TRACE_HEX("kshim", kshim);
 			(void)kshim;             /* release: the trace compiles away */
-		} else {
+		} else if (!probe_ran) {
 			DS45_TRACE("kshim_gated_off");
 		}
 	}

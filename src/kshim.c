@@ -11,24 +11,29 @@
  *      first code qword, and the product-ID sites to be edited by the hash of
  *      their qword - writing nothing if any differs, unless the redirects already
  *      point at one of our blobs (adopt it);
- *   3. borrow the spare syscall slot to call the LV2 allocator once, restore it;
- *   4. range-check the allocation (in-window; a BRANCH row, should a row carry
- *      one, must reach shim_pid_ok - WORD rows hold a finished instruction);
+ *   3. take the fixed executable base (base = exec_base; design Amendment 2):
+ *      verify the whole region [base, base + blob + flush OPD) currently reads
+ *      zero, that it ends at or before exec_bound, and that base is 8-aligned
+ *      inside the window - writing nothing if any fails;
+ *   4. range-check a BRANCH row against base (should a row carry one it must
+ *      reach shim_pid_ok - WORD rows hold a finished instruction, no range);
  *   5. copy the blob qword by qword, rebasing relocated words;
  *   6. fill the data block (originals, pad class and manager, info template,
  *      cfg, enabled, and each product-ID site's original qword with the set of
  *      sites applied - in kernel RAM before the first word edit, so a later
  *      load that adopts the blob can undo the edits);
- *   7. flush the instruction cache over the blob (F5);
+ *   7. flush the instruction cache over the blob (F5), by borrowing the spare
+ *      syscall slot once (its only use here), pointed at { flush entry, TOC };
  *   8. apply, transactionally, the helper word, the inline words (only with
  *      SHIM_INLINE_PID), the event redirect, the enable redirect and the input
  *      redirect, in that order.
  *
- * Every write is read back. Any failure restores the borrowed spare slot and
- * leaves every pre-existing kernel structure byte-identical to before (the
- * freshly-allocated blob region is scratch and is not freed; kpatch_apply undoes
- * its own partial writes). The start-up driver's send slot (0x37CFE8 on DEX
- * 4.92) is not in the row and is never touched. It is entirely RAM-only.
+ * Every write is read back. Any failure restores the borrowed spare slot (when
+ * it was borrowed) and leaves every pre-existing kernel structure byte-identical
+ * to before (the fixed blob region is scratch and is not part of the pre-install
+ * image; kpatch_apply undoes its own partial writes). The start-up driver's send
+ * slot (0x37CFE8 on DEX 4.92) is not in the row and is never touched. It is
+ * entirely RAM-only.
  *
  * Licensed under GPLv2 - see LICENSE.
  */
@@ -74,9 +79,15 @@ typedef char kshim_adopt_fits_journal[(DS45_SHIM_PID_SITES + KSHIM_REDIRECTS <=
 typedef char kshim_pid_words_aligned[(offsetof(ds45_shim_data_t, pid_orig) % 8 == 0 &&
                                       offsetof(ds45_shim_data_t, pid_applied) % 8 == 0) ? 1 : -1];
 
-/* What a successful (or adopted) install left behind, for kshim_remove. */
+/* What a successful (or adopted) install left behind, for kshim_remove. g_base
+ * and g_zero_size are the fixed blob region [g_base, g_base + g_zero_size) that
+ * unload zeroes; both are set on a fresh install and on adoption (recording the
+ * size is cleaner than recomputing it from a journalled slot at unload, when the
+ * row - and so exec_base and flush_desc - is no longer in hand). */
 static ds45_kjournal_t g_journal;
 static kshim_result_t  g_state = KSHIM_OFF;
+static uint64_t        g_base;
+static uint64_t        g_zero_size;
 
 /* ------------------------------------------------------------------------ */
 
@@ -355,10 +366,10 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	ds45_kpatch_t check[KSHIM_REDIRECTS + 1], final[KSHIM_FINAL_MAX];
 	ds45_kjournal_t j;
 	uint8_t db[sizeof(ds45_shim_data_t)];
-	uint64_t spare_slot, base = 0, alloc_size, kernel_toc, flush_opd, target;
+	uint64_t spare_slot, base = 0, size, kernel_toc, flush_opd, target;
 	uint64_t pid_orig[DS45_SHIM_PID_SITES];
 	uint32_t off, bw, pid_applied;
-	int i, r, npid, nfinal, pid_ok;
+	int i, r, npid, nfinal, pid_ok, spare_borrowed = 0;
 
 	g_state = KSHIM_OFF;
 	g_journal.n = 0;
@@ -420,6 +431,10 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 			g_journal.orig[g_journal.n++] = k->enable_expect;
 			g_journal.qaddr[g_journal.n] = k->input_slot;
 			g_journal.orig[g_journal.n++] = k->input_expect;
+			/* the fixed region this adopted blob sits in, so unload zeroes it */
+			g_base = base;
+			g_zero_size = (uint64_t)DS45_SHIM_BLOB_LEN +
+			              (k->flush_desc ? KSHIM_FLUSH_OPD_LEN : 0);
 			g_state = KSHIM_ALREADY;
 			DS45_TRACE("kshim_already");
 			return KSHIM_ALREADY;
@@ -429,38 +444,37 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 		return KSHIM_FAILED;
 	}
 
-	/* 3. borrow the spare slot for the LV2 allocator, then restore it */
-	alloc_size = (uint64_t)DS45_SHIM_BLOB_LEN +
-	             (k->flush_desc ? KSHIM_FLUSH_OPD_LEN : 0);
-	if (ds45_lv2_write(spare_slot, k->alloc_desc)) {
-		DS45_TRACE("kshim_alloc_slot_FAILED");
+	/* 3. place the blob at the fixed executable base (design Amendment 2). The
+	 * region is reserved by the CFW and reads as a zero fill; before any write,
+	 * verify base is 8-aligned inside the window, the whole region
+	 * [base, base + size) ends at or before exec_bound, and it currently reads
+	 * zero - so nothing else is clobbered. No allocator is called. */
+	base = k->exec_base;
+	size = (uint64_t)DS45_SHIM_BLOB_LEN +
+	       (k->flush_desc ? KSHIM_FLUSH_OPD_LEN : 0);
+	if ((base & 7) || base < DS45_LV2_BASE ||
+	    base > k->exec_bound || size > k->exec_bound - base) {
+		DS45_TRACE("kshim_exec_window");
 		goto fail;
 	}
-	base = kshim_spare_call(k->spare_syscall, alloc_size, k->alloc_pool);
-	if (ds45_lv2_write(spare_slot, k->spare_slot_expect)) {
-		DS45_TRACE("kshim_alloc_restore_FAILED");
-		goto fail;
-	}
-	if (base == 0) {
-		DS45_TRACE("kshim_alloc_zero");
-		goto fail;
+	for (off = 0; off < size; off += 8) {
+		uint64_t zq;
+
+		if (ds45_lv2_read(base + off, &zq) || zq != 0) {
+			DS45_TRACE("kshim_exec_not_zero");
+			goto fail;
+		}
 	}
 
-	/* 4. the allocation must be writable (in-window, 8-aligned, whole region
-	 * inside the bound), and within a 26-bit branch of any BRANCH row's site. A
-	 * WORD row is a finished instruction that never points at the blob, so it
-	 * has no range to check. (No row is BRANCH today; the check is kept for
-	 * stage 1b - see pid_patched_qword.) */
-	if ((base & 7) || base < DS45_LV2_BASE ||
-	    base > DS45_LV2_BOUND - alloc_size) {
-		DS45_TRACE("kshim_alloc_window");
-		goto fail;
-	}
+	/* 4. a BRANCH row (none today; kept for stage 1b - see pid_patched_qword)
+	 * must reach shim_pid_ok in the blob within a 26-bit branch. A WORD row is a
+	 * finished instruction that never points at the blob, so it has no range to
+	 * check. */
 	target = base + DS45_SHIM_OFF_PID_OK;
 	for (i = 0; i < npid; i++)
 		if (final[i].kind == DS45_KPATCH_BRANCH &&
 		    kpatch_branch_word(final[i].addr, target, &bw)) {
-			DS45_TRACE("kshim_alloc_range");
+			DS45_TRACE("kshim_exec_range");
 			goto fail;
 		}
 
@@ -501,6 +515,7 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 			DS45_TRACE("kshim_flush_opd_FAILED");
 			goto fail;
 		}
+		spare_borrowed = 1;
 		if (ds45_lv2_write(spare_slot, flush_opd)) {
 			DS45_TRACE("kshim_flush_slot_FAILED");
 			goto fail;
@@ -510,6 +525,7 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 			DS45_TRACE("kshim_flush_restore_FAILED");
 			goto fail;
 		}
+		spare_borrowed = 0;
 	}
 
 	/* 8. the product-ID words, then the event, enable and input redirects - one
@@ -537,15 +553,19 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	}
 
 	g_journal = j;
+	g_base = base;
+	g_zero_size = size;
 	g_state = KSHIM_INSTALLED;
 	DS45_TRACE("kshim_installed");
 	return KSHIM_INSTALLED;
 
 fail:
-	/* Restore the borrowed spare slot; the blob region is scratch (not part of
-	 * the pre-install image and not freed), and kpatch_apply has already undone
-	 * any patch it half-applied, so there is nothing else to undo. */
-	(void)ds45_lv2_write(spare_slot, k->spare_slot_expect);
+	/* Restore the spare slot only if the flush actually borrowed it; the fixed
+	 * blob region is scratch (not part of the pre-install image and not freed),
+	 * and kpatch_apply has already undone any patch it half-applied, so there is
+	 * nothing else to undo. A refusal before the flush writes nothing at all. */
+	if (spare_borrowed)
+		(void)ds45_lv2_write(spare_slot, k->spare_slot_expect);
 	g_state = KSHIM_FAILED;
 	g_journal.n = 0;
 	return KSHIM_FAILED;
@@ -558,16 +578,99 @@ kshim_result_t kshim_install(void)
 
 void kshim_remove(void)
 {
+	uint64_t off, zq;
+
 	if (g_state != KSHIM_INSTALLED && g_state != KSHIM_ALREADY)
 		return;
 	/* Switch the redirects back and revert the product-ID words, last first,
 	 * each read back. A fresh install's journal has every patch it applied - the
 	 * helper, the inline words if any, and the three redirects; an adopted one
 	 * the same, rebuilt from the originals the adopted install recorded (minus
-	 * any site that was no longer provably ours). The blob stays allocated - a
-	 * driver thread may be inside it. */
+	 * any site that was no longer provably ours). The redirects go back first, so
+	 * no driver thread enters the blob after this. */
 	kpatch_revert(&g_journal);
+
+	/* Then zero the fixed blob region [g_base, g_base + g_zero_size). A fixed
+	 * region cannot be freed; zeroing restores the pristine fill a later
+	 * install's zero-check needs (RAM-only; a reboot clears it regardless).
+	 * ds45_lv2_write reads each poke back, and a read-back of the first and last
+	 * qword confirms the ends landed. */
+	for (off = 0; off < g_zero_size; off += 8)
+		(void)ds45_lv2_write(g_base + off, 0);
+	if ((ds45_lv2_read(g_base, &zq) || zq != 0) ||
+	    (g_zero_size >= 8 &&
+	     (ds45_lv2_read(g_base + g_zero_size - 8, &zq) || zq != 0)))
+		DS45_TRACE("kshim_remove_not_zero");
+
 	DS45_TRACE("kshim_removed");
 	g_state = KSHIM_OFF;
 	g_journal.n = 0;
 }
+
+#ifdef DS45_DEBUG
+/* Executability pre-flight. See kshim.h. The leaf stub goes at exec_base, with
+ * the flush OPD and the exec OPD just past it in the reserved region; all of it
+ * is zeroed again before returning, so the region is left pristine. It traces
+ * nothing - main.c traces *out and the return value. */
+int kshim_exec_probe(const ds45_shim_kernel_t *k, uint64_t *out)
+{
+	const uint32_t magic = 0x5AED;
+	uint64_t base       = k->exec_base;
+	uint64_t spare_slot = k->syscall_table + (uint64_t)k->spare_syscall * 8;
+	uint64_t flush_opd  = base + 8;                       /* { flush entry, TOC } */
+	uint64_t exec_opd   = base + 8 + KSHIM_FLUSH_OPD_LEN; /* { exec_base,  TOC } */
+	uint64_t kernel_toc, zq, stub, ret = 0;
+
+	if (out)
+		*out = 0;
+
+	/* the first qword of the region must read zero before we poke the stub */
+	if (ds45_lv2_read(base, &zq) || zq != 0)
+		return 1;
+	/* the kernel TOC the flush and exec OPDs need (the allocator OPD's +8) */
+	if (ds45_lv2_read(k->alloc_desc + 8, &kernel_toc))
+		return 2;
+
+	/* li r3,<magic> ; blr - one big-endian qword */
+	stub = ((uint64_t)(0x38600000u | magic) << 32) | 0x4E800020u;
+	if (ds45_lv2_write(base, stub))
+		return 3;
+
+	/* flush the 8 stub bytes through the borrowed spare slot, exactly like the
+	 * install flush: point the slot at { flush entry, TOC }, call, restore it */
+	if (k->flush_desc) {
+		if (ds45_lv2_write(flush_opd, k->flush_desc) ||
+		    ds45_lv2_write(flush_opd + 8, kernel_toc) ||
+		    ds45_lv2_write(spare_slot, flush_opd)) {
+			(void)ds45_lv2_write(spare_slot, k->spare_slot_expect);
+			return 4;
+		}
+		(void)kshim_spare_call(k->spare_syscall, base, 8);
+		if (ds45_lv2_write(spare_slot, k->spare_slot_expect))
+			return 5;
+	}
+
+	/* point the spare slot at { exec_base, TOC } and call the stub once - the
+	 * whole point of the probe; the stub is in place now, so make the call */
+	if (ds45_lv2_write(exec_opd, base) ||
+	    ds45_lv2_write(exec_opd + 8, kernel_toc) ||
+	    ds45_lv2_write(spare_slot, exec_opd)) {
+		(void)ds45_lv2_write(spare_slot, k->spare_slot_expect);
+		return 6;
+	}
+	ret = kshim_spare_call(k->spare_syscall, 0, 0);
+	if (ds45_lv2_write(spare_slot, k->spare_slot_expect))
+		return 7;
+
+	if (out)
+		*out = ret;
+
+	/* restore the pristine zero fill: the stub and both scratch OPDs */
+	(void)ds45_lv2_write(base, 0);
+	(void)ds45_lv2_write(flush_opd, 0);
+	(void)ds45_lv2_write(flush_opd + 8, 0);
+	(void)ds45_lv2_write(exec_opd, 0);
+	(void)ds45_lv2_write(exec_opd + 8, 0);
+	return 0;
+}
+#endif /* DS45_DEBUG */

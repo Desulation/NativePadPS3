@@ -327,6 +327,12 @@ typedef struct {
 	 * only its helper. Off by default; the console test decides whether the
 	 * DualSense needs it. */
 	int      shim_inline_pid;
+	/* PROBE_EXEC (0/1, VSH builds only): run the debug-only executability
+	 * pre-flight (design Amendment 2) instead of installing the shim this boot -
+	 * poke a leaf stub into the fixed exec region, call it once and trace what it
+	 * returned, proving the region runs before any hook is wired. Off by default;
+	 * only the debug build acts on it. */
+	int      probe_exec;
 #ifdef DS45_LV2DUMP
 	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
 	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */

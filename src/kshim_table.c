@@ -53,9 +53,16 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		 * the not-implemented stub OPD 0x80000000003621B0 until we borrow it. */
 		0x800000000038A4E8ULL, 149u, 0x80000000003621B0ULL,
 
-		/* F6 - the LV2 allocator the driver itself uses (OPD 0x330998, entry
-		 * 0x681F4, kernel TOC at +8) and its pool 0x22. */
-		0x8000000000330998ULL, 0x22ULL,
+		/* F6 - the LV2 allocator's OPD (0x330998, entry 0x681F4, kernel TOC at
+		 * +8). No allocation is done any more (design Amendment 2); only its +8
+		 * is read, for the kernel TOC the flush and probe OPDs need. */
+		0x8000000000330998ULL,
+
+		/* Amendment 2 - the fixed executable region the blob is placed in: the
+		 * CFW payload's free zero run 0x57C000..0x580000 (0x4338 bytes, 8-aligned,
+		 * identical and unused across every dump sampled). The blob 0x1740 + the
+		 * 0x10 flush OPD end well before exec_bound. */
+		0x800000000057C000ULL, 0x8000000000580000ULL,
 
 		/* F5 - the kernel's own dcbst/sync/icbi/isync range flush (entry
 		 * 0x29B8, no OPD): the CFW poke is NOT i-cache coherent, so freshly
