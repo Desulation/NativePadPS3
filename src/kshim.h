@@ -2,20 +2,22 @@
  * DS45PAD - install the DS3-route kernel shim on a fingerprinted kernel.
  *
  * On a kernel that matches a table entry, kshim_install() places the
- * freestanding shim blob (src/shim_blob.h) in a fresh kernel allocation and
- * points the DS3 driver's Bluetooth start-up and input slots at it, after
- * patching the product-ID checks (the inline compares in place, the helper
- * redirected to the blob's acceptance function). Every target is verified
- * against its expected value first, every write is read back, and any failure
- * undoes everything already written so the kernel image is left exactly as it
- * was found. It is entirely RAM-only and runs only once, at load, on the VSH
- * side - and only when the config enables it (ENABLE_SHIM = 1; off by default),
- * so a deployed build never patches the kernel unasked.
+ * freestanding shim blob (src/shim_blob.h) in a fresh kernel allocation, fills
+ * its data block (the original descriptors, the pad class and manager, the DS3
+ * info template, the config), applies the product-ID word edits and points the
+ * DS3 driver's start-up event handler, enable event handler and Bluetooth input
+ * read at the blob. Every target is verified against its expected value first
+ * (the slots by value, the two handlers by the hash of their first code qword),
+ * every write is read back, and any failure undoes everything already written
+ * so the kernel image is left exactly as it was found. It is entirely RAM-only
+ * and runs only once, at load, on the VSH side - and only when the config
+ * enables it (ENABLE_SHIM = 1; off by default), so a deployed build never
+ * patches the kernel unasked.
  *
- * The one firmware row and its F1-F6 addresses live in kshim_table.c; the
- * transactional engine is src/kpatch.h and the bounded LV2 access is
- * src/lv2.h. See docs/.../2026-10-30-ds3-route-facts.md (F1-F6) and the design
- * spec's "Install" section.
+ * The one firmware row lives in kshim_table.c; the transactional engine is
+ * src/kpatch.h and the bounded LV2 access is src/lv2.h. See the start-up
+ * completion design spec (docs/superpowers/specs/2026-11-01-...) section 3 and
+ * the facts note's C4 row values.
  *
  * Licensed under GPLv2 - see LICENSE.
  */
@@ -25,26 +27,29 @@
 #include <stdint.h>
 #include "kpatch.h"
 
-/* How many product-ID patches (F4) a row carries. They are installed together
- * with the start-up and input redirects in one transactional apply, so this plus
- * two must fit DS45_KPATCH_MAX (checked in kshim.c). */
-#define DS45_SHIM_PID_PATCHES 3
+#define DS45_SHIM_PID_PATCHES     1   /* helper word, always */
+#define DS45_SHIM_INLINE_PATCHES  2   /* inline words, only with SHIM_INLINE_PID = 1 */
 
-/* One firmware. The addresses are the fact sheet's F1-F6 values; the
- * fingerprint is the same (fp_addr, fp_hash) scheme ds45_kernel_t uses, so a
- * row is only ever applied to the kernel it was researched against. */
+/* One firmware. The fingerprint is the same (fp_addr, fp_hash) scheme
+ * ds45_kernel_t uses, so a row is only ever applied to the kernel it was
+ * researched against. The product-ID rows are WORD rows (a finished instruction
+ * written as given); a BRANCH row would be aimed at shim_pid_ok. */
 typedef struct {
 	const char *name;
-	uint64_t fp_addr, fp_hash;              /* same fingerprint scheme as ds45_kernel_t */
+	uint64_t fp_addr, fp_hash;
 	uint64_t syscall_table; uint32_t spare_syscall; uint64_t spare_slot_expect;
 	uint64_t alloc_desc; uint64_t alloc_pool;
-	uint64_t flush_desc;                    /* 0 if F5 says the poke is coherent */
-	uint64_t startup_slot, startup_expect;  /* F1 */
-	uint64_t input_slot, input_expect;      /* F2 */
-	uint64_t send_entry, send_toc;          /* F3/P4: BT-HID transfer routine h116ef0 as { entry, toc }; entry 0 = none */
-	/* F4. A WORD row carries its finished instruction and is written as given; a
-	 * BRANCH row's value is left 0 and the installer fills in shim_pid_ok. */
+	uint64_t flush_desc;                        /* 0 if the poke is coherent */
+	uint64_t event_slot, event_expect;          /* 0x37CFF8 / 0x33A2B0 OPD */
+	uint64_t event_code_addr, event_code_hash;  /* 0xCACF0 / 0x16E42A0B1EBFEFFA */
+	uint64_t enable_slot, enable_expect;        /* 0x37CFB0 / 0x33A310 OPD */
+	uint64_t enable_code_addr, enable_code_hash;/* 0xCB234 / 0xEF8C3F93F63DFDB3 */
+	uint64_t input_slot, input_expect;          /* 0x37CE38 / 0x33A010 OPD */
+	uint64_t pad_vtable;                        /* 0x800000000038CDC8 */
+	uint64_t pad_mgr;                           /* 0x80000000004A1CB8 */
+	const uint8_t *info_tmpl;                   /* DS45_SHIM_INFO_LEN bytes (facts note C1.5) */
 	ds45_kpatch_t pid_patches[DS45_SHIM_PID_PATCHES];
+	ds45_kpatch_t inline_patches[DS45_SHIM_INLINE_PATCHES];
 } ds45_shim_kernel_t;
 extern const ds45_shim_kernel_t ds45_shim_table[];
 extern const int ds45_shim_table_count;
@@ -55,13 +60,15 @@ typedef enum { KSHIM_OFF = 0, KSHIM_INSTALLED, KSHIM_ALREADY, KSHIM_NO_ENTRY, KS
  *   KSHIM_OFF       the ENABLE_SHIM gate is shut (g_cfg.enable_shim == 0, the
  *                   default): nothing was read, nothing written, nothing allocated.
  *   KSHIM_NO_ENTRY  no fingerprint matched; nothing read-modified, nothing written.
- *   KSHIM_ALREADY   the redirects already point at a blob carrying DS45_SHIM_MAGIC;
- *                   the existing install is adopted and nothing is written.
+ *   KSHIM_ALREADY   the event, enable and input slots already point at one blob
+ *                   carrying DS45_SHIM_MAGIC and this build's version; the existing
+ *                   install is adopted and nothing is written.
  *   KSHIM_INSTALLED the shim is now installed.
  *   KSHIM_FAILED    a target was not as expected, an allocation was unusable, or a
  *                   write did not read back; everything already written is undone and
  *                   the kernel image is byte-identical to before.
- * Debug builds trace the failing step. */
+ * The two inline product-ID words are applied only when g_cfg.shim_inline_pid is
+ * set (config key SHIM_INLINE_PID). Debug builds trace the failing step. */
 kshim_result_t kshim_install(void);
 
 /* The same over a caller-supplied table (tab may be NULL, n may be 0); this is
@@ -69,43 +76,11 @@ kshim_result_t kshim_install(void);
  * kshim_install_from(ds45_shim_table, ds45_shim_table_count). */
 kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n);
 
-/* Switch the redirects back and revert the product-ID patches (a fresh install
- * restores both from its journal; an adopted one restores the redirects only,
- * the pre-patch product-ID bytes from a prior load not being recoverable). The
- * blob stays allocated, since a driver thread may still be executing inside it.
- * A no-op when nothing is installed. */
+/* Switch the three redirects back and revert the product-ID words (a fresh
+ * install restores both from its journal; an adopted one restores the redirects
+ * only, the pre-edit product-ID bytes from a prior load not being recoverable).
+ * The blob stays allocated, since a driver thread may still be executing inside
+ * it. A no-op when nothing is installed. */
 void kshim_remove(void);
-
-/* Record, in the installed shim's data block, that the Bluetooth connection
- * with this handle (the byte the F1/F2 hooks see: drv+0xAC / xport+8) is an
- * enabled DualSense, and the connection id the kernel's transfer routine takes
- * for it. The shim's start-up sends its feature-0x05 GET to exactly that id
- * (note P1); it passes the value through untouched and cannot derive it from the
- * hook arguments, which carry only the handle (fact sheet F1), so it must be
- * captured here, when the connection comes up.
- *
- * A handle already recorded is updated in place; otherwise the first free slot
- * is used. conn_id == 0 forgets the handle (its slot stops matching, so a
- * DualShock 3 that later reuses the handle takes the original path), and
- * forgetting a handle that is not recorded writes nothing. A slot becomes
- * visible to the shim only when its state byte is set, which is written last,
- * and is hidden first when forgotten, so the shim never sees a half-written
- * connection. Every write is read back. It read-modify-writes the state qword,
- * so calls must not run concurrently.
- *
- * The shim sends its start-up GET at most SHIM_START_TRIES_MAX times per slot
- * and counts the sends in start_tries[slot]. This call gives a connection a
- * fresh budget: it zeroes the slot's count - before the state byte publishes a
- * new connection, and after the id of a recorded handle changes (the pad came
- * back as a new connection). Reporting the same handle with the same id again
- * writes nothing, and so refills nothing, so a caller may report a connection
- * on every rescan without defeating the cap; to retry a connection whose
- * budget is spent, forget it (conn_id 0) and record it again. Forgetting leaves
- * the count alone.
- *
- * Returns 0 once done, or -1 if nothing is installed, every slot is taken by
- * another handle, or a write did not stick. Nothing calls this yet: where the
- * composite id is read from at connect time is the open residual R3/U1. */
-int kshim_set_connection(uint8_t handle, uint64_t conn_id);
 
 #endif /* DS45_KSHIM_H */

@@ -13,66 +13,77 @@
 #include "shim_blob.h"
 #include "ds45pad.h"     /* ds45_config_t g_cfg */
 
-/* Synthetic image only: made-up fingerprint bytes and in-window addresses, no
- * kernel bytes. The one real input is src/shim_blob.h (the freshly packed blob
- * the VSH build generates), so the relocation and data-block checks run against
- * the exact bytes the installer copies. */
+/* Synthetic image only: made-up fingerprint bytes, code qwords and in-window
+ * addresses, no kernel bytes. The one real input is src/shim_blob.h (the freshly
+ * packed blob the VSH build generates), so the relocation and data-block checks
+ * run against the exact bytes the installer copies. */
 
 #define B DS45_LV2_BASE
 
 /* Table-entry addresses (all in-window, chosen clear of one another and of the
- * blob region). */
-#define FP_ADDR     (B + 0x1000)
-#define SYS_TABLE   (B + 0x2000)
-#define SPARE_NUM   149u
-#define SPARE_SLOT  (SYS_TABLE + (uint64_t)SPARE_NUM * 8)   /* B + 0x24A8 */
-#define SPARE_STUB  0x80000000003621B0ULL                  /* ni stub OPD */
-#define ALLOC_DESC  (B + 0x3000)
-#define ALLOC_ENTRY 0x80000000000681F4ULL
-#define KERNEL_TOC  0x80000000003759C0ULL
-#define ALLOC_POOL  0x22ULL
-#define FLUSH_ENTRY 0x80000000000029B8ULL
-#define STARTUP_SLOT (B + 0x6000)
+ * blob region). The three driver slots sit in one table as on DEX 4.92: the
+ * enable driver's event slot, the start-up driver's send slot (which v3 never
+ * writes) and the start-up driver's event slot. */
+#define FP_ADDR      (B + 0x1000)
+#define SYS_TABLE    (B + 0x2000)
+#define SPARE_NUM    149u
+#define SPARE_SLOT   (SYS_TABLE + (uint64_t)SPARE_NUM * 8)   /* B + 0x24A8 */
+#define SPARE_STUB   0x80000000003621B0ULL                  /* ni stub OPD */
+#define ALLOC_DESC   (B + 0x3000)
+#define ALLOC_ENTRY  0x80000000000681F4ULL
+#define KERNEL_TOC   0x80000000003759C0ULL
+#define ALLOC_POOL   0x22ULL
+#define FLUSH_ENTRY  0x80000000000029B8ULL
+#define ENABLE_SLOT  (B + 0x6000)
+#define ENABLE_ORIG  0x800000000033A310ULL
+#define STARTUP_SLOT (B + 0x6038)
 #define STARTUP_ORIG 0x800000000033A208ULL
+#define EVENT_SLOT   (B + 0x6048)
+#define EVENT_ORIG   0x800000000033A2B0ULL
 #define INPUT_SLOT   (B + 0x6100)
 #define INPUT_ORIG   0x800000000033A010ULL
-/* The kernel's BT-HID transfer routine as a row carries it: { entry, toc }. The
- * values are distinct from every other address here and from KERNEL_TOC, so the
- * test sees the installer take the row's toc rather than the allocator's. */
-#define SEND_ENTRY   0x8000000000403000ULL
-#define SEND_TOC     0x8000000000403800ULL
+/* The two handlers' first code qwords. The event handler is 8-aligned; the
+ * enable handler, like the real 0xCB234, is not, so its hash covers the
+ * qword that holds it. Made-up patterns. */
+#define EVENT_CODE    (B + 0x6800)
+#define EVENT_CODE_Q  0x1111222233334444ULL
+#define ENABLE_CODE   (B + 0x6904)
+#define ENABLE_CODE_QA (B + 0x6900)
+#define ENABLE_CODE_Q 0x5555666677778888ULL
+/* The values the data block carries for the shim; never dereferenced here. */
+#define PAD_VTABLE   0x800000000038CDC8ULL
+#define PAD_MGR      0x80000000004A1CB8ULL
 
-/* The three F4 product-ID sites, shaped like the DEX 4.92 row: the patched
+/* The product-ID WORD rows, shaped like the DEX 4.92 row: the patched
  * instruction is the LOW half of its qword (addr & 4 set) and the high half is a
- * neighbouring instruction that has to survive. Two WORD rows (the inline compare
- * and the inline fall-through branch) carry their own finished instruction; one
- * BRANCH row (the helper's first instruction) becomes `b shim_pid_ok`. The
- * original qwords are made-up patterns, not kernel bytes. */
-#define PID0_QA      (B + 0x7000)          /* WORD: the qword's address ... */
-#define PID0_SITE    (PID0_QA + 4)         /* ... and the instruction in it */
+ * neighbouring instruction that has to survive. The original qwords are made-up
+ * patterns, not kernel bytes. */
+#define HELPER_QA    (B + 0x8000)          /* helper: the qword's address ... */
+#define HELPER_SITE  (HELPER_QA + 4)       /* ... and the instruction in it */
+#define HELPER_Q     0x5E5E5E5E6F6F6F6FULL
+#define HELPER_WORD  0x68800CE6u
+#define PID0_QA      (B + 0x7000)          /* inline compare */
+#define PID0_SITE    (PID0_QA + 4)
 #define PID0_Q       0x1A1A1A1A2B2B2B2BULL
-#define PID0_WORD    0x2F800CE6u           /* the table's value: never base-adjusted */
-#define PID1_QA      (B + 0x7008)          /* WORD */
+#define PID0_WORD    0x2F800CE6u
+#define PID1_QA      (B + 0x7008)          /* inline branch */
 #define PID1_SITE    (PID1_QA + 4)
 #define PID1_Q       0x3C3C3C3C4D4D4D4DULL
 #define PID1_WORD    0x4BFFFC48u
-#define PID2_QA      (B + 0x8000)          /* BRANCH */
-#define PID2_SITE    (PID2_QA + 4)
-#define PID2_Q       0x5E5E5E5E6F6F6F6FULL
 #define HI32         0xFFFFFFFF00000000ULL
 
 /* The address the fake allocator hands back: in the 0x6xxxxx heap region F6
  * says pool-0x22 lands in, and clear of every table-entry address above. */
 #define BLOB_BASE    (B + 0x600000)
-/* An allocation the installer must reject: past the 8 MiB window, hence also
- * past a 26-bit branch of the F4 sites (the window is 8 MiB, a branch reaches
- * +/-32 MiB, so an in-window allocation is always in branch range - only an
- * out-of-window one can be out of range). */
+/* An allocation the installer must reject: past the 8 MiB window. */
 #define BLOB_BAD     (B + 0x4000000ULL)
 
 #define TOCTOU_VAL   0x8000000000BAD008ULL   /* a "concurrent" slot change */
 
 #define CHECK_SUB(e) do { int l_ = (e); if (l_) return l_; } while (0)
+
+/* A synthetic info template: a pattern with the identity bytes zero. */
+static uint8_t g_tmpl[DS45_SHIM_INFO_LEN];
 
 /* ----- byte/qword helpers (big-endian, as on the PPU) -------------------- */
 
@@ -171,6 +182,39 @@ static uint64_t spare_handler(uint64_t a1, uint64_t a2)
 	return g_spare_calls == 1 ? g_alloc_ret : 0;
 }
 
+/* ----- the LV2 write log -------------------------------------------------- */
+
+/* ds45_lv2_write reads every poke back at the same address, so the first peek
+ * after the poke count moved names the address just written. */
+#define WLOG_MAX 4096
+static uint64_t g_wlog[WLOG_MAX];
+static int      g_wlog_n, g_wlog_pokes;
+
+static void wlog_on_peek(uint64_t addr)
+{
+	if (fake_lv2_poke_count != g_wlog_pokes) {
+		g_wlog_pokes = fake_lv2_poke_count;
+		if (g_wlog_n < WLOG_MAX)
+			g_wlog[g_wlog_n++] = addr;
+	}
+}
+
+static void wlog_start(void)
+{
+	g_wlog_n = 0;
+	g_wlog_pokes = fake_lv2_poke_count;
+	fake_lv2_on_peek = wlog_on_peek;
+}
+
+static int wlog_has(uint64_t addr)
+{
+	int i;
+	for (i = 0; i < g_wlog_n; i++)
+		if (g_wlog[i] == addr)
+			return 1;
+	return 0;
+}
+
 /* ----- image + table setup ----------------------------------------------- */
 
 static ds45_shim_kernel_t g_ent;
@@ -203,21 +247,31 @@ static void setup(void)
 	g_cfg.gyro_scale = -50;
 	/* the shim is gated off by default (ENABLE_SHIM); every install test opts in */
 	g_cfg.enable_shim = 1;
+	g_cfg.shim_inline_pid = 0;
 
 	/* fingerprint */
 	for (i = 0; i < DS45_FP_LEN; i++)
 		fp[i] = (uint8_t)(0x40 + i * 7);
 	fake_lv2_set(FP_ADDR, fp, DS45_FP_LEN);
 
-	/* slots and the allocator OPD */
+	/* slots, code qwords and the allocator OPD */
 	put_q(SPARE_SLOT, SPARE_STUB);
 	put_q(ALLOC_DESC, ALLOC_ENTRY);
 	put_q(ALLOC_DESC + 8, KERNEL_TOC);
+	put_q(EVENT_SLOT, EVENT_ORIG);
+	put_q(ENABLE_SLOT, ENABLE_ORIG);
 	put_q(STARTUP_SLOT, STARTUP_ORIG);
 	put_q(INPUT_SLOT, INPUT_ORIG);
+	put_q(EVENT_CODE, EVENT_CODE_Q);
+	put_q(ENABLE_CODE_QA, ENABLE_CODE_Q);
+	put_q(HELPER_QA, HELPER_Q);
 	put_q(PID0_QA, PID0_Q);
 	put_q(PID1_QA, PID1_Q);
-	put_q(PID2_QA, PID2_Q);
+
+	for (i = 0; i < DS45_SHIM_INFO_LEN; i++)
+		g_tmpl[i] = (uint8_t)(0x21 + i * 3);
+	for (i = 8; i < 16; i++)
+		g_tmpl[i] = 0;
 
 	/* synthetic table row */
 	memset(&g_ent, 0, sizeof(g_ent));
@@ -230,24 +284,55 @@ static void setup(void)
 	g_ent.alloc_desc = ALLOC_DESC;
 	g_ent.alloc_pool = ALLOC_POOL;
 	g_ent.flush_desc = FLUSH_ENTRY;
-	g_ent.startup_slot = STARTUP_SLOT;
-	g_ent.startup_expect = STARTUP_ORIG;
+	g_ent.event_slot = EVENT_SLOT;
+	g_ent.event_expect = EVENT_ORIG;
+	g_ent.event_code_addr = EVENT_CODE;
+	g_ent.event_code_hash = qhash(EVENT_CODE_Q);
+	g_ent.enable_slot = ENABLE_SLOT;
+	g_ent.enable_expect = ENABLE_ORIG;
+	g_ent.enable_code_addr = ENABLE_CODE;
+	g_ent.enable_code_hash = qhash(ENABLE_CODE_Q);
 	g_ent.input_slot = INPUT_SLOT;
 	g_ent.input_expect = INPUT_ORIG;
-	g_ent.send_entry = SEND_ENTRY;
-	g_ent.send_toc = SEND_TOC;
+	g_ent.pad_vtable = PAD_VTABLE;
+	g_ent.pad_mgr = PAD_MGR;
+	g_ent.info_tmpl = g_tmpl;
 	g_ent.pid_patches[0].kind = DS45_KPATCH_WORD;
-	g_ent.pid_patches[0].addr = PID0_SITE;
-	g_ent.pid_patches[0].expect = qhash(PID0_Q);
-	g_ent.pid_patches[0].value = PID0_WORD;
-	g_ent.pid_patches[1].kind = DS45_KPATCH_WORD;
-	g_ent.pid_patches[1].addr = PID1_SITE;
-	g_ent.pid_patches[1].expect = qhash(PID1_Q);
-	g_ent.pid_patches[1].value = PID1_WORD;
-	g_ent.pid_patches[2].kind = DS45_KPATCH_BRANCH;
-	g_ent.pid_patches[2].addr = PID2_SITE;
-	g_ent.pid_patches[2].expect = qhash(PID2_Q);
-	g_ent.pid_patches[2].value = 0;
+	g_ent.pid_patches[0].addr = HELPER_SITE;
+	g_ent.pid_patches[0].expect = qhash(HELPER_Q);
+	g_ent.pid_patches[0].value = HELPER_WORD;
+	g_ent.inline_patches[0].kind = DS45_KPATCH_WORD;
+	g_ent.inline_patches[0].addr = PID0_SITE;
+	g_ent.inline_patches[0].expect = qhash(PID0_Q);
+	g_ent.inline_patches[0].value = PID0_WORD;
+	g_ent.inline_patches[1].kind = DS45_KPATCH_WORD;
+	g_ent.inline_patches[1].addr = PID1_SITE;
+	g_ent.inline_patches[1].expect = qhash(PID1_Q);
+	g_ent.inline_patches[1].value = PID1_WORD;
+}
+
+/* Snapshot of everything the installer is responsible for leaving untouched on
+ * failure (the freshly-allocated blob region is scratch and excluded). */
+struct snap { uint64_t event, enable, startup, input, spare, helper, pid0, pid1,
+                       ecode, ncode; };
+
+static void take_snap(struct snap *s)
+{
+	s->event   = rd(EVENT_SLOT);
+	s->enable  = rd(ENABLE_SLOT);
+	s->startup = rd(STARTUP_SLOT);
+	s->input   = rd(INPUT_SLOT);
+	s->spare   = rd(SPARE_SLOT);
+	s->helper  = rd(HELPER_QA);
+	s->pid0    = rd(PID0_QA);
+	s->pid1    = rd(PID1_QA);
+	s->ecode   = rd(EVENT_CODE);
+	s->ncode   = rd(ENABLE_CODE_QA);
+}
+
+static int snap_eq(const struct snap *a, const struct snap *b)
+{
+	return memcmp(a, b, sizeof(*a)) == 0;
 }
 
 /* ----- tests ------------------------------------------------------------- */
@@ -290,8 +375,8 @@ static int test_no_entry_writes_nothing(void)
  * copied verbatim, the data block filled, and the flush OPD built. */
 static int check_blob_image(void)
 {
-	uint8_t db[304];                 /* sizeof(ds45_shim_data_t), 8-aligned */
-	const uint8_t *cfg;
+	uint8_t db[sizeof(ds45_shim_data_t)];
+	const uint8_t *cfg, *t;
 	uint32_t off;
 	int i;
 
@@ -302,30 +387,22 @@ static int check_blob_image(void)
 		CHECK_SUB(rd(BLOB_BASE + off) == want ? 0 : __LINE__);
 	}
 
-	CHECK_SUB(sizeof(ds45_shim_data_t) == sizeof db ? 0 : __LINE__);
 	CHECK_SUB(ds45_lv2_read_bytes(BLOB_BASE + DS45_SHIM_OFF_DATA, db,
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) ==
-	          DS45_SHIM_VERSION ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 3 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_startup)) ==
-	          STARTUP_ORIG ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
+	          EVENT_ORIG ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_enable)) ==
+	          ENABLE_ORIG ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_input)) ==
 	          INPUT_ORIG ? 0 : __LINE__);
-	/* the kernel's transfer routine has no descriptor of its own: the data block
-	 * carries one { entry, toc, env } built from the row, and send_routine is the
-	 * address of that descriptor as loaded - the shim calls through it */
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, send_opd)) ==
-	          SEND_ENTRY ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, send_opd) + 8) ==
-	          SEND_TOC ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, send_opd) + 16) ==
-	          0 ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, send_routine)) ==
-	          BLOB_BASE + DS45_SHIM_OFF_DATA +
-	          offsetof(ds45_shim_data_t, send_opd) ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pad_vtable)) ==
+	          PAD_VTABLE ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pad_mgr)) ==
+	          PAD_MGR ? 0 : __LINE__);
 
 	cfg = db + offsetof(ds45_shim_data_t, cfg);
 	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, deadzone)] == 12 ? 0 : __LINE__);
@@ -341,18 +418,18 @@ static int check_blob_image(void)
 	          150 ? 0 : __LINE__);
 	CHECK_SUB((int16_t)be16b(cfg + offsetof(ds45_shim_cfg_t, gyro_scale)) ==
 	          -50 ? 0 : __LINE__);
-	/* per-connection, request-buffer and counter fields start cleared */
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, conn_key)) == 0 ? 0 : __LINE__);
-	for (i = 0; i < DS45_SHIM_CONNS; i++) {
-		CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, conn_id) + 8 * i) ==
-		          0 ? 0 : __LINE__);
-		CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, start_tries) + 8 * i) ==
-		          0 ? 0 : __LINE__);
-	}
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, conn_state)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pdu)) == 0 ? 0 : __LINE__);
+
+	/* counters start cleared */
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_completed)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_enabled)) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_translated)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_startups)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_passed)) == 0 ? 0 : __LINE__);
+
+	/* the row's template, byte for byte, then zero to the end of the array */
+	t = db + offsetof(ds45_shim_data_t, info_tmpl);
+	CHECK_SUB(memcmp(t, g_tmpl, DS45_SHIM_INFO_LEN) == 0 ? 0 : __LINE__);
+	for (i = DS45_SHIM_INFO_LEN; i < 0x58; i++)
+		CHECK_SUB(t[i] == 0 ? 0 : __LINE__);
 
 	/* flush OPD placed just past the blob: { entry, kernel TOC } */
 	CHECK_SUB(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN) == FLUSH_ENTRY ? 0 : __LINE__);
@@ -360,29 +437,32 @@ static int check_blob_image(void)
 	return 0;
 }
 
-static int test_install_happy_path(void)
+static int test_install_writes_v3(void)
 {
-	uint32_t bw = 0;
-
 	setup();
+	wlog_start();
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	fake_lv2_on_peek = NULL;
 
-	/* redirects now point at the blob's own descriptors */
-	CHECK(rd(STARTUP_SLOT) == BLOB_BASE + DS45_SHIM_OFF_STARTUP);
+	/* the three redirects point at the blob's own descriptors */
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+	CHECK(rd(ENABLE_SLOT) == BLOB_BASE + DS45_SHIM_OFF_ENABLE);
 	CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);
 
-	/* the two WORD rows write their own finished instruction into the low half of
-	 * their qword - verbatim: not a branch, not the blob's address - and the high
-	 * half (the neighbouring instruction) is kept */
-	CHECK(rd(PID0_QA) == ((PID0_Q & HI32) | PID0_WORD));
-	CHECK(rd(PID1_QA) == ((PID1_Q & HI32) | PID1_WORD));
+	/* the helper word goes in verbatim (low half), the high half is kept */
+	CHECK(rd(HELPER_QA) == ((HELPER_Q & HI32) | HELPER_WORD));
 
-	/* the BRANCH row becomes `b shim_pid_ok` (low half), high half kept */
-	CHECK(kpatch_branch_word(PID2_SITE, BLOB_BASE + DS45_SHIM_OFF_PID_OK, &bw) == 0);
-	CHECK(rd(PID2_QA) == ((PID2_Q & HI32) | bw));
+	/* the start-up send slot was never written, nor the inline sites (gate off) */
+	CHECK(g_wlog_n > 0);
+	CHECK(wlog_has(EVENT_SLOT));
+	CHECK(!wlog_has(STARTUP_SLOT));
+	CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
+	CHECK(!wlog_has(PID0_QA) && !wlog_has(PID1_QA));
+	CHECK(rd(PID0_QA) == PID0_Q && rd(PID1_QA) == PID1_Q);
 
-	/* the spare slot is back to the ni stub */
+	/* the spare slot is back to the ni stub, the code is untouched */
 	CHECK(rd(SPARE_SLOT) == SPARE_STUB);
+	CHECK(rd(EVENT_CODE) == EVENT_CODE_Q && rd(ENABLE_CODE_QA) == ENABLE_CODE_Q);
 
 	/* the blob, data block and flush OPD are correct */
 	CHECK(check_blob_image() == 0);
@@ -399,49 +479,118 @@ static int test_install_happy_path(void)
 	return 0;
 }
 
-/* Snapshot of everything the installer is responsible for leaving untouched on
- * failure (the freshly-allocated blob region is scratch and excluded - on a
- * hard poke fault the installer cannot rewrite it, and it is not part of the
- * pre-install kernel image). The spare slot is explicitly included. */
-struct snap { uint64_t startup, input, spare, pid0, pid1, pid2; };
-
-static void take_snap(struct snap *s)
+/* SHIM_INLINE_PID decides whether the two inline words go in. */
+static int test_inline_rows_gated(void)
 {
-	s->startup = rd(STARTUP_SLOT);
-	s->input   = rd(INPUT_SLOT);
-	s->spare   = rd(SPARE_SLOT);
-	s->pid0    = rd(PID0_QA);
-	s->pid1    = rd(PID1_QA);
-	s->pid2    = rd(PID2_QA);
+	setup();
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(rd(PID0_QA) == PID0_Q && rd(PID1_QA) == PID1_Q);
+	kshim_remove();
+
+	setup();
+	g_cfg.shim_inline_pid = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(rd(PID0_QA) == ((PID0_Q & HI32) | PID0_WORD));
+	CHECK(rd(PID1_QA) == ((PID1_Q & HI32) | PID1_WORD));
+	CHECK(rd(HELPER_QA) == ((HELPER_Q & HI32) | HELPER_WORD));
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+	kshim_remove();
+
+	/* with the gate on, an inline site that is not as researched refuses the
+	 * whole install; with it off the site is never looked at */
+	setup();
+	g_cfg.shim_inline_pid = 1;
+	put_q(PID1_QA, 0xDEADBEEFDEADBEEFULL);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+	CHECK(g_spare_calls == 0);
+	CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
+	setup();
+	put_q(PID1_QA, 0xDEADBEEFDEADBEEFULL);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(rd(PID1_QA) == 0xDEADBEEFDEADBEEFULL);
+	kshim_remove();
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
 }
 
-static int snap_eq(const struct snap *a, const struct snap *b)
+/* A refusal before anything is allocated: nothing written, nothing borrowed,
+ * the image exactly as found. */
+static int refused_untouched(const struct snap *before, int pokes)
 {
-	return a->startup == b->startup && a->input == b->input &&
-	       a->spare == b->spare && a->pid0 == b->pid0 && a->pid1 == b->pid1 &&
-	       a->pid2 == b->pid2;
+	struct snap after;
+
+	CHECK_SUB(kshim_install_from(&g_ent, 1) == KSHIM_FAILED ? 0 : __LINE__);
+	CHECK_SUB(fake_lv2_poke_count == pokes ? 0 : __LINE__);
+	CHECK_SUB(g_spare_calls == 0 ? 0 : __LINE__);
+	take_snap(&after);
+	CHECK_SUB(snap_eq(before, &after) ? 0 : __LINE__);
+	return 0;
 }
 
-/* Where to start dropping pokes so the blob copy is cut off partway. The
- * installer's first two pokes borrow and restore the spare slot, so the blob's
- * qword at offset o is poke 3 + o/8 and `fail_after = 2 + o/8` drops exactly it.
- * A dropped poke only shows up if the qword it should have written differs from
- * what was there (a fresh, zeroed region), so o is the first qword at or after
- * 464 whose written value - relocated words get the load base added - is
- * non-zero, whatever the blob happens to contain between functions. -1 if none. */
-static int blob_fault_point(void)
+static int test_event_code_hash_mismatch(void)
 {
-	uint32_t off;
+	struct snap before;
 
-	for (off = 464; off < DS45_SHIM_OFF_DATA; off += 8) {
-		uint64_t q = blob_q(off);
+	setup();
+	g_ent.event_code_hash ^= 1;
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
 
-		if (is_reloc(off))
-			q += BLOB_BASE;
-		if (q != 0)
-			return 2 + (int)(off / 8);
-	}
-	return -1;
+	/* the code itself changed (another kernel build) */
+	setup();
+	put_q(EVENT_CODE, EVENT_CODE_Q + 1);
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+	return 0;
+}
+
+static int test_enable_code_hash_mismatch(void)
+{
+	struct snap before;
+
+	setup();
+	g_ent.enable_code_hash ^= 0x100;
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+
+	setup();
+	put_q(ENABLE_CODE_QA, ENABLE_CODE_Q ^ 0xFF);
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+	return 0;
+}
+
+static int test_enable_slot_mismatch(void)
+{
+	struct snap before;
+
+	setup();
+	put_q(ENABLE_SLOT, ENABLE_ORIG + 0x18);
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+
+	/* the event and input slots are checked the same way */
+	setup();
+	put_q(EVENT_SLOT, EVENT_ORIG + 0x18);
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+	setup();
+	put_q(INPUT_SLOT, INPUT_ORIG + 0x18);
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+
+	/* and the helper site */
+	setup();
+	put_q(HELPER_QA, HELPER_Q ^ 1);
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+
+	/* a row without a template is refused the same way */
+	setup();
+	g_ent.info_tmpl = NULL;
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+	return 0;
 }
 
 /* The transient-fault helper from test_kpatch: drop pokes from fail_after on,
@@ -455,7 +604,7 @@ static void clear_fault_after_failed_poke(uint64_t addr)
 		fake_lv2_poke_fail_after = -1;
 }
 
-/* case 4: a redirect slot changes between the verify and the write. */
+/* case: a redirect slot changes between the verify and the write. */
 static void toctou_on_peek(uint64_t addr)
 {
 	if (addr == INPUT_SLOT)
@@ -474,9 +623,8 @@ static int test_install_fails_each_step(void)
 	CHECK(g_spare_calls == 1);             /* allocated, never flushed */
 	take_snap(&after);
 	CHECK(snap_eq(&before, &after));
-	CHECK(rd(SPARE_SLOT) == SPARE_STUB);
 
-	/* (b) allocation out of range for the F4 branches (and the window) */
+	/* (b) allocation out of the window */
 	setup();
 	take_snap(&before);
 	g_alloc_ret = BLOB_BAD;
@@ -484,39 +632,16 @@ static int test_install_fails_each_step(void)
 	CHECK(g_spare_calls == 1);             /* no flush: rejected before the copy */
 	take_snap(&after);
 	CHECK(snap_eq(&before, &after));
-	/* nothing was written into the (bad) region either */
 	CHECK(fake_lv2_out_of_bounds == 0);
 
-	/* (c) a blob write does not read back (fault mid-copy) */
-	setup();
-	take_snap(&before);
-	g_fault_at = blob_fault_point();       /* well into the blob copy */
-	CHECK(g_fault_at > 0);
-	fake_lv2_poke_fail_after = g_fault_at;
-	fake_lv2_on_peek = clear_fault_after_failed_poke;
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
-	fake_lv2_on_peek = NULL;
-	take_snap(&after);
-	CHECK(snap_eq(&before, &after));       /* every tracked target intact */
-	CHECK(rd(SPARE_SLOT) == SPARE_STUB);
-
-	/* (d) the input redirect slot changes after it was verified */
+	/* (c) the input redirect slot changes after it was verified */
 	setup();
 	take_snap(&before);
 	fake_lv2_on_peek = toctou_on_peek;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
 	fake_lv2_on_peek = NULL;
-	/* the installer refused to clobber the concurrently-changed slot */
-	CHECK(rd(INPUT_SLOT) == TOCTOU_VAL);
-	CHECK(rd(INPUT_SLOT) != BLOB_BASE + DS45_SHIM_OFF_INPUT);
-	/* everything else is back to its original value */
-	CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
-	CHECK(rd(PID0_QA) == before.pid0);
-	CHECK(rd(PID1_QA) == before.pid1);
-	CHECK(rd(PID2_QA) == before.pid2);
-	CHECK(rd(SPARE_SLOT) == SPARE_STUB);
-	/* restore the test's artefact, then the whole set is byte-identical */
-	put_q(INPUT_SLOT, INPUT_ORIG);
+	CHECK(rd(INPUT_SLOT) == TOCTOU_VAL);   /* not clobbered */
+	put_q(INPUT_SLOT, INPUT_ORIG);         /* undo the test's artefact */
 	take_snap(&after);
 	CHECK(snap_eq(&before, &after));
 
@@ -524,98 +649,68 @@ static int test_install_fails_each_step(void)
 	return 0;
 }
 
-/* Step 2 checks every product-ID site, not just the first two: a kernel whose
- * third site is not the qword the row was researched against is refused before
- * anything is allocated or written. */
-static int test_install_refuses_each_unexpected_pid_site(void)
-{
-	static const uint64_t qa[3] = { PID0_QA, PID1_QA, PID2_QA };
-	const uint64_t other = 0xDEADBEEFDEADBEEFULL;    /* not what the row hashes */
-	int i, pokes;
-
-	for (i = 0; i < 3; i++) {
-		setup();
-		put_q(qa[i], other);
-		pokes = fake_lv2_poke_count;
-		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
-		CHECK(fake_lv2_poke_count == pokes);         /* nothing written */
-		CHECK(g_spare_calls == 0);                   /* nothing allocated */
-		CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
-		CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
-		CHECK(rd(SPARE_SLOT) == SPARE_STUB);
-		CHECK(rd(qa[i]) == other);                   /* left exactly as found */
-	}
-	CHECK(fake_lv2_out_of_bounds == 0);
-	return 0;
-}
-
-/* A WORD row is a finished instruction: it lands verbatim whatever address the
- * blob was given. Only the BRANCH row follows the load base. (Setting a WORD
- * row's value to the blob address would not even encode: the value is 32 bits.) */
-static int test_word_rows_do_not_follow_the_load_base(void)
-{
-	static const uint64_t base[2] = { BLOB_BASE, BLOB_BASE + 0x40000 };
-	uint64_t w0[2], w1[2], br[2];
-	uint32_t bw = 0;
-	int i;
-
-	for (i = 0; i < 2; i++) {
-		setup();
-		g_alloc_ret = base[i];
-		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-		w0[i] = rd(PID0_QA);
-		w1[i] = rd(PID1_QA);
-		br[i] = rd(PID2_QA);
-		CHECK(kpatch_branch_word(PID2_SITE, base[i] + DS45_SHIM_OFF_PID_OK, &bw) == 0);
-		CHECK(br[i] == ((PID2_Q & HI32) | bw));      /* the branch targets this base */
-		kshim_remove();
-	}
-	CHECK(w0[0] == ((PID0_Q & HI32) | PID0_WORD) && w0[1] == w0[0]);
-	CHECK(w1[0] == ((PID1_Q & HI32) | PID1_WORD) && w1[1] == w1[0]);
-	CHECK(br[0] != br[1]);                           /* ... and moves with it */
-	CHECK(fake_lv2_out_of_bounds == 0);
-	return 0;
-}
-
-/* The final apply is one transaction of five patches - the three product-ID
- * patches (two WORD, one BRANCH) and the two redirects. A write part-way that does
- * not read back undoes the ones already made, whichever it is, and the kernel
- * image ends byte-identical to how it was found. */
-static int test_install_rolls_back_a_partial_patch(void)
+/* A write failure at each step leaves the image byte-identical: the blob copy,
+ * the data block, and each write of the final apply (helper, [inline,] event,
+ * enable, input). */
+static int fail_at(int poke_index, int inline_pid)
 {
 	struct snap before, after;
-	int pokes, apply_start, i;
 
-	/* calibrate on a clean install: remove writes back one qword per journal entry,
-	 * and the entries are the last writes the installer made */
 	setup();
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	pokes = fake_lv2_poke_count;
-	kshim_remove();
-	CHECK(fake_lv2_poke_count - pokes == 5);
-	apply_start = pokes - 5;
+	g_cfg.shim_inline_pid = inline_pid;
+	take_snap(&before);
+	g_fault_at = poke_index;
+	fake_lv2_poke_fail_after = g_fault_at;
+	fake_lv2_on_peek = clear_fault_after_failed_poke;
+	CHECK_SUB(kshim_install_from(&g_ent, 1) == KSHIM_FAILED ? 0 : __LINE__);
+	fake_lv2_on_peek = NULL;
+	fake_lv2_poke_fail_after = -1;
+	take_snap(&after);
+	CHECK_SUB(snap_eq(&before, &after) ? 0 : __LINE__);
+	CHECK_SUB(rd(SPARE_SLOT) == SPARE_STUB ? 0 : __LINE__);
+	CHECK_SUB(fake_lv2_out_of_bounds == 0 ? 0 : __LINE__);
+	return 0;
+}
 
-	for (i = 0; i < 5; i++) {
+static int test_rollback_each_step(void)
+{
+	int pokes, apply_start, i, g, n;
+	uint32_t off;
+
+	for (g = 0; g < 2; g++) {
+		n = g ? 6 : 4;                 /* helper, [2 inline,] event, enable, input */
+
+		/* calibrate on a clean install: remove writes back one qword per journal
+		 * entry, and the entries are the last writes the installer made */
 		setup();
-		take_snap(&before);
-		g_fault_at = apply_start + i;                /* drop the i-th patch write */
-		fake_lv2_poke_fail_after = g_fault_at;
-		fake_lv2_on_peek = clear_fault_after_failed_poke;
-		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
-		fake_lv2_on_peek = NULL;
-		fake_lv2_poke_fail_after = -1;
-		take_snap(&after);
-		CHECK(snap_eq(&before, &after));             /* every patch undone */
-		CHECK(rd(SPARE_SLOT) == SPARE_STUB);
+		g_cfg.shim_inline_pid = g;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		pokes = fake_lv2_poke_count;
+		kshim_remove();
+		CHECK(fake_lv2_poke_count - pokes == n);
+		apply_start = pokes - n;
+
+		for (i = 0; i < n; i++)
+			CHECK(fail_at(apply_start + i, g) == 0);
 	}
-	CHECK(fake_lv2_out_of_bounds == 0);
+
+	/* the data block: its first qword the blob does not already hold (the blob
+	 * ships magic/version; orig_event at +16 is zero in it). Pokes 1-2 borrow and
+	 * restore the spare slot, then BLOB_LEN/8 blob qwords. */
+	CHECK(offsetof(ds45_shim_data_t, orig_event) == 16);
+	CHECK(fail_at(2 + DS45_SHIM_BLOB_LEN / 8 + 2, 0) == 0);
+
+	/* a blob qword well into the copy whose written value is non-zero */
+	for (off = 64; off < DS45_SHIM_OFF_DATA; off += 8)
+		if (blob_q(off) != 0 || is_reloc(off))
+			break;
+	CHECK(off < DS45_SHIM_OFF_DATA);
+	CHECK(fail_at(2 + (int)(off / 8), 0) == 0);
 	return 0;
 }
 
 /* The ENABLE_SHIM gate. With the flag off - its default - the installer does
- * nothing at all: no read (not even the fingerprint), no write, no allocation,
- * nothing recorded, even on a kernel whose row matches and would install. It runs
- * only once the config turns it on. */
+ * nothing at all: no read (not even the fingerprint), no write, no allocation. */
 static int test_install_is_gated_by_enable_shim(void)
 {
 	int peeks, pokes;
@@ -627,24 +722,21 @@ static int test_install_is_gated_by_enable_shim(void)
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_OFF);
 	CHECK(fake_lv2_peek_count == peeks);             /* the kernel was not touched */
 	CHECK(fake_lv2_poke_count == pokes);
-	CHECK(g_spare_calls == 0);                       /* the spare syscall was not borrowed */
-	CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
+	CHECK(g_spare_calls == 0);
+	CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
+	CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
 	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
-	CHECK(rd(SPARE_SLOT) == SPARE_STUB);
-	CHECK(rd(PID0_QA) == PID0_Q && rd(PID1_QA) == PID1_Q && rd(PID2_QA) == PID2_Q);
-	CHECK(kshim_set_connection(0x2A, 0x1234) == -1); /* nothing is installed */
+	CHECK(rd(HELPER_QA) == HELPER_Q);
 	kshim_remove();                                  /* harmless */
-	CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
+	CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
 
 	/* the same row and the same image install as soon as the flag is set */
 	g_cfg.enable_shim = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(rd(STARTUP_SLOT) == BLOB_BASE + DS45_SHIM_OFF_STARTUP);
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
 	kshim_remove();
 
-	/* kshim_install(), the built-in-table entry point the plugin's start-up calls,
-	 * is gated the same way: off, it reads nothing; on, it goes looking for its row
-	 * (the synthetic image matches none of the built-in fingerprints) */
+	/* kshim_install(), the built-in-table entry point, is gated the same way */
 	g_cfg.enable_shim = 0;
 	peeks = fake_lv2_peek_count;
 	CHECK(kshim_install() == KSHIM_OFF);
@@ -656,121 +748,45 @@ static int test_install_is_gated_by_enable_shim(void)
 	return 0;
 }
 
-static int test_second_install_adopts(void)
-{
-	int pokes;
-
-	setup();
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-
-	/* a second install finds the redirects already pointing at a blob whose
-	 * data block carries the magic: it adopts and writes nothing */
-	g_spare_calls = 0;
-	pokes = fake_lv2_poke_count;
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
-	CHECK(fake_lv2_poke_count == pokes);   /* zero pokes */
-	CHECK(g_spare_calls == 0);             /* nothing re-allocated */
-	CHECK(rd(STARTUP_SLOT) == BLOB_BASE + DS45_SHIM_OFF_STARTUP);
-
-	kshim_remove();
-	return 0;
-}
-
-static int test_remove_restores(void)
+/* A second install finds the event slot pointing at a blob (with the enable and
+ * input slots at the same base) whose data block carries the magic and this
+ * version: it adopts it and writes nothing. */
+static int test_adopt_via_event_slot(void)
 {
 	struct snap before, after;
 	int pokes;
 
 	setup();
-	take_snap(&before);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(rd(STARTUP_SLOT) != before.startup);   /* really changed */
-	CHECK(rd(PID0_QA) != PID0_Q && rd(PID1_QA) != PID1_Q && rd(PID2_QA) != PID2_Q);
 
-	/* the journal holds one entry per patch - the three product-ID patches and the
-	 * two redirects - so remove writes back exactly five qwords */
+	g_spare_calls = 0;
 	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	CHECK(fake_lv2_poke_count == pokes);   /* zero pokes */
+	CHECK(g_spare_calls == 0);             /* nothing re-allocated */
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+
+	/* removing an adopted install switches the three redirects back */
 	kshim_remove();
-	CHECK(fake_lv2_poke_count - pokes == 5);
-	take_snap(&after);
-	CHECK(snap_eq(&before, &after));             /* redirects and patches back */
-	CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
+	CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
+	CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
 	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
-	CHECK(rd(PID0_QA) == PID0_Q);
-	CHECK(rd(PID1_QA) == PID1_Q);
-	CHECK(rd(PID2_QA) == PID2_Q);
 
-	/* the blob itself is left allocated (a driver thread may be inside it) */
-	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
-
-	/* remove again is a harmless no-op */
-	kshim_remove();
-	CHECK(rd(STARTUP_SLOT) == STARTUP_ORIG);
-	return 0;
-}
-
-/* The built-in table carries exactly the one researched DEX 4.92 row. */
-static int test_builtin_table(void)
-{
-	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
-
-	CHECK(ds45_shim_table_count == 1);
-	CHECK(k->spare_syscall == 149u);
-	CHECK(k->alloc_pool == 0x22ULL);
-
-	/* F4 (note 2026-10-31-ds3-route-pid-patch-fix.md, Option A): exactly three
-	 * product-ID rows, pinned verbatim. The two inline-site rows are WORD patches
-	 * with their finished instruction (cmpwi cr7,r0,0x0CE6 and b 0x11B234); only
-	 * the helper's entry is a BRANCH, whose target is filled in at install time.
-	 * A BRANCH at the inline site is the bug that wedged the console. */
-	CHECK(DS45_SHIM_PID_PATCHES == 3);
-	CHECK(sizeof k->pid_patches / sizeof k->pid_patches[0] == 3);
-	CHECK(k->pid_patches[0].kind == DS45_KPATCH_WORD);
-	CHECK(k->pid_patches[0].addr == 0x800000000011B5E4ULL);
-	CHECK(k->pid_patches[0].expect == 0xE8ADD0EDF3B2B3C1ULL);
-	CHECK(k->pid_patches[0].value == 0x2F800CE6ULL);
-	CHECK(k->pid_patches[1].kind == DS45_KPATCH_WORD);
-	CHECK(k->pid_patches[1].addr == 0x800000000011B5ECULL);
-	CHECK(k->pid_patches[1].expect == 0xF86140C9C3D7FB8DULL);
-	CHECK(k->pid_patches[1].value == 0x4BFFFC48ULL);
-	CHECK(k->pid_patches[2].kind == DS45_KPATCH_BRANCH);
-	CHECK(k->pid_patches[2].addr == 0x800000000029E2B4ULL);
-	CHECK(k->pid_patches[2].expect == 0xF1B8B3EFF22A78FCULL);
-	CHECK(k->pid_patches[2].value == 0);                    /* filled at install */
-
-	/* the kernel's BT-HID transfer routine h116ef0 (note P1/P4): its entry, and
-	 * the one kernel TOC every OPD on this firmware carries (fact sheet header) */
-	CHECK(ds45_shim_table[0].send_entry == 0x8000000000116EF0ULL);
-	CHECK(ds45_shim_table[0].send_toc == 0x80000000003759C0ULL);
-	CHECK(ds45_shim_table[0].send_toc == KERNEL_TOC);
-	return 0;
-}
-
-/* A row with no transfer routine installs, but leaves the descriptor and the
- * pointer to it zero - the shim's DualSense start-up then fails safe. */
-static int test_install_without_send_routine(void)
-{
-	uint8_t db[304];
-	int i;
-
+	/* a blob whose enable slot is not at the event slot's base is not ours */
 	setup();
-	g_ent.send_entry = 0;
-	g_ent.send_toc = 0;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-
-	CHECK(sizeof(ds45_shim_data_t) == sizeof db);
-	CHECK(ds45_lv2_read_bytes(BLOB_BASE + DS45_SHIM_OFF_DATA, db, (int)sizeof db) == 0);
-	CHECK(be64b(db + offsetof(ds45_shim_data_t, send_routine)) == 0);
-	for (i = 0; i < 3; i++)
-		CHECK(be64b(db + offsetof(ds45_shim_data_t, send_opd) + 8 * i) == 0);
-
-	kshim_remove();
+	put_q(ENABLE_SLOT, ENABLE_ORIG);
+	take_snap(&before);
+	pokes = fake_lv2_poke_count;
+	g_spare_calls = 0;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+	CHECK(fake_lv2_poke_count == pokes);
+	take_snap(&after);
+	CHECK(snap_eq(&before, &after));
 	return 0;
 }
 
-/* A blob left by a build with a different data-block layout is NOT adopted: the
- * plugin would reach into it at offsets that blob does not use. Nothing is
- * written; the install is refused. */
+/* A blob left by a build with a different data-block layout is NOT adopted. */
 static int test_adopt_requires_the_same_version(void)
 {
 	int pokes;
@@ -789,9 +805,9 @@ static int test_adopt_requires_the_same_version(void)
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
 	CHECK(fake_lv2_poke_count == pokes);   /* zero pokes */
 	CHECK(g_spare_calls == 0);             /* nothing allocated */
-	CHECK(rd(STARTUP_SLOT) == BLOB_BASE + DS45_SHIM_OFF_STARTUP);   /* left as found */
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);   /* left as found */
 
-	/* the current version is adopted (test_second_install_adopts) */
+	/* the current version is adopted */
 	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + 8,
 	      ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
@@ -799,345 +815,154 @@ static int test_adopt_requires_the_same_version(void)
 	return 0;
 }
 
-/* ----- kshim_set_connection: the plugin-side cache of the per-connection id ----- */
-
-#define CONN_A  0x0123456789ABCDEFULL
-#define CONN_B  0xFEDCBA9876543210ULL
-#define CONN_C  0x00000000DEADBEEFULL
-
-static uint64_t db_field(size_t off)
+static int test_remove_restores_all(void)
 {
-	return rd(BLOB_BASE + DS45_SHIM_OFF_DATA + off);
+	struct snap before, after;
+	int pokes, g;
+
+	for (g = 0; g < 2; g++) {
+		setup();
+		g_cfg.shim_inline_pid = g;
+		take_snap(&before);
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		CHECK(rd(EVENT_SLOT) != EVENT_ORIG && rd(ENABLE_SLOT) != ENABLE_ORIG);
+		CHECK(rd(INPUT_SLOT) != INPUT_ORIG && rd(HELPER_QA) != HELPER_Q);
+		CHECK(g ? rd(PID0_QA) != PID0_Q : rd(PID0_QA) == PID0_Q);
+
+		/* one entry per patch: helper, [two inline,] event, enable, input */
+		pokes = fake_lv2_poke_count;
+		kshim_remove();
+		CHECK(fake_lv2_poke_count - pokes == (g ? 6 : 4));
+		take_snap(&after);
+		CHECK(snap_eq(&before, &after));
+		CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
+		CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
+		CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+		CHECK(rd(HELPER_QA) == HELPER_Q);
+		CHECK(rd(PID0_QA) == PID0_Q && rd(PID1_QA) == PID1_Q);
+
+		/* the blob itself is left allocated (a driver thread may be inside it) */
+		CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
+
+		/* remove again is a harmless no-op */
+		pokes = fake_lv2_poke_count;
+		kshim_remove();
+		CHECK(fake_lv2_poke_count == pokes);
+	}
+	return 0;
 }
 
-static uint64_t slot_key(int i)
+/* A WORD row is a finished instruction: it lands verbatim whatever address the
+ * blob was given, while the redirects follow the load base. */
+static int test_word_rows_do_not_follow_the_load_base(void)
 {
-	return db_field(offsetof(ds45_shim_data_t, conn_key) + 8 * (size_t)i);
-}
-
-static uint64_t slot_id(int i)
-{
-	return db_field(offsetof(ds45_shim_data_t, conn_id) + 8 * (size_t)i);
-}
-
-/* The blob's count of start-up sends for slot i (start_tries[] is a qword per
- * slot, so the plugin can zero one without touching its neighbours). */
-static uint64_t slot_tries(int i)
-{
-	return db_field(offsetof(ds45_shim_data_t, start_tries) + 8 * (size_t)i);
-}
-
-/* What the blob does as it sends: bump the slot's count. Used to put the live
- * block in a state the plugin has to deal with - a spent budget, or the stale
- * count a slot's previous occupant left behind. */
-static void blob_sent(int i, uint64_t n)
-{
-	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, start_tries) +
-	      8 * (size_t)i, n);
-}
-
-/* conn_state[] is DS45_SHIM_CONNS bytes = one big-endian qword: byte 0 is its
- * most significant byte. */
-static int slot_state(int i)
-{
-	return (int)((db_field(offsetof(ds45_shim_data_t, conn_state)) >>
-	              (56 - 8 * i)) & 0xFF);
-}
-
-/* Nothing in the data block outside the per-connection arrays changed. */
-static int rest_of_block_intact(void)
-{
-	uint8_t db[304];
-	const uint8_t *cfg;
+	static const uint64_t base[2] = { BLOB_BASE, BLOB_BASE + 0x40000 };
+	uint64_t h[2], ev[2];
 	int i;
 
-	CHECK_SUB(sizeof(ds45_shim_data_t) == sizeof db ? 0 : __LINE__);
-	CHECK_SUB(ds45_lv2_read_bytes(BLOB_BASE + DS45_SHIM_OFF_DATA, db,
-	                              (int)sizeof db) == 0 ? 0 : __LINE__);
-	/* in the tests that use this the blob never ran, so every budget is full */
-	for (i = 0; i < DS45_SHIM_CONNS; i++)
-		CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, start_tries) + 8 * i) ==
-		          0 ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
-	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) ==
-	          DS45_SHIM_VERSION ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_startup)) ==
-	          STARTUP_ORIG ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_input)) ==
-	          INPUT_ORIG ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, send_routine)) ==
-	          BLOB_BASE + DS45_SHIM_OFF_DATA +
-	          offsetof(ds45_shim_data_t, send_opd) ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, send_opd)) ==
-	          SEND_ENTRY ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, send_opd) + 8) ==
-	          SEND_TOC ? 0 : __LINE__);
-	cfg = db + offsetof(ds45_shim_data_t, cfg);
-	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, deadzone)] == 12 ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pdu)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_startups)) == 0 ? 0 : __LINE__);
+	for (i = 0; i < 2; i++) {
+		setup();
+		g_alloc_ret = base[i];
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		h[i] = rd(HELPER_QA);
+		ev[i] = rd(EVENT_SLOT);
+		kshim_remove();
+	}
+	CHECK(h[0] == ((HELPER_Q & HI32) | HELPER_WORD) && h[1] == h[0]);
+	CHECK(ev[0] == base[0] + DS45_SHIM_OFF_EVENT);
+	CHECK(ev[1] == base[1] + DS45_SHIM_OFF_EVENT);
 	return 0;
 }
 
-static int test_set_connection_needs_an_install(void)
+/* The DS3 info block of the facts note, section C1.5 (Bluetooth variant). */
+static const uint8_t c15_template[0x56] = {
+	0x00, 0x05, 0x03, 0x50, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x01, 0x8A, 0x01, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0xFA,
+	0x01, 0x8E, 0x02, 0x00, 0x01, 0x91, 0x02, 0x00,
+	0x01, 0x8D, 0x01, 0xE6, 0x00, 0x00, 0x02, 0x6D,
+	0x02, 0x70, 0x01, 0x01, 0x01, 0x00
+};
+
+/* The built-in table carries exactly the one researched DEX 4.92 row. */
+static int test_builtin_table(void)
 {
-	int pokes;
+	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
+	int i;
 
-	setup();
-	pokes = fake_lv2_poke_count;
-	CHECK(kshim_set_connection(0x2A, CONN_A) == -1);   /* nothing installed yet */
-	CHECK(fake_lv2_poke_count == pokes);
+	CHECK(ds45_shim_table_count == 1);
+	CHECK(k->spare_syscall == 149u);
+	CHECK(k->alloc_pool == 0x22ULL);
 
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	kshim_remove();
-	pokes = fake_lv2_poke_count;
-	CHECK(kshim_set_connection(0x2A, CONN_A) == -1);   /* removed again */
-	CHECK(fake_lv2_poke_count == pokes);
-	return 0;
-}
+	CHECK(k->event_slot == 0x800000000037CFF8ULL);
+	CHECK(k->event_expect == 0x800000000033A2B0ULL);
+	CHECK(k->event_code_addr == 0x80000000000CACF0ULL);
+	CHECK(k->event_code_hash == 0x16E42A0B1EBFEFFAULL);
+	CHECK(k->enable_slot == 0x800000000037CFB0ULL);
+	CHECK(k->enable_expect == 0x800000000033A310ULL);
+	CHECK(k->enable_code_addr == 0x80000000000CB234ULL);
+	CHECK(k->enable_code_hash == 0xEF8C3F93F63DFDB3ULL);
+	CHECK(k->input_slot == 0x800000000037CE38ULL);
+	CHECK(k->input_expect == 0x800000000033A010ULL);
+	CHECK(k->pad_vtable == 0x800000000038CDC8ULL);
+	CHECK(k->pad_mgr == 0x80000000004A1CB8ULL);
 
-static int test_set_connection_fills_the_slot(void)
-{
-	int i, pokes;
+	/* the template is the facts note's C1.5 array, identity bytes zero */
+	CHECK(k->info_tmpl != NULL);
+	CHECK(memcmp(k->info_tmpl, c15_template, DS45_SHIM_INFO_LEN) == 0);
+	for (i = 8; i < 16; i++)
+		CHECK(k->info_tmpl[i] == 0);
 
-	setup();
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-
-	/* a new handle takes the first free slot: its handle, its id, state = 1 */
-	CHECK(kshim_set_connection(0x2A, CONN_A) == 0);
-	CHECK(slot_key(0) == 0x2A);
-	CHECK(slot_id(0) == CONN_A);                       /* all 64 bits */
-	CHECK(slot_state(0) == 1);
-	for (i = 1; i < DS45_SHIM_CONNS; i++)
-		CHECK(slot_key(i) == 0 && slot_id(i) == 0 && slot_state(i) == 0);
-
-	/* another handle, the next free slot */
-	CHECK(kshim_set_connection(0x2B, CONN_B) == 0);
-	CHECK(slot_key(1) == 0x2B && slot_id(1) == CONN_B && slot_state(1) == 1);
-	CHECK(slot_id(0) == CONN_A && slot_state(0) == 1); /* the first is untouched */
-	CHECK(slot_state(2) == 0);
-
-	/* the same handle again (the pad reconnected): updated in place, no new slot */
-	CHECK(kshim_set_connection(0x2A, CONN_C) == 0);
-	CHECK(slot_id(0) == CONN_C && slot_key(0) == 0x2A && slot_state(0) == 1);
-	CHECK(slot_state(2) == 0);
-
-	/* a zero id forgets the handle: its state goes to 0 so the shim stops
-	 * matching it; the other connection is untouched */
-	CHECK(kshim_set_connection(0x2A, 0) == 0);
-	CHECK(slot_state(0) == 0);
-	CHECK(slot_id(1) == CONN_B && slot_key(1) == 0x2B && slot_state(1) == 1);
-
-	/* forgetting a handle that is not recorded writes nothing */
-	pokes = fake_lv2_poke_count;
-	CHECK(kshim_set_connection(0x99, 0) == 0);
-	CHECK(fake_lv2_poke_count == pokes);
-
-	/* the freed slot is reused */
-	CHECK(kshim_set_connection(0x3C, CONN_A) == 0);
-	CHECK(slot_key(0) == 0x3C && slot_id(0) == CONN_A && slot_state(0) == 1);
-
-	/* nothing outside the per-connection arrays moved, and nothing wild */
-	CHECK(rest_of_block_intact() == 0);
-	CHECK(fake_lv2_out_of_bounds == 0);
-	kshim_remove();
-	return 0;
-}
-
-static int test_set_connection_table_full(void)
-{
-	int i, pokes;
-
-	setup();
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-
-	for (i = 0; i < DS45_SHIM_CONNS; i++)
-		CHECK(kshim_set_connection((uint8_t)(0x10 + i), CONN_A + (uint64_t)i) == 0);
-
-	/* a ninth handle has no slot: refused without a write ... */
-	pokes = fake_lv2_poke_count;
-	CHECK(kshim_set_connection(0x77, CONN_B) == -1);
-	CHECK(fake_lv2_poke_count == pokes);
-	/* ... while an existing one still updates in place */
-	CHECK(kshim_set_connection(0x13, CONN_B) == 0);
-	CHECK(slot_id(3) == CONN_B && slot_key(3) == 0x13);
-	for (i = 0; i < DS45_SHIM_CONNS; i++)
-		CHECK(slot_state(i) == 1);
-
-	CHECK(rest_of_block_intact() == 0);
-	kshim_remove();
-	return 0;
-}
-
-/* A slot becomes visible to the shim only when its state byte is set, and that
- * is written last - after its id, its handle and the re-arm of its send budget:
- * if any earlier write does not stick, the shim never sees a half-written
- * connection (nor one that would start with a stale, possibly spent, budget). */
-static int test_set_connection_publishes_last(void)
-{
-	setup();
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-
-	/* slot 0 still carries a count its previous occupant left behind, so a
-	 * dropped re-arm is visible (a dropped write of 0 over 0 would read back) */
-	blob_sent(0, 6);
-
-	/* the id lands, the handle write is dropped */
-	fake_lv2_poke_fail_after = fake_lv2_poke_count + 1;
-	CHECK(kshim_set_connection(0x2A, CONN_A) == -1);
-	fake_lv2_poke_fail_after = -1;
-	CHECK(slot_state(0) == 0);
-
-	/* the id and the handle land, the re-arm is dropped */
-	fake_lv2_poke_fail_after = fake_lv2_poke_count + 2;
-	CHECK(kshim_set_connection(0x2A, CONN_A) == -1);
-	fake_lv2_poke_fail_after = -1;
-	CHECK(slot_state(0) == 0);
-	CHECK(slot_tries(0) == 6);                 /* really not re-armed */
-
-	/* the id, the handle and the re-arm land, the state write is dropped: the
-	 * slot is armed but still not visible */
-	fake_lv2_poke_fail_after = fake_lv2_poke_count + 3;
-	CHECK(kshim_set_connection(0x2A, CONN_A) == -1);
-	fake_lv2_poke_fail_after = -1;
-	CHECK(slot_state(0) == 0);
-	CHECK(slot_tries(0) == 0);
-
-	/* and it works once the writes stick */
-	CHECK(kshim_set_connection(0x2A, CONN_A) == 0);
-	CHECK(slot_state(0) == 1 && slot_id(0) == CONN_A && slot_key(0) == 0x2A);
-	CHECK(slot_tries(0) == 0);
-
-	/* forgetting clears the state FIRST: a dropped write leaves the slot
-	 * still matching rather than half-torn-down... */
-	fake_lv2_poke_fail_after = fake_lv2_poke_count;    /* every poke dropped */
-	CHECK(kshim_set_connection(0x2A, 0) == -1);
-	fake_lv2_poke_fail_after = -1;
-	CHECK(slot_state(0) == 1 && slot_id(0) == CONN_A);
-
-	/* ... and a clean forget stops the shim matching it */
-	CHECK(kshim_set_connection(0x2A, 0) == 0);
-	CHECK(slot_state(0) == 0);
-
-	kshim_remove();
-	return 0;
-}
-
-/* The shim sends its start-up GET at most SHIM_START_TRIES_MAX times per slot
- * (the blob counts them in start_tries[slot]; shim.c's own tests cover the cap).
- * kshim_set_connection is what gives a connection a fresh budget: it zeroes the
- * slot's count - one qword, no neighbour touched - when it publishes a new
- * connection, and when a handle comes back with a different id. The same
- * connection reported again changes nothing, so a caller that reports it on
- * every rescan cannot keep refilling the budget. */
-static int test_set_connection_rearms_the_send_budget(void)
-{
-	int pokes;
-
-	setup();
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-
-	/* a first connection starts with a full budget; the shim then spends it all */
-	CHECK(kshim_set_connection(0x2A, CONN_A) == 0);
-	CHECK(slot_tries(0) == 0);
-	blob_sent(0, 8);
-
-	/* the same connection reported again: no write at all, budget not refilled */
-	pokes = fake_lv2_poke_count;
-	CHECK(kshim_set_connection(0x2A, CONN_A) == 0);
-	CHECK(fake_lv2_poke_count == pokes);
-	CHECK(slot_tries(0) == 8);
-
-	/* the handle comes back with a new id (the pad reconnected): that is a new
-	 * connection, so slot 0's budget is refilled - and only slot 0's. Slots 1
-	 * and 2 hold counts the blob left on them; slot 1 is not in use. */
-	blob_sent(1, 5);
-	blob_sent(2, 8);
-	CHECK(kshim_set_connection(0x2A, CONN_B) == 0);
-	CHECK(slot_id(0) == CONN_B && slot_state(0) == 1);
-	CHECK(slot_tries(0) == 0);
-	CHECK(slot_tries(1) == 5 && slot_tries(2) == 8);
-
-	/* a new connection taking a free slot whose previous occupant left a count
-	 * behind (slot 1: 5) starts with a full budget */
-	CHECK(kshim_set_connection(0x2B, CONN_C) == 0);
-	CHECK(slot_key(1) == 0x2B && slot_state(1) == 1);
-	CHECK(slot_tries(1) == 0);
-	CHECK(slot_tries(0) == 0 && slot_tries(2) == 8);   /* neighbours untouched */
-
-	/* forgetting a connection leaves its count alone; publishing the handle
-	 * again is a new connection and refills it */
-	blob_sent(1, 4);
-	CHECK(kshim_set_connection(0x2B, 0) == 0);
-	CHECK(slot_state(1) == 0 && slot_tries(1) == 4);
-	CHECK(kshim_set_connection(0x2B, CONN_C) == 0);
-	CHECK(slot_state(1) == 1 && slot_tries(1) == 0);
-
-	CHECK(fake_lv2_out_of_bounds == 0);
-	kshim_remove();
+	/* acceptance: the helper word always, the two inline words only with
+	 * SHIM_INLINE_PID - all WORD rows, never a branch */
+	CHECK(DS45_SHIM_PID_PATCHES == 1);
+	CHECK(DS45_SHIM_INLINE_PATCHES == 2);
+	CHECK(k->pid_patches[0].kind == DS45_KPATCH_WORD);
+	CHECK(k->pid_patches[0].addr == 0x800000000029E2CCULL);
+	CHECK(k->pid_patches[0].expect == 0x8D1047F832C76096ULL);
+	CHECK(k->pid_patches[0].value == 0x68800CE6ULL);
+	CHECK(k->inline_patches[0].kind == DS45_KPATCH_WORD);
+	CHECK(k->inline_patches[0].addr == 0x800000000011B5E4ULL);
+	CHECK(k->inline_patches[0].expect == 0xE8ADD0EDF3B2B3C1ULL);
+	CHECK(k->inline_patches[0].value == 0x2F800CE6ULL);
+	CHECK(k->inline_patches[1].kind == DS45_KPATCH_WORD);
+	CHECK(k->inline_patches[1].addr == 0x800000000011B5ECULL);
+	CHECK(k->inline_patches[1].expect == 0xF86140C9C3D7FB8DULL);
+	CHECK(k->inline_patches[1].value == 0x4BFFFC48ULL);
 	return 0;
 }
 
 int run_tests(void)
 {
+	int (*const tests[])(void) = {
+		test_blob_tail_is_the_data_block,
+		test_no_entry_writes_nothing,
+		test_install_writes_v3,
+		test_inline_rows_gated,
+		test_event_code_hash_mismatch,
+		test_enable_code_hash_mismatch,
+		test_enable_slot_mismatch,
+		test_install_fails_each_step,
+		test_rollback_each_step,
+		test_install_is_gated_by_enable_shim,
+		test_adopt_via_event_slot,
+		test_adopt_requires_the_same_version,
+		test_remove_restores_all,
+		test_word_rows_do_not_follow_the_load_base,
+		test_builtin_table,
+	};
+	unsigned i;
 	int line;
 
-	line = test_blob_tail_is_the_data_block();
-	if (line)
-		return line;
-	line = test_no_entry_writes_nothing();
-	if (line)
-		return line;
-	line = test_install_happy_path();
-	if (line)
-		return line;
-	line = test_install_fails_each_step();
-	if (line)
-		return line;
-	line = test_install_refuses_each_unexpected_pid_site();
-	if (line)
-		return line;
-	line = test_word_rows_do_not_follow_the_load_base();
-	if (line)
-		return line;
-	line = test_install_rolls_back_a_partial_patch();
-	if (line)
-		return line;
-	line = test_install_is_gated_by_enable_shim();
-	if (line)
-		return line;
-	line = test_second_install_adopts();
-	if (line)
-		return line;
-	line = test_remove_restores();
-	if (line)
-		return line;
-	line = test_builtin_table();
-	if (line)
-		return line;
-	line = test_install_without_send_routine();
-	if (line)
-		return line;
-	line = test_adopt_requires_the_same_version();
-	if (line)
-		return line;
-	line = test_set_connection_needs_an_install();
-	if (line)
-		return line;
-	line = test_set_connection_fills_the_slot();
-	if (line)
-		return line;
-	line = test_set_connection_table_full();
-	if (line)
-		return line;
-	line = test_set_connection_publishes_last();
-	if (line)
-		return line;
-	line = test_set_connection_rearms_the_send_budget();
-	if (line)
-		return line;
-
+	for (i = 0; i < sizeof(tests) / sizeof(tests[0]); i++) {
+		line = tests[i]();
+		if (line)
+			return line;
+	}
 	return 0;
 }

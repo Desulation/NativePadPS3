@@ -322,6 +322,11 @@ typedef struct {
 	 * installs it on its own: ds45pad.txt has to say ENABLE_SHIM = 1. That is also
 	 * the way out of a hang - remove the line (or set it to 0) and reboot. */
 	int      enable_shim;
+	/* SHIM_INLINE_PID (0/1, VSH builds only): with the shim installed, also
+	 * edit the kernel's inline product-ID compare (two instruction words) and not
+	 * only its helper. Off by default; the console test decides whether the
+	 * DualSense needs it. */
+	int      shim_inline_pid;
 #ifdef DS45_LV2DUMP
 	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
 	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */

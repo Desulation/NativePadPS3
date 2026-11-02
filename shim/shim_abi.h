@@ -16,12 +16,14 @@
 #include <stdint.h>
 
 #define DS45_SHIM_MAGIC   0x4453343553484D31ULL   /* "DS45SHM1" */
-/* 2: appended send_opd, conn_id, pdu and start_tries (the start-up
- * feature-0x05 GET), and get_report became send_routine. The installer adopts a
- * blob left by an earlier load only if its version matches, since the plugin
- * reaches into the data block by these offsets. */
-#define DS45_SHIM_VERSION 2
-#define DS45_SHIM_CONNS   8
+/* 3: the start-up completion layout (event and enable hooks, pad identity, the
+ * DS3 info template); every v2 connection, send and start-up field is gone. The
+ * installer adopts a blob left by an earlier load only if its version matches,
+ * since the plugin reaches into the data block by these offsets. */
+#define DS45_SHIM_VERSION 3
+/* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
+ * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
+#define DS45_SHIM_INFO_LEN 0x56
 
 typedef struct {
 	uint8_t deadzone;              /* STICK_DEADZONE, percent of half travel */
@@ -32,34 +34,20 @@ typedef struct {
 
 typedef struct {
 	uint64_t magic; uint32_t version; uint32_t enabled;
-	uint64_t orig_startup, orig_input;   /* original descriptors (F1, F2) */
-	/* The address of the function descriptor the shim calls the kernel's
-	 * Bluetooth HID transfer routine (note P1: int h116ef0(u64 conn_id, int dir,
-	 * int opclass, void *buf, int len)) through; 0 = none. That routine has no
-	 * descriptor of its own in the kernel, so the installer builds one in
-	 * send_opd below and points this at it. It replaces the former get_report
-	 * slot. */
-	uint64_t send_routine;
+	/* The kernel's original descriptors the hooks tail-call: the start-up
+	 * driver's event handler (slot 0x37CFF8), the enable driver's event handler
+	 * (slot 0x37CFB0) and the Bluetooth transport's input read (slot 0x37CE38). */
+	uint64_t orig_event, orig_enable, orig_input;
+	uint64_t pad_vtable;           /* the Sony pad class: 0x800000000038CDC8 on DEX 4.92 */
+	uint64_t pad_mgr;              /* address of the pad-manager pointer: 0x80000000004A1CB8 */
 	ds45_shim_cfg_t cfg;
-	uint64_t conn_key[DS45_SHIM_CONNS];  /* per-connection identity (F1/F2) */
-	uint8_t  conn_state[DS45_SHIM_CONNS];
-	uint32_t stat_translated, stat_passed, stat_startups; /* debug counters */
-
-	/* --- version 2: appended, so every offset above is unchanged --------- */
-	uint64_t send_opd[3];                /* { entry, toc, env } of that routine, ELFv1; env 0 */
-	/* The value the transfer routine takes as its connection id, per slot
-	 * (valid when conn_state[i] != 0). The blob passes it through untouched;
-	 * the plugin records it when the connection comes up (kshim_set_connection). */
-	uint64_t conn_id[DS45_SHIM_CONNS];
-	uint8_t  pdu[8];                     /* the request PDU the start-up builds and sends */
-	/* How many times the start-up has sent its GET for each slot - written by
-	 * the blob, one qword per slot so the plugin can zero one slot's count with
-	 * a single aligned write and no read-modify-write of its neighbours. The
-	 * driver may call the start-up again and again for one connection, so the
-	 * blob stops sending when a slot's count reaches SHIM_START_TRIES_MAX
-	 * (shim.h); kshim_set_connection zeroes it (re-arms the slot) before it
-	 * publishes a connection. */
-	uint64_t start_tries[DS45_SHIM_CONNS];
+	/* Debug counters, written by the blob. stat_completed also numbers the
+	 * DualSense identities: the first DualSense of a boot gets 1. */
+	uint32_t stat_completed;
+	uint32_t stat_enabled, stat_translated, stat_passed;
+	/* The DS3 info template; the first DS45_SHIM_INFO_LEN bytes are used and its
+	 * identity bytes (index 0x08..0x0F) are zero - the blob writes them per pad. */
+	uint8_t  info_tmpl[0x58];
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */

@@ -81,19 +81,21 @@ class ElfBuilder(object):
         self.text_addr = 0x0
         self.text = bytearray(0x100)            # code bytes are opaque here
         self.opd_addr = 0x100
-        self.toc_addr = 0x148
+        self.toc_addr = 0x160
         self.toc = bytearray()
-        self.data_addr = 0x150
+        self.data_addr = 0x168
         self.data = bytearray(144)              # ds45_shim_data image
 
         # Code layout inside .text (addr, size).
         self.code = {
-            "shim_startup": (0x00, 0x40),
+            "shim_event": (0x00, 0x40),
             "shim_input": (0x40, 0x40),
             "shim_pid_ok": (0x80, 0x10),
+            "shim_enable": (0xC0, 0x40),
         }
-        # Descriptors in .opd order: startup, input, pid_ok.
-        self._desc_order = ["shim_startup", "shim_input", "shim_pid_ok"]
+        # Descriptors in .opd order: event, enable, input, pid_ok.
+        self._desc_order = ["shim_event", "shim_enable", "shim_input",
+                            "shim_pid_ok"]
 
         self.sym = []     # list of dicts
         self.symidx = {}  # name -> index
@@ -105,7 +107,7 @@ class ElfBuilder(object):
                       self.I_OPD)
         self._add_sym(".data", self.data_addr, 0, STT_SECTION, STB_LOCAL,
                       self.I_DATA)
-        # The four symbols the header is built from (global). A function's
+        # The five symbols the header is built from (global). A function's
         # value is its .opd descriptor address (the ELFv1 convention).
         for i, n in enumerate(self._desc_order):
             _addr, size = self.code[n]
@@ -265,33 +267,42 @@ class ElfBuilder(object):
         return bytes(blob)
 
 
+# The relocs a clean ElfBuilder image yields: the four descriptors' entry
+# (ADDR64) and TOC words, and the .toc pointer to ds45_shim_data.
+_CLEAN_RELOCS = [0x100, 0x108, 0x118, 0x120, 0x130, 0x138, 0x148, 0x150,
+                 0x160]
+
+
 class PackSuccessTest(unittest.TestCase):
     def test_offsets_and_relocs(self):
         p = shim_pack.pack(ElfBuilder().build())
-        self.assertEqual(p.off_startup, 0x100)
-        self.assertEqual(p.off_input, 0x118)
+        self.assertEqual(p.off_event, 0x100)
+        self.assertEqual(p.off_enable, 0x118)
+        self.assertEqual(p.off_input, 0x130)
         self.assertEqual(p.off_pid_ok, 0x80)   # a code address, not a descriptor
-        self.assertEqual(p.off_data, 0x150)
-        self.assertEqual(p.blob_len, 0x1E0)
+        self.assertEqual(p.off_data, 0x168)
+        self.assertEqual(p.blob_len, 0x1F8)
         self.assertEqual(p.blob_len % 8, 0)
         self.assertEqual(len(p.blob), p.blob_len)
-        # ADDR64 (3 entry words + 1 toc ptr) and TOC (3 descriptor words).
-        self.assertEqual(
-            p.relocs,
-            [0x100, 0x108, 0x118, 0x120, 0x130, 0x138, 0x148])
+        # ADDR64 (4 entry words + 1 toc ptr) and TOC (4 descriptor words).
+        self.assertEqual(p.relocs, _CLEAN_RELOCS)
         # The image carries the real descriptor entry words.
         self.assertEqual(struct.unpack(">Q", p.blob[0x100:0x108])[0], 0x00)
-        self.assertEqual(struct.unpack(">Q", p.blob[0x130:0x138])[0], 0x80)
+        self.assertEqual(struct.unpack(">Q", p.blob[0x118:0x120])[0], 0xC0)
+        self.assertEqual(struct.unpack(">Q", p.blob[0x148:0x150])[0], 0x80)
 
     def test_header_text(self):
         p = shim_pack.pack(ElfBuilder().build())
         h = shim_pack.render_header(p, "shim.elf")
-        self.assertIn("#define DS45_SHIM_BLOB_LEN 480", h)
-        self.assertIn("#define DS45_SHIM_RELOC_COUNT 7", h)
-        self.assertIn("#define DS45_SHIM_OFF_DATA 0x150", h)
-        self.assertIn("#define DS45_SHIM_OFF_STARTUP 0x100", h)
-        self.assertIn("#define DS45_SHIM_OFF_INPUT 0x118", h)
+        self.assertIn("#define DS45_SHIM_BLOB_LEN 504", h)
+        self.assertIn("#define DS45_SHIM_RELOC_COUNT 9", h)
+        self.assertIn("#define DS45_SHIM_OFF_DATA 0x168", h)
+        self.assertIn("#define DS45_SHIM_OFF_EVENT 0x100", h)
+        self.assertIn("#define DS45_SHIM_OFF_ENABLE 0x118", h)
+        self.assertIn("#define DS45_SHIM_OFF_INPUT 0x130", h)
         self.assertIn("#define DS45_SHIM_OFF_PID_OK 0x80", h)
+        # The v2 start-up hook is gone.
+        self.assertNotIn("DS45_SHIM_OFF_STARTUP", h)
         self.assertIn("static const uint8_t  ds45_shim_blob[]", h)
         self.assertIn("static const uint32_t ds45_shim_relocs[]", h)
 
@@ -305,8 +316,8 @@ class TocRebaseTest(unittest.TestCase):
 
     def test_toc_word_is_rebased(self):
         p = shim_pack.pack(ElfBuilder().build())
-        # 0x108/0x120/0x138 are the descriptors' R_PPC64_TOC words.
-        for toc_off in (0x108, 0x120, 0x138):
+        # 0x108/0x120/0x138/0x150 are the descriptors' R_PPC64_TOC words.
+        for toc_off in (0x108, 0x120, 0x138, 0x150):
             self.assertIn(toc_off, p.relocs)
 
 
@@ -316,15 +327,13 @@ class TocRelativeDropTest(unittest.TestCase):
 
     def test_toc16_outside_pidok_is_dropped(self):
         b = ElfBuilder()
-        b.add_text_reloc(0x10, R_PPC64_TOC16_DS, "ds45_shim_data")  # in startup
+        b.add_text_reloc(0x10, R_PPC64_TOC16_DS, "ds45_shim_data")  # in event
         b.add_text_reloc(0x14, R_PPC64_TOC16_HA, "ds45_shim_data")
         p = shim_pack.pack(b.build())
         self.assertNotIn(0x10, p.relocs)
         self.assertNotIn(0x14, p.relocs)
         # Unchanged from the clean build.
-        self.assertEqual(
-            p.relocs,
-            [0x100, 0x108, 0x118, 0x120, 0x130, 0x138, 0x148])
+        self.assertEqual(p.relocs, _CLEAN_RELOCS)
 
 
 class ErrorTest(unittest.TestCase):
@@ -358,6 +367,21 @@ class ErrorTest(unittest.TestCase):
         b.add_text_reloc(0x10, R_PPC64_ADDR32, ".text")
         self._expect_error(b)
 
+    def test_each_required_symbol_is_required(self):
+        # shim_event and shim_enable (the two completion hooks), shim_input,
+        # shim_pid_ok and the data object: renaming any one away is an error.
+        for name in ("shim_event", "shim_enable", "shim_input", "shim_pid_ok",
+                     "ds45_shim_data"):
+            b = ElfBuilder()
+            b.sym[b.symidx[name]]["name"] = name + "_renamed"
+            self._expect_error(b)
+
+    def test_startup_symbol_is_not_needed(self):
+        # The v2 start-up hook is gone: an image without it packs.
+        b = ElfBuilder()
+        self.assertNotIn("shim_startup", b.symidx)
+        shim_pack.pack(b.build())
+
 
 class MainTest(unittest.TestCase):
     def test_main_writes_header_file(self):
@@ -371,7 +395,7 @@ class MainTest(unittest.TestCase):
             with open(out, "r") as f:
                 h = f.read()
             self.assertIn("#define DS45_SHIM_OFF_PID_OK 0x80", h)
-            self.assertIn("#define DS45_SHIM_RELOC_COUNT 7", h)
+            self.assertIn("#define DS45_SHIM_RELOC_COUNT 9", h)
 
 
 if __name__ == "__main__":

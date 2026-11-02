@@ -16,7 +16,7 @@
  * Licensed under GPLv2 - see LICENSE.
  */
 
-ENTRY(shim_startup)
+ENTRY(shim_event)
 
 SECTIONS
 {

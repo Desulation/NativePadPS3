@@ -94,14 +94,15 @@ class PackError(Exception):
 
 
 class Packed(object):
-    def __init__(self, blob, relocs, off_data, off_startup, off_input,
-                 off_pid_ok):
+    def __init__(self, blob, relocs, off_data, off_event, off_enable,
+                 off_input, off_pid_ok):
         self.blob = blob
         self.blob_len = len(blob)
         self.relocs = relocs
         self.reloc_count = len(relocs)
         self.off_data = off_data
-        self.off_startup = off_startup
+        self.off_event = off_event
+        self.off_enable = off_enable
         self.off_input = off_input
         self.off_pid_ok = off_pid_ok
 
@@ -221,7 +222,8 @@ def pack(data):
                 return sym
         raise PackError("missing required symbol %r" % name)
 
-    off_startup = find("shim_startup")["value"]     # .opd descriptor address
+    off_event = find("shim_event")["value"]          # .opd descriptor address
+    off_enable = find("shim_enable")["value"]        # .opd descriptor address
     off_input = find("shim_input")["value"]          # .opd descriptor address
     off_data = find("ds45_shim_data")["value"]       # data object address
     pidok = find("shim_pid_ok")
@@ -242,8 +244,8 @@ def pack(data):
                 "shim_pid_ok uses the TOC/data (relocation type %d at 0x%x); "
                 "it must run with the kernel's r2" % (rtype, roff))
 
-    return Packed(bytes(image), sorted(set(rebase)), off_data, off_startup,
-                  off_input, off_pid_ok)
+    return Packed(bytes(image), sorted(set(rebase)), off_data, off_event,
+                  off_enable, off_input, off_pid_ok)
 
 
 def render_header(packed, source):
@@ -286,8 +288,10 @@ def render_header(packed, source):
     w("};")
     w("")
     w("#define DS45_SHIM_OFF_DATA 0x%x /* ds45_shim_data_t */" % packed.off_data)
-    w("#define DS45_SHIM_OFF_STARTUP 0x%x /* descriptor of shim_startup */"
-      % packed.off_startup)
+    w("#define DS45_SHIM_OFF_EVENT 0x%x /* descriptor of shim_event */"
+      % packed.off_event)
+    w("#define DS45_SHIM_OFF_ENABLE 0x%x /* descriptor of shim_enable */"
+      % packed.off_enable)
     w("#define DS45_SHIM_OFF_INPUT 0x%x /* descriptor of shim_input */"
       % packed.off_input)
     w("#define DS45_SHIM_OFF_PID_OK 0x%x /* entry (code) of shim_pid_ok */"

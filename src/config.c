@@ -77,6 +77,7 @@ void ds45_config_defaults(ds45_config_t *c)
 	 * ds45pad.txt says ENABLE_SHIM = 1 - deploying the plugin cannot hang the
 	 * console by itself (see ds45pad.h). */
 	c->enable_shim = 0;
+	c->shim_inline_pid = 0;
 #ifdef DS45_LV2DUMP
 	c->dump_lv2 = 0;
 	c->capture_off = 0;
@@ -245,6 +246,10 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		/* VSH builds only: the in-game build has no kernel shim, nor any of its
 		 * strings. Anything but a number leaves the gate shut. */
 		if (parse_int(val, &n)) c->enable_shim = n != 0;
+	} else if (match(key, "SHIM_INLINE_PID")) {
+		/* VSH builds only, like ENABLE_SHIM: also apply the inline product-ID
+		 * words. Any non-zero number turns it on; anything else leaves it off. */
+		if (parse_int(val, &n)) c->shim_inline_pid = n != 0;
 #endif
 #ifdef DS45_LV2DUMP
 	} else if (match(key, "DUMP_LV2")) {
@@ -353,6 +358,7 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	/* Whether the kernel shim may be installed at all: the one setting that
 	 * decides if the plugin ever writes kernel memory. */
 	ds45_boot_mark_hex("cfg_enable_shim", (uint32_t)c->enable_shim);
+	ds45_boot_mark_hex("cfg_shim_inline_pid", (uint32_t)c->shim_inline_pid);
 #endif
 
 	return 0;

@@ -1147,8 +1147,8 @@ static int test_abi_layout(void)
 	/* "DS45SHM1", most significant byte first */
 	for (i = 0; i < 8; i++)
 		CHECK((uint8_t)(DS45_SHIM_MAGIC >> (56 - 8 * i)) == (uint8_t)"DS45SHM1"[i]);
-	CHECK(DS45_SHIM_VERSION == 2);     /* 2: the feature-0x05 GET fields */
-	CHECK(DS45_SHIM_CONNS == 8);
+	CHECK(DS45_SHIM_VERSION == 3);     /* 3: start-up completion, no connection table */
+	CHECK(DS45_SHIM_INFO_LEN == 0x56);
 
 	/* The plugin and the blob compile this header separately and meet in
 	 * memory, so these sizes and offsets are the contract (fixed-width fields
@@ -1166,25 +1166,19 @@ static int test_abi_layout(void)
 	CHECK(offsetof(ds45_shim_data_t, magic) == 0);
 	CHECK(offsetof(ds45_shim_data_t, version) == 8);
 	CHECK(offsetof(ds45_shim_data_t, enabled) == 12);
-	CHECK(offsetof(ds45_shim_data_t, orig_startup) == 16);
-	CHECK(offsetof(ds45_shim_data_t, orig_input) == 24);
-	CHECK(offsetof(ds45_shim_data_t, send_routine) == 32);
-	CHECK(offsetof(ds45_shim_data_t, cfg) == 40);
-	CHECK(offsetof(ds45_shim_data_t, conn_key) == 56);
-	CHECK(offsetof(ds45_shim_data_t, conn_state) == 120);
-	CHECK(offsetof(ds45_shim_data_t, stat_translated) == 128);
-	CHECK(offsetof(ds45_shim_data_t, stat_passed) == 132);
-	CHECK(offsetof(ds45_shim_data_t, stat_startups) == 136);
-	/* version 2 appends after the v1 block, so every v1 offset above is kept */
-	CHECK(offsetof(ds45_shim_data_t, send_opd) == 144);    /* { entry, toc, env } */
-	CHECK(offsetof(ds45_shim_data_t, conn_id) == 168);
-	CHECK(offsetof(ds45_shim_data_t, pdu) == 232);
-	CHECK(offsetof(ds45_shim_data_t, start_tries) == 240); /* blob-written, a qword per slot */
-	CHECK(sizeof(((ds45_shim_data_t *)0)->send_opd) == 24);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->conn_id) == 8 * DS45_SHIM_CONNS);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->pdu) == 8);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->start_tries) == 8 * DS45_SHIM_CONNS);
-	CHECK(sizeof(ds45_shim_data_t) == 304);
+	CHECK(offsetof(ds45_shim_data_t, orig_event) == 16);
+	CHECK(offsetof(ds45_shim_data_t, orig_enable) == 24);
+	CHECK(offsetof(ds45_shim_data_t, orig_input) == 32);
+	CHECK(offsetof(ds45_shim_data_t, pad_vtable) == 40);
+	CHECK(offsetof(ds45_shim_data_t, pad_mgr) == 48);
+	CHECK(offsetof(ds45_shim_data_t, cfg) == 56);
+	CHECK(offsetof(ds45_shim_data_t, stat_completed) == 72);
+	CHECK(offsetof(ds45_shim_data_t, stat_enabled) == 76);
+	CHECK(offsetof(ds45_shim_data_t, stat_translated) == 80);
+	CHECK(offsetof(ds45_shim_data_t, stat_passed) == 84);
+	CHECK(offsetof(ds45_shim_data_t, info_tmpl) == 88);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->info_tmpl) == 0x58);
+	CHECK(sizeof(ds45_shim_data_t) == 176);
 	return 0;
 }
 

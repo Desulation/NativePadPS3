@@ -114,6 +114,31 @@ static int test_shim_key_is_independent_of_enable(void)
 	return 0;
 }
 
+/* SHIM_INLINE_PID selects whether the shim installer also applies the two inline
+ * product-ID words. Off by default; any non-zero number turns it on, anything
+ * that is not a number leaves it off. */
+static int test_shim_inline_pid_key(void)
+{
+	ds45_config_t c;
+
+	ds45_config_defaults(&c);
+	CHECK(c.shim_inline_pid == 0);
+	c = cfg_from("ENABLE_SHIM = 1\n");
+	CHECK(c.shim_inline_pid == 0);
+
+	c = cfg_from("SHIM_INLINE_PID = 1\n");
+	CHECK(c.shim_inline_pid == 1);
+	CHECK(c.enable_shim == 0);                             /* a separate key */
+	c = cfg_from("shim_inline_pid = 7\n");
+	CHECK(c.shim_inline_pid == 1);
+
+	c = cfg_from("SHIM_INLINE_PID = abc\n");
+	CHECK(c.shim_inline_pid == 0);
+	c = cfg_from("SHIM_INLINE_PID = 1\nSHIM_INLINE_PID = 0\n");
+	CHECK(c.shim_inline_pid == 0);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int r;
@@ -123,5 +148,6 @@ int run_tests(void)
 	if ((r = test_shim_can_be_switched_back_off()) != 0) return r;
 	if ((r = test_shim_ignores_what_it_cannot_parse()) != 0) return r;
 	if ((r = test_shim_key_is_independent_of_enable()) != 0) return r;
+	if ((r = test_shim_inline_pid_key()) != 0) return r;
 	return 0;
 }

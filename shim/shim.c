@@ -1,17 +1,25 @@
 /*
- * DS45PAD kernel shim - decision logic (start-up, input, product ID).
+ * DS45PAD kernel shim - decision logic (start-up and enable completion, pad
+ * identity, input, product ID).
  *
  * Built twice, exactly like ds3_report.c: natively by the host tests, and
  * freestanding into the shim blob that runs inside the PS3 kernel's DS3 driver.
  * So no SDK, no libc, no static data (nothing that would leave a .rodata/TOC
  * entry the packer cannot relocate). Each function takes the data block and the
- * already-extracted arguments explicitly, so the kernel-specific work (reading
- * VID/PID, the buffer and the length out of the F1/F2 argument lists) stays in
- * the untested glue in entry.c and these bodies stay pure and testable.
+ * kernel objects explicitly, so the kernel-specific work stays in the thin glue
+ * in entry.c and these bodies stay pure and testable.
  *
- * The interfaces and the conventions used here are shim.h, fact sheet F1-F4 and
- * the GET-primitive note (docs/superpowers/notes/2026-10-31-ds3-route-get-
- * primitive.md, P1-P5). Licensed under GPLv2 - see LICENSE.
+ * Kernel objects are reached in two ways only: pointers (the driver's pad and
+ * info pointers, the manager pointer, the manager's object pointers, the pad's
+ * transport pointer, the pad's class) are read as native u64, which is what they
+ * are on the PPU; everything this code writes, and the VID/PID it compares, is
+ * a single byte at a time in the kernel's big-endian order, so no store depends
+ * on the host's byte order. No sends, no locks, no allocation, no calls into the
+ * kernel, and every loop is bounded by a constant.
+ *
+ * The interfaces are shim.h; the object layouts are the DEX 4.92 ones of the
+ * facts note docs/superpowers/notes/2026-11-02-ds3-route-startup-completion-
+ * facts.md (C1-C3). Licensed under GPLv2 - see LICENSE.
  */
 
 #include "shim.h"
@@ -27,35 +35,160 @@
  * here because the freestanding shim must not pull in ds45_state.h). */
 #define DS_BT_INPUT_ID  0x31
 
+/* The fixed identity bytes after the counter: info+0x0C..+0x0F. 0xD5 keeps the
+ * check's alternate branch (+0x8C == 0x18 with +0x8E == 0x000D) out of reach,
+ * and "DS" at +0x0E is never 0x000D. */
+#define SHIM_ID_TAG0    0xD5
+#define SHIM_ID_TAG1    0x00
+#define SHIM_ID_TAG2    0x44     /* 'D' */
+#define SHIM_ID_TAG3    0x53     /* 'S' */
+
+/* A native 64-bit load of the kernel pointer at p (8-aligned in every object
+ * this reads). */
+static inline uint64_t ld64(const uint8_t *p)
+{
+	return *(const uint64_t *)(const void *)p;
+}
+
+static inline uint8_t *ld_ptr(const uint8_t *p)
+{
+	return (uint8_t *)(uintptr_t)ld64(p);
+}
+
 int shim_is_dualsense(uint16_t vid, uint16_t pid)
 {
 	return vid == VID_SONY && pid == PID_DUALSENSE;
 }
 
-/* F4 helper. A leaf of immediate comparisons only: no global and no TOC access,
- * so the kernel can branch to it with its own r2 (tools/shim_pack.py enforces
- * this over this function's code range). Keeps 0x0268 and 0x042F, adds 0x0CE6.
- * The kernel's inline compare at the connection path is patched in place (WORD
- * rows in kshim_table.c), not routed here: this is only ever reached by a branch
- * to a function's first instruction, so its blr returns to the caller. */
+/* Product-ID helper. A leaf of immediate comparisons only: no global and no TOC
+ * access, so the kernel can branch to it with its own r2 (tools/shim_pack.py
+ * enforces this over this function's code range). Keeps 0x0268 and 0x042F, adds
+ * 0x0CE6. Stage 1 accepts the DualSense with kernel word edits instead; this
+ * stays for stage 1b. */
 int shim_pid_ok(uint32_t vid, uint32_t pid)
 {
 	return vid == VID_SONY &&
 	       (pid == PID_DS3 || pid == PID_MOVE_NAV || pid == PID_DUALSENSE);
 }
 
+int shim_pad_is_dualsense(const ds45_shim_data_t *d, const uint8_t *pad)
+{
+	if (!d || !pad || d->pad_vtable == 0)
+		return 0;
+	if (ld64(pad) != d->pad_vtable)
+		return 0;
+	return pad[SHIM_PAD_ID + 0] == (uint8_t)(VID_SONY >> 8) &&
+	       pad[SHIM_PAD_ID + 1] == (uint8_t)VID_SONY &&
+	       pad[SHIM_PAD_ID + 2] == (uint8_t)(PID_DUALSENSE >> 8) &&
+	       pad[SHIM_PAD_ID + 3] == (uint8_t)PID_DUALSENSE;
+}
+
+/* Status 0 in the u32 at drv+0x50, byte by byte. */
+static inline void put_status_ok(uint8_t *drv)
+{
+	drv[SHIM_DRV_STATUS + 0] = 0;
+	drv[SHIM_DRV_STATUS + 1] = 0;
+	drv[SHIM_DRV_STATUS + 2] = 0;
+	drv[SHIM_DRV_STATUS + 3] = 0;
+}
+
+int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv)
+{
+	uint8_t *info;
+	uint32_t n;
+	int i;
+
+	if (!d || !drv || !d->enabled)
+		return 0;
+	if (!shim_pad_is_dualsense(d, ld_ptr(drv + SHIM_DRV_PAD)))
+		return 0;
+	/* A later event for a driver already done is the original's business. */
+	if (drv[SHIM_DRV_SUBSTATE] == SHIM_DRV_DONE)
+		return 0;
+	info = ld_ptr(drv + SHIM_DRV_INFO);
+	if (!info)
+		return 0;
+
+	/* 1. the DS3 info block (identity bytes zero in the template) */
+	for (i = 0; i < DS45_SHIM_INFO_LEN; i++)
+		info[i] = d->info_tmpl[i];
+
+	/* 2. this pad's identity: the completion count, then the fixed tag. The
+	 * start-up framework runs driver events one at a time, so a plain
+	 * increment numbers every DualSense of a boot uniquely. */
+	n = ++d->stat_completed;
+	info[SHIM_ID_OFF + 0] = (uint8_t)(n >> 24);
+	info[SHIM_ID_OFF + 1] = (uint8_t)(n >> 16);
+	info[SHIM_ID_OFF + 2] = (uint8_t)(n >> 8);
+	info[SHIM_ID_OFF + 3] = (uint8_t)n;
+	info[SHIM_ID_OFF + 4] = SHIM_ID_TAG0;
+	info[SHIM_ID_OFF + 5] = SHIM_ID_TAG1;
+	info[SHIM_ID_OFF + 6] = SHIM_ID_TAG2;
+	info[SHIM_ID_OFF + 7] = SHIM_ID_TAG3;
+
+	/* 3. status 0 and "done": the framework then calls the ready callback with
+	 * status 0 and the kernel's own version check runs on the block above. */
+	put_status_ok(drv);
+	drv[SHIM_DRV_SUBSTATE] = SHIM_DRV_DONE;
+	return 1;
+}
+
+int shim_enable_complete(ds45_shim_data_t *d, uint8_t *drv)
+{
+	if (!d || !drv || !d->enabled)
+		return 0;
+	if (!shim_pad_is_dualsense(d, ld_ptr(drv + SHIM_DRV_PAD)))
+		return 0;
+	if (drv[SHIM_EN_DONE] != 0)
+		return 0;
+
+	/* Status 0 and the done flag: the framework calls the callback with status
+	 * 0 and the pad manager assigns the port. */
+	put_status_ok(drv);
+	drv[SHIM_EN_DONE] = 1;
+	d->stat_enabled++;
+	return 1;
+}
+
+const uint8_t *shim_pad_from_xport(const ds45_shim_data_t *d, const void *xport)
+{
+	const uint8_t *mgr, *obj;
+	int i;
+
+	if (!d || !d->pad_mgr || !xport)
+		return 0;
+	mgr = ld_ptr((const uint8_t *)(uintptr_t)d->pad_mgr);
+	if (!mgr)
+		return 0;
+
+	/* The pad being read is alive (its own input handler is the caller), so the
+	 * table holds it; the other entries are only compared, never followed
+	 * further than their transport pointer. */
+	for (i = 0; i < SHIM_MGR_NOBJS; i++) {
+		obj = ld_ptr(mgr + SHIM_MGR_OBJS + 8 * i);
+		if (obj && ld64(obj + SHIM_PAD_XPORT) == (uint64_t)(uintptr_t)xport)
+			return obj;
+	}
+	return 0;
+}
+
 int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
                       uint8_t *buf, uint16_t *len)
 {
-	/* Translate only an enabled DualSense's 0x31 report. ds3_report_from_
-	 * dualsense reads the whole report into its own state before it writes a
-	 * byte, so buf may be its own output (an in-place rewrite), and on any
-	 * refusal - wrong id, too short - it writes nothing and returns -1, which
-	 * leaves buf and *len exactly as the original read left them. */
-	if (d && d->enabled && buf && len &&
-	    shim_is_dualsense(vid, pid) &&
-	    buf[0] == DS_BT_INPUT_ID &&
-	    ds3_report_from_dualsense(buf, (int)*len, &d->cfg, buf) == 0) {
+	int ok = 0;
+
+	/* Translate only an enabled DualSense's basic 0x01 or full 0x31 report.
+	 * Both translators read the whole report before they write a byte, so buf
+	 * may be their own output (an in-place rewrite), and on any refusal - wrong
+	 * id, too short - they write nothing and return -1, which leaves buf and
+	 * *len exactly as the original read left them. */
+	if (d && d->enabled && buf && len && shim_is_dualsense(vid, pid)) {
+		if (buf[0] == DS_BASIC_REPORT_ID)
+			ok = ds3_report_from_dualsense_basic(buf, (int)*len, &d->cfg, buf) == 0;
+		else if (buf[0] == DS_BT_INPUT_ID)
+			ok = ds3_report_from_dualsense(buf, (int)*len, &d->cfg, buf) == 0;
+	}
+	if (ok) {
 		*len = DS3_REPORT_LEN;
 		d->stat_translated++;
 		return DS3_REPORT_LEN;
@@ -64,62 +197,4 @@ int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
 	if (d)
 		d->stat_passed++;
 	return len ? (int)*len : 0;
-}
-
-int shim_startup_dualsense(ds45_shim_data_t *d, int slot, long arg1)
-{
-	shim_send_fn send;
-	uint64_t conn_id;
-	int rc;
-
-	/* arg1 is the F1 dispatch argument; entry.c has already sent the
-	 * original's arg1==0 early-return to d->orig_startup, and a DualSense is
-	 * brought up by the GET below, not by anything keyed on arg1. */
-	(void)arg1;
-
-	if (!d)
-		return SHIM_F1_OK;
-	if (slot < 0 || slot >= DS45_SHIM_CONNS)
-		return SHIM_F1_ERR;
-
-	/* Without the transfer routine's descriptor, or a connection id to hand it
-	 * (0: the plugin has not recorded one), there is nothing safe to call - the
-	 * kernel routine would look the id up - so the start-up fails safe. */
-	conn_id = d->conn_id[slot];
-	send = (shim_send_fn)(uintptr_t)d->send_routine;
-	if (!send || conn_id == 0)
-		return SHIM_F1_ERR;
-
-	/* The driver may call the start-up again and again for one connection (the
-	 * original steps a persisted substate machine and this never advances it),
-	 * and each GET sent leaves a reply nobody drains if the pad never switches.
-	 * So a slot gets SHIM_START_TRIES_MAX sends, accepted or not, and then the
-	 * hook just answers OK: not an error, and not the original - either could
-	 * cost the driver a pad that did switch. The plugin re-arms the slot by
-	 * zeroing its count. */
-	if (d->start_tries[slot] >= SHIM_START_TRIES_MAX)
-		return SHIM_F1_OK;
-	d->start_tries[slot]++;
-
-	/* Kick off the pad's 0x31 report stream by requesting its calibration
-	 * feature report (F3): GET_REPORT, feature, report id 5, no payload. The
-	 * PDU is built in the data block's own buffer - the driver's shared buffer
-	 * is guarded by a lock this context does not hold (note P3) - and the
-	 * routine copies the bytes into the channel's TX queue before it returns
-	 * (P2), so the buffer is not needed afterwards. Only the send is needed
-	 * (P2): the pad starts streaming on receiving it, so the reply is never
-	 * read. */
-	d->pdu[0] = (uint8_t)(SHIM_HIDP_GET_REPORT | SHIM_HID_FEATURE);
-	d->pdu[1] = SHIM_DS_CALIB_REPORT_ID;
-
-	rc = send(conn_id, SHIM_SEND_DIR_CTRL_OUT, SHIM_SEND_OPCLASS_REPORT,
-	          d->pdu, SHIM_GET_PDU_LEN);
-	if (rc < 0)
-		return rc;
-
-	/* The 3->running transition is produced by the input wrapper translating
-	 * the pad's reports, so on success the shim just returns F1's running
-	 * condition and lets the driver keep polling. */
-	d->stat_startups++;
-	return SHIM_F1_OK;
 }
