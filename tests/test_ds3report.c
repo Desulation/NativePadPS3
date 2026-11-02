@@ -1178,7 +1178,13 @@ static int test_abi_layout(void)
 	CHECK(offsetof(ds45_shim_data_t, stat_passed) == 84);
 	CHECK(offsetof(ds45_shim_data_t, info_tmpl) == 88);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->info_tmpl) == 0x58);
-	CHECK(sizeof(ds45_shim_data_t) == 176);
+	/* appended after info_tmpl: the product-ID sites' original qwords and
+	 * which of them the install applied (adoption rebuilds its journal) */
+	CHECK(DS45_SHIM_PID_SITES == 3);
+	CHECK(offsetof(ds45_shim_data_t, pid_orig) == 176);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->pid_orig) == 8 * DS45_SHIM_PID_SITES);
+	CHECK(offsetof(ds45_shim_data_t, pid_applied) == 200);
+	CHECK(sizeof(ds45_shim_data_t) == 208);
 	return 0;
 }
 

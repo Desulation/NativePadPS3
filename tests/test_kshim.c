@@ -431,6 +431,13 @@ static int check_blob_image(void)
 	for (i = DS45_SHIM_INFO_LEN; i < 0x58; i++)
 		CHECK_SUB(t[i] == 0 ? 0 : __LINE__);
 
+	/* the helper site's original qword, and only the helper marked applied
+	 * (setup leaves SHIM_INLINE_PID off) */
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig)) == HELPER_Q ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 8) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 16) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, pid_applied)) == 1 ? 0 : __LINE__);
+
 	/* flush OPD placed just past the blob: { entry, kernel TOC } */
 	CHECK_SUB(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN) == FLUSH_ENTRY ? 0 : __LINE__);
 	CHECK_SUB(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN + 8) == KERNEL_TOC ? 0 : __LINE__);
@@ -748,29 +755,56 @@ static int test_install_is_gated_by_enable_shim(void)
 	return 0;
 }
 
+static uint64_t db_q(size_t off)
+{
+	return rd(BLOB_BASE + DS45_SHIM_OFF_DATA + off);
+}
+
 /* A second install finds the event slot pointing at a blob (with the enable and
  * input slots at the same base) whose data block carries the magic and this
- * version: it adopts it and writes nothing. */
+ * version: it adopts it and writes nothing. Adoption happens exactly when an
+ * earlier load never ran remove, so removing the adopted install must undo
+ * everything that load did: the three redirects and every product-ID word it
+ * applied (rebuilt from the originals the install kept in the data block). */
 static int test_adopt_via_event_slot(void)
 {
-	struct snap before, after;
-	int pokes;
+	struct snap pristine, before, after;
+	int pokes, g;
 
-	setup();
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	for (g = 0; g < 2; g++) {
+		setup();
+		g_cfg.shim_inline_pid = g;
+		take_snap(&pristine);
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 
-	g_spare_calls = 0;
-	pokes = fake_lv2_poke_count;
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
-	CHECK(fake_lv2_poke_count == pokes);   /* zero pokes */
-	CHECK(g_spare_calls == 0);             /* nothing re-allocated */
-	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+		/* the install recorded the originals of what it applied */
+		CHECK(db_q(offsetof(ds45_shim_data_t, pid_orig)) == HELPER_Q);
+		CHECK(db_q(offsetof(ds45_shim_data_t, pid_orig) + 8) == (g ? PID0_Q : 0));
+		CHECK(db_q(offsetof(ds45_shim_data_t, pid_orig) + 16) == (g ? PID1_Q : 0));
+		CHECK((uint32_t)(db_q(offsetof(ds45_shim_data_t, pid_applied)) >> 32) ==
+		      (g ? 7u : 1u));
 
-	/* removing an adopted install switches the three redirects back */
-	kshim_remove();
-	CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
-	CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
-	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+		/* the next load adopts it (whatever its own SHIM_INLINE_PID says: what
+		 * gets restored is what the install applied) */
+		g_cfg.shim_inline_pid = !g;
+		g_spare_calls = 0;
+		pokes = fake_lv2_poke_count;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+		CHECK(fake_lv2_poke_count == pokes);   /* zero pokes */
+		CHECK(g_spare_calls == 0);             /* nothing re-allocated */
+		CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+
+		/* removing the adopted install leaves the image as it was before the
+		 * first install: redirects, helper word and (with g) the inline words */
+		kshim_remove();
+		take_snap(&after);
+		CHECK(snap_eq(&pristine, &after));
+		CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
+		CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
+		CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+		CHECK(rd(HELPER_QA) == HELPER_Q);
+		CHECK(rd(PID0_QA) == PID0_Q && rd(PID1_QA) == PID1_Q);
+	}
 
 	/* a blob whose enable slot is not at the event slot's base is not ours */
 	setup();
@@ -783,6 +817,57 @@ static int test_adopt_via_event_slot(void)
 	CHECK(fake_lv2_poke_count == pokes);
 	take_snap(&after);
 	CHECK(snap_eq(&before, &after));
+	return 0;
+}
+
+/* Adoption trusts a recorded original only if it hashes to the row's expected
+ * value AND the site still holds exactly that original with the row's word
+ * applied. A site failing either check is left as found (not journalled), the
+ * others - and the redirects - are still adopted and restored. */
+static int test_adopt_skips_corrupt_orig(void)
+{
+	const uint64_t orig_at = BLOB_BASE + DS45_SHIM_OFF_DATA +
+	                         offsetof(ds45_shim_data_t, pid_orig);
+	uint64_t helper_patched, pid1_changed;
+	int pokes;
+
+	setup();
+	g_cfg.shim_inline_pid = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	helper_patched = rd(HELPER_QA);
+	CHECK(helper_patched == ((HELPER_Q & HI32) | HELPER_WORD));
+
+	/* the helper's recorded original no longer hashes to the row's value */
+	put_q(orig_at, HELPER_Q ^ 0x10);
+	/* the second inline site was changed by someone else since the install
+	 * (its high half), so it is not "original + our word" any more */
+	pid1_changed = rd(PID1_QA) ^ 0x0100000000000000ULL;
+	put_q(PID1_QA, pid1_changed);
+
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);   /* still adopted */
+	CHECK(fake_lv2_poke_count == pokes);
+
+	kshim_remove();
+	CHECK(rd(EVENT_SLOT) == EVENT_ORIG);                     /* redirects restored */
+	CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
+	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+	CHECK(rd(PID0_QA) == PID0_Q);                            /* the good site too */
+	CHECK(rd(HELPER_QA) == helper_patched);                  /* left as found */
+	CHECK(rd(PID1_QA) == pid1_changed);                      /* left as found */
+
+	/* a bit for a site the install did not apply, with garbage behind it, is
+	 * not trusted either: nothing beyond the redirects is restored */
+	setup();
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED); /* helper only */
+	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_applied),
+	      (uint64_t)0xFFFFFFFFu << 32);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	kshim_remove();
+	CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
+	CHECK(rd(HELPER_QA) == HELPER_Q);                        /* recorded: restored */
+	CHECK(rd(PID0_QA) == PID0_Q && rd(PID1_QA) == PID1_Q);   /* never touched */
+	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }
 
@@ -951,6 +1036,7 @@ int run_tests(void)
 		test_rollback_each_step,
 		test_install_is_gated_by_enable_shim,
 		test_adopt_via_event_slot,
+		test_adopt_skips_corrupt_orig,
 		test_adopt_requires_the_same_version,
 		test_remove_restores_all,
 		test_word_rows_do_not_follow_the_load_base,

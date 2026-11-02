@@ -76,11 +76,14 @@ kshim_result_t kshim_install(void);
  * kshim_install_from(ds45_shim_table, ds45_shim_table_count). */
 kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n);
 
-/* Switch the three redirects back and revert the product-ID words (a fresh
- * install restores both from its journal; an adopted one restores the redirects
- * only, the pre-edit product-ID bytes from a prior load not being recoverable).
- * The blob stays allocated, since a driver thread may still be executing inside
- * it. A no-op when nothing is installed. */
+/* Switch the three redirects back and revert the product-ID words, from the
+ * journal. A fresh install journals what it wrote. An adopted one rebuilds the
+ * journal from the data block: the install records each edited site's original
+ * qword (pid_orig) and which sites it applied (pid_applied), and adoption
+ * journals a site only if that original hashes to the row's expected value and
+ * the site still holds it with the row's instruction applied; any other site is
+ * left as found. The blob stays allocated, since a driver thread may still be
+ * executing inside it. A no-op when nothing is installed. */
 void kshim_remove(void);
 
 #endif /* DS45_KSHIM_H */

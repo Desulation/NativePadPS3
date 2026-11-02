@@ -24,6 +24,9 @@
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56
+/* Product-ID sites a row can edit: the helper word and the two inline words
+ * (src/kshim.h: DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES, checked there). */
+#define DS45_SHIM_PID_SITES 3
 
 typedef struct {
 	uint8_t deadzone;              /* STICK_DEADZONE, percent of half travel */
@@ -48,6 +51,15 @@ typedef struct {
 	/* The DS3 info template; the first DS45_SHIM_INFO_LEN bytes are used and its
 	 * identity bytes (index 0x08..0x0F) are zero - the blob writes them per pad. */
 	uint8_t  info_tmpl[0x58];
+	/* Written by the plugin only, appended so every offset above is kept. The
+	 * original 8-aligned qword of each product-ID site, read at install before
+	 * the word edit, and which sites the install applied (bit i = helper patch
+	 * i, bit 1 + j = inline patch j). A later load that adopts this blob rebuilds
+	 * its journal from them, so its unload switches the word edits back too.
+	 * Kernel RAM only, never in git. The blob never reads them. */
+	uint64_t pid_orig[DS45_SHIM_PID_SITES];
+	uint32_t pid_applied;
+	uint32_t pid_reserved;         /* keeps the size a multiple of 8 */
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */

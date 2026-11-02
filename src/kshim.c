@@ -16,7 +16,9 @@
  *      one, must reach shim_pid_ok - WORD rows hold a finished instruction);
  *   5. copy the blob qword by qword, rebasing relocated words;
  *   6. fill the data block (originals, pad class and manager, info template,
- *      cfg, enabled);
+ *      cfg, enabled, and each product-ID site's original qword with the set of
+ *      sites applied - in kernel RAM before the first word edit, so a later
+ *      load that adopts the blob can undo the edits);
  *   7. flush the instruction cache over the blob (F5);
  *   8. apply, transactionally, the helper word, the inline words (only with
  *      SHIM_INLINE_PID), the event redirect, the enable redirect and the input
@@ -62,6 +64,15 @@ typedef char kshim_data_multiple_of_8[(sizeof(ds45_shim_data_t) % 8 == 0) ? 1 : 
 typedef char kshim_version_qword[(offsetof(ds45_shim_data_t, version) % 8 == 0) ? 1 : -1];
 typedef char kshim_tmpl_fits[(sizeof(((ds45_shim_data_t *)0)->info_tmpl) >=
                               DS45_SHIM_INFO_LEN) ? 1 : -1];
+
+/* The data block records one original qword per product-ID site a row can
+ * edit, and an adopted install journals those sites plus the redirects. */
+typedef char kshim_pid_sites_match[(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES ==
+                                    DS45_SHIM_PID_SITES) ? 1 : -1];
+typedef char kshim_adopt_fits_journal[(DS45_SHIM_PID_SITES + KSHIM_REDIRECTS <=
+                                       DS45_KPATCH_MAX) ? 1 : -1];
+typedef char kshim_pid_words_aligned[(offsetof(ds45_shim_data_t, pid_orig) % 8 == 0 &&
+                                      offsetof(ds45_shim_data_t, pid_applied) % 8 == 0) ? 1 : -1];
 
 /* What a successful (or adopted) install left behind, for kshim_remove. */
 static ds45_kjournal_t g_journal;
@@ -117,48 +128,123 @@ static int off_is_reloc(uint32_t off)
 	return 0;
 }
 
-/* FNV-1a 64 of the 8-aligned qword containing addr, bytes in memory order (the
- * same scheme kpatch uses), compared with expect; 0 if it differs or the qword
- * cannot be read. */
-static int hash_ok(uint64_t addr, uint64_t expect)
+/* FNV-1a 64 of a qword's 8 bytes in memory order (the same scheme kpatch uses). */
+static uint64_t qword_hash(uint64_t v)
 {
-	uint64_t cur;
 	uint8_t b[8];
 	int i;
 
+	for (i = 0; i < 8; i++)
+		b[i] = (uint8_t)(v >> (56 - 8 * i));
+	return ds45_fnv1a64(b, 8);
+}
+
+/* The qword containing addr hashes to expect; 0 if it differs or cannot be read. */
+static int hash_ok(uint64_t addr, uint64_t expect)
+{
+	uint64_t cur;
+
 	if (ds45_lv2_read(addr & ~7ULL, &cur))
 		return 0;
-	for (i = 0; i < 8; i++)
-		b[i] = (uint8_t)(cur >> (56 - 8 * i));
-	return ds45_fnv1a64(b, 8) == expect;
+	return qword_hash(cur) == expect;
 }
 
-/* The product-ID rows this install applies: the helper always, the inline
- * words only with SHIM_INLINE_PID. Fills out[] and returns how many. */
-static int pid_rows(const ds45_shim_kernel_t *k, ds45_kpatch_t *out)
+/* Product-ID site i of a row, in data-block order: the helper rows, then the
+ * inline rows. */
+static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
 {
-	int i, n = 0;
-
-	for (i = 0; i < DS45_SHIM_PID_PATCHES; i++)
-		out[n++] = k->pid_patches[i];
-	if (g_cfg.shim_inline_pid)
-		for (i = 0; i < DS45_SHIM_INLINE_PATCHES; i++)
-			out[n++] = k->inline_patches[i];
-	return n;
+	return i < DS45_SHIM_PID_PATCHES ? &k->pid_patches[i]
+	                                 : &k->inline_patches[i - DS45_SHIM_PID_PATCHES];
 }
 
-/* Every product-ID site this install edits still holds the qword its row was
- * researched against. (A BRANCH row's new instruction is not known to kpatch
- * until the blob is allocated, so the hash is checked here, ahead of the
- * allocation, as well as by the final kpatch_apply.) */
-static int pid_sites_ok(const ds45_kpatch_t *p, int n)
+/* The product-ID rows this install applies - the helper always, the inline
+ * words only with SHIM_INLINE_PID - into out[] (how many is returned in *n).
+ * Each site must still hold the qword its row was researched against; its
+ * original qword goes into orig[site] and the site's bit into *applied, for the
+ * data block. (A BRANCH row's new instruction is not known to kpatch until the
+ * blob is allocated, so the hash is checked here, ahead of the allocation, as
+ * well as by the final kpatch_apply.) 0 if any site differs or cannot be read. */
+static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int *n,
+                       uint64_t orig[DS45_SHIM_PID_SITES], uint32_t *applied)
 {
+	const ds45_kpatch_t *p;
+	uint64_t cur;
 	int i;
 
-	for (i = 0; i < n; i++)
-		if (!hash_ok(p[i].addr, p[i].expect))
+	*n = 0;
+	*applied = 0;
+	for (i = 0; i < DS45_SHIM_PID_SITES; i++) {
+		orig[i] = 0;
+		if (i >= DS45_SHIM_PID_PATCHES && !g_cfg.shim_inline_pid)
+			continue;
+		p = pid_site(k, i);
+		if (ds45_lv2_read(p->addr & ~7ULL, &cur) || qword_hash(cur) != p->expect)
 			return 0;
+		orig[i] = cur;
+		*applied |= 1u << i;
+		out[(*n)++] = *p;
+	}
 	return 1;
+}
+
+/* The qword a product-ID site holds once row p is applied over orig: the
+ * instruction replaces the high half when (addr & 4) == 0, the low half
+ * otherwise (kpatch.h). A BRANCH row targets shim_pid_ok in the blob at base.
+ * 0 if the row's instruction cannot be formed. */
+static int pid_patched_qword(const ds45_kpatch_t *p, uint64_t orig, uint64_t base,
+                             uint64_t *out)
+{
+	uint32_t w;
+
+	if (p->kind == DS45_KPATCH_WORD) {
+		if (p->value > 0xFFFFFFFFULL)
+			return 0;
+		w = (uint32_t)p->value;
+	} else if (p->kind == DS45_KPATCH_BRANCH) {
+		if (kpatch_branch_word(p->addr, base + DS45_SHIM_OFF_PID_OK, &w))
+			return 0;
+	} else {
+		return 0;
+	}
+	*out = (p->addr & 4) ? ((orig & 0xFFFFFFFF00000000ULL) | w)
+	                     : ((orig & 0x00000000FFFFFFFFULL) | ((uint64_t)w << 32));
+	return 1;
+}
+
+/* Adoption: journal every product-ID site the adopted install recorded as
+ * applied, from the original it kept in the data block - but only a site whose
+ * recorded original hashes to the row's expected value AND which still holds
+ * exactly that original with the row's instruction in it. Any other site is left
+ * as found (traced, not journalled); the redirects are adopted regardless. Reads
+ * only. Appends to j. */
+static void adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
+                            ds45_kjournal_t *j)
+{
+	const uint64_t db = base + DS45_SHIM_OFF_DATA;
+	const ds45_kpatch_t *p;
+	uint64_t q, orig, cur, want;
+	uint32_t applied;
+	int i;
+
+	if (ds45_lv2_read(db + offsetof(ds45_shim_data_t, pid_applied), &q))
+		return;
+	applied = (uint32_t)(q >> 32);          /* the high word of its big-endian qword */
+	for (i = 0; i < DS45_SHIM_PID_SITES; i++) {
+		if (!(applied & (1u << i)))
+			continue;
+		p = pid_site(k, i);
+		if (ds45_lv2_read(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * (uint64_t)i,
+		                  &orig) ||
+		    qword_hash(orig) != p->expect ||
+		    !pid_patched_qword(p, orig, base, &want) ||
+		    ds45_lv2_read(p->addr & ~7ULL, &cur) || cur != want) {
+			DS45_TRACE_HEX("kshim_adopt_pid_skipped", (uint64_t)i);
+			continue;
+		}
+		j->qaddr[j->n] = p->addr & ~7ULL;
+		j->orig[j->n] = orig;
+		j->n++;
+	}
 }
 
 /* The redirects already point at one of our blobs: the event slot names a base,
@@ -196,7 +282,9 @@ static int already_installed(const ds45_shim_kernel_t *k, uint64_t *base)
  * zeroed. Field offsets come from the shared ABI struct, which has identical
  * layout on the plugin, the blob and the host (fixed-width fields at natural
  * alignment, no pointers). */
-static void build_data_block(const ds45_shim_kernel_t *k, uint8_t *buf)
+static void build_data_block(const ds45_shim_kernel_t *k,
+                             const uint64_t pid_orig[DS45_SHIM_PID_SITES],
+                             uint32_t pid_applied, uint8_t *buf)
 {
 	uint8_t *cfg, *t;
 	int i;
@@ -230,6 +318,12 @@ static void build_data_block(const ds45_shim_kernel_t *k, uint8_t *buf)
 	t = buf + offsetof(ds45_shim_data_t, info_tmpl);
 	for (i = 0; i < DS45_SHIM_INFO_LEN; i++)
 		t[i] = k->info_tmpl[i];
+
+	/* what the word edits replace, so a later load that adopts this blob can
+	 * switch them back on its unload (kernel RAM only) */
+	for (i = 0; i < DS45_SHIM_PID_SITES; i++)
+		put_be64(buf + offsetof(ds45_shim_data_t, pid_orig) + 8 * i, pid_orig[i]);
+	put_be32(buf + offsetof(ds45_shim_data_t, pid_applied), pid_applied);
 }
 
 static void put_redirect(ds45_kpatch_t *p, uint64_t slot, uint64_t expect,
@@ -250,8 +344,9 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	ds45_kjournal_t j;
 	uint8_t db[sizeof(ds45_shim_data_t)];
 	uint64_t spare_slot, base = 0, alloc_size, kernel_toc, flush_opd, target;
-	uint32_t off, bw;
-	int i, r, npid, nfinal;
+	uint64_t pid_orig[DS45_SHIM_PID_SITES];
+	uint32_t off, bw, pid_applied;
+	int i, r, npid, nfinal, pid_ok;
 
 	g_state = KSHIM_OFF;
 	g_journal.n = 0;
@@ -283,31 +378,36 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	}
 
 	spare_slot = k->syscall_table + (uint64_t)k->spare_syscall * 8;
-	npid = pid_rows(k, final);
 
 	/* 2. verify the clean originals: the three redirects and the spare slot by
 	 * value, the two handlers they lead to by their first code qword, and the
-	 * product-ID sites by the qword holding each instruction. */
+	 * product-ID sites by the qword holding each instruction (whose originals
+	 * are kept for the data block). */
 	put_redirect(&check[0], k->event_slot, k->event_expect, 0);
 	put_redirect(&check[1], k->enable_slot, k->enable_expect, 0);
 	put_redirect(&check[2], k->input_slot, k->input_expect, 0);
 	put_redirect(&check[3], spare_slot, k->spare_slot_expect, 0);
 
 	r = kpatch_verify(check, KSHIM_REDIRECTS + 1);
+	pid_ok = pid_capture(k, final, &npid, pid_orig, &pid_applied);
 	if (r != 0 ||
 	    !hash_ok(k->event_code_addr, k->event_code_hash) ||
 	    !hash_ok(k->enable_code_addr, k->enable_code_hash) ||
-	    !pid_sites_ok(final, npid)) {
+	    !pid_ok) {
 		/* A failed verify may just mean the shim is already installed from an
-		 * earlier load: adopt it and write nothing. */
+		 * earlier load: adopt it and write nothing. Its journal is rebuilt as an
+		 * install would have left it - the product-ID words it recorded as
+		 * applied (each only if still provably ours), then the redirects - so
+		 * unload undoes the earlier load completely. */
 		if (already_installed(k, &base)) {
-			g_journal.n = KSHIM_REDIRECTS;
-			g_journal.qaddr[0] = k->event_slot;
-			g_journal.orig[0] = k->event_expect;
-			g_journal.qaddr[1] = k->enable_slot;
-			g_journal.orig[1] = k->enable_expect;
-			g_journal.qaddr[2] = k->input_slot;
-			g_journal.orig[2] = k->input_expect;
+			g_journal.n = 0;
+			adopt_pid_sites(k, base, &g_journal);
+			g_journal.qaddr[g_journal.n] = k->event_slot;
+			g_journal.orig[g_journal.n++] = k->event_expect;
+			g_journal.qaddr[g_journal.n] = k->enable_slot;
+			g_journal.orig[g_journal.n++] = k->enable_expect;
+			g_journal.qaddr[g_journal.n] = k->input_slot;
+			g_journal.orig[g_journal.n++] = k->input_expect;
 			g_state = KSHIM_ALREADY;
 			DS45_TRACE("kshim_already");
 			return KSHIM_ALREADY;
@@ -366,7 +466,7 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 
 	/* 6. the data block (originals, pad class and manager, template, cfg from
 	 * g_cfg, enabled) */
-	build_data_block(k, db);
+	build_data_block(k, pid_orig, pid_applied, db);
 	for (off = 0; off < sizeof(db); off += 8)
 		if (ds45_lv2_write(base + DS45_SHIM_OFF_DATA + off, be64(db + off))) {
 			DS45_TRACE("kshim_data_FAILED");
@@ -447,10 +547,12 @@ void kshim_remove(void)
 {
 	if (g_state != KSHIM_INSTALLED && g_state != KSHIM_ALREADY)
 		return;
-	/* Switch the redirects back and revert the product-ID words (a fresh
-	 * install's journal has every patch it applied - the helper, the inline
-	 * words if any, and the three redirects; an adopted one, only the
-	 * redirects). The blob stays allocated - a driver thread may be inside it. */
+	/* Switch the redirects back and revert the product-ID words, last first,
+	 * each read back. A fresh install's journal has every patch it applied - the
+	 * helper, the inline words if any, and the three redirects; an adopted one
+	 * the same, rebuilt from the originals the adopted install recorded (minus
+	 * any site that was no longer provably ours). The blob stays allocated - a
+	 * driver thread may be inside it. */
 	kpatch_revert(&g_journal);
 	DS45_TRACE("kshim_removed");
 	g_state = KSHIM_OFF;
