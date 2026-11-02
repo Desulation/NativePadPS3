@@ -76,7 +76,11 @@ int shim_enable(void *drv, long status, long len)
  * owns this transport in the pad manager (the transport has no pointer back to
  * its pad) and, for an enabled DualSense, let the filter rewrite its report in
  * dst into a DS3 report. An error or implausible count from the original, or a
- * buffer too small for a DS3 report, returns the original result untouched. */
+ * buffer too small for a DS3 report, returns the original result untouched.
+ * Every other read - a DS3's included - pays the bounded 16-entry manager scan
+ * and is counted in stat_passed by the filter (vid/pid 0 for a non-DualSense),
+ * so on the console stat_passed rises with any pad's reads, not just a
+ * DualSense's. */
 int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 {
 	int rc = ((orig_input_fn)(uintptr_t)ds45_shim_data.orig_input)(xport, dst,

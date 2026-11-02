@@ -4,8 +4,8 @@ Scope: the facts the start-up-completion shim (spec
 `docs/superpowers/specs/2026-11-01-ds45pad-ds3-route-startup-completion-design.md`, plan
 `docs/superpowers/plans/2026-11-02-ds3-route-startup-completion.md`) needs about how the console's own DS3
 driver reads a controller's info block, how the pad object reaches its transport, and what happens after the
-start-up callback. Static analysis only, of the user's own memory dumps of his own DEX 4.92 console. Nothing was
-sent to any console.
+start-up callback. Static analysis only, of memory dumps of the user's own DEX 4.92 console. Nothing was sent to
+any console.
 
 Sources: `analysis/ff_492.json`, `analysis/lv2_code_492.bin` (pristine kernel code, LV2 offset = file offset) and
 the RAM dumps in `tools/dumps/dex492/` (git-ignored, never committed), chiefly `ds3route/navpid_connected.bin`
@@ -191,8 +191,10 @@ Both options validate before acting, so a wrong guess is harmless.
 1. **Pad-manager table scan (no assembly tricks).** `mgr = *0x4A1CB8`; for i in 0..15, `obj = *(mgr + 0x60 + 8*i)`;
    the pad is the `obj` with `*(obj + 0x4F0) == xport`. Pure loads, bounded 16 iterations, then the existing
    vtable `0x38CDC8` and `054C/0CE6` checks. The table is the one all pad-manager code walks (`0x29E2F4`, `0x2A1038`).
-2. **Caller's `r28` at entry.** The only caller of the transport input method is one `bctrl` at `0x2A4E6C` inside
-   the function starting at `0x2A4E00`, which keeps the pad in `r28` for the whole call (`mr r28,r3` at `0x2A4E30`,
+2. **Caller's `r28` at entry.** The only caller found of the transport input method is one `bctrl` at `0x2A4E6C`
+   inside the function starting at `0x2A4E00` (a later review found two call sites of `0x2A4E00` itself, at
+   `0x2A51E4` and `0x2A5280`, both passing length `0x40`; not re-verified here), which keeps the pad in `r28` for
+   the whole call (`mr r28,r3` at `0x2A4E30`,
    `lbz r0,0x21(r28)` afterwards). A wrapper entered through the transport slot sees the caller's `r28`
    untouched (`r28` is callee-saved), so a naked-asm entry could read it. Validate with `*(r28) == 0x38CDC8` and `*(r28+0x4F0) == xport`. Faster, but
    depends on this one call site's register allocation (acceptable only with the validation, and only on the
@@ -244,7 +246,7 @@ and timestamps `pad+0x218`, `pad+0x2B0`) and the pad command dispatcher `0x2A346
 
 | Transfer | Refusal handling | Pad removed? |
 |---|---|---|
-| Start-up requests (first driver) | retried 32 times (20 ms), then callback with the error -> removed (known from the ledger) | **yes** (what the spec's `shim_event` prevents) |
+| Start-up requests (first driver) | retried 32 times (20 ms), then callback with the error -> removed (from earlier work, not re-verified here) | **yes** (what the spec's `shim_event` prevents) |
 | `0xF4` enable (second driver) | retried 5 times (20 ms), then `0x2A04C0` ignores the error | no, but **no port is ever assigned**; the pad object stays until disconnect |
 | Output report (LED/rumble) | `0x2A2C30` returns the sender's status; the converter ignores `0x8001000A` (busy) and otherwise just updates its timestamps; the dispatcher returns the code to its caller | no |
 
@@ -281,14 +283,26 @@ redirects (not clean for those two slots, clean for the event slot).
 | input slot `0x800000000037CE38` | `0x800000000033A010` | `0x800000000033A010` in every dump except `shimtest/*` (old shim redirect, expected) |
 | OPD `0x33A010` | code `0xC9D60` | yes |
 
-Additional rows for the second hook (C3.4), measured the same way on the pristine image and clean dumps:
+Additional rows for the second hook (C3.4). **Correction (final review, 2026-11-01):** the hashes first recorded
+here were measured over the 8 *unaligned* bytes starting at each function's code address, not over the 8-aligned
+qword the table above and the installer use (`hash_ok` hashes `addr & ~7`). All four code addresses below are
+4-mod-8, so the two differ. Both are listed, recomputed on the pristine image `analysis/lv2_code_492.bin` only (the
+clean dumps were not re-checked). Only the enable handler's is used by the row, and the row carries the
+**aligned** value `0xB52798EFCFE165A8`.
 
-| Row | Value |
-|---|---|
-| start-up driver vtable `0x37CFC8`: send slot `0x37CFE8` | `0x800000000033A208` -> code `0xCA194`, qword FNV `0xDDCEA981EBE0056E` (not written by the new design) |
-| second (`0xF4` enable) driver vtable `0x37CF80`: send slot `0x37CFA0` | `0x800000000033A298` -> code `0xCAB84`, qword FNV `0x81AC8A3EFDF560FE` |
-| same vtable, done slot `0x37CFA8` | `0x800000000033A148` -> code `0xC9F3C` (reads `drv+0x96`), qword FNV `0x296656446E0044E8` |
-| same vtable, **event slot `0x37CFB0`** | `0x800000000033A310` -> code `0xCB234`, qword FNV `0xEF8C3F93F63DFDB3` |
+| Row | Slot value -> code | Aligned qword FNV (installer convention) | Unaligned 8 bytes from the code address (first recorded; not used) |
+|---|---|---|---|
+| start-up driver vtable `0x37CFC8`: send slot `0x37CFE8` | `0x800000000033A208` -> `0xCA194` (not written by the new design) | `@0xCA190`: `0x3EDBE61A32005B76` | `0xDDCEA981EBE0056E` |
+| second (`0xF4` enable) driver vtable `0x37CF80`: send slot `0x37CFA0` | `0x800000000033A298` -> `0xCAB84` | `@0xCAB80`: `0xA61224B0B4CD4E56` | `0x81AC8A3EFDF560FE` |
+| same vtable, done slot `0x37CFA8` | `0x800000000033A148` -> `0xC9F3C` (reads `drv+0x96`) | `@0xC9F38`: `0x02EE22C5670E2DA4` | `0x296656446E0044E8` |
+| same vtable, **event slot `0x37CFB0`** | `0x800000000033A310` -> `0xCB234` | **`@0xCB230`: `0xB52798EFCFE165A8` (the row's `enable_code_hash`)** | `0xEF8C3F93F63DFDB3` (was in the row; would have refused every install) |
+
+The other row hashes were re-checked on the pristine image with the installer's convention and are aligned-qword
+hashes as stated: event handler `@0xCACF0` (8-aligned, `0x16E42A0B1EBFEFFA`), helper `@0x29E2C8` for `0x29E2CC`
+(`0x8D1047F832C76096`), inline `@0x11B5E0` for `0x11B5E4` (`0xE8ADD0EDF3B2B3C1`) and `@0x11B5E8` for `0x11B5EC`
+(`0xF86140C9C3D7FB8D`); the fingerprint is the 32 bytes at the 8-aligned `0xF3380` (`0xDF192C9D78181BF7`).
+`tests/test_kshim.c` (`test_builtin_row_on_pristine_image`) now runs the installer with the built-in row over the
+pristine image whenever it is present locally.
 
 ## Method (commands)
 

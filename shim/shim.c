@@ -43,11 +43,18 @@
 #define SHIM_ID_TAG2    0x44     /* 'D' */
 #define SHIM_ID_TAG3    0x53     /* 'S' */
 
+/* A u64 that may alias any object. The kernel objects are reached through byte
+ * pointers (and are byte buffers in the host tests), and the blob is built -O2
+ * without -fno-strict-aliasing, so the loads below go through this type: the
+ * compiler may then not assume they cannot see the byte stores made through
+ * uint8_t (GCC/clang attribute; no header, freestanding-safe). */
+typedef uint64_t __attribute__((may_alias)) shim_u64_alias_t;
+
 /* A native 64-bit load of the kernel pointer at p (8-aligned in every object
  * this reads). */
 static inline uint64_t ld64(const uint8_t *p)
 {
-	return *(const uint64_t *)(const void *)p;
+	return *(const shim_u64_alias_t *)(const void *)p;
 }
 
 static inline uint8_t *ld_ptr(const uint8_t *p)
@@ -94,19 +101,24 @@ static inline void put_status_ok(uint8_t *drv)
 
 int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv)
 {
-	uint8_t *info;
+	uint8_t *pad, *info;
 	uint32_t n;
 	int i;
 
 	if (!d || !drv || !d->enabled)
 		return 0;
-	if (!shim_pad_is_dualsense(d, ld_ptr(drv + SHIM_DRV_PAD)))
+	pad = ld_ptr(drv + SHIM_DRV_PAD);
+	if (!shim_pad_is_dualsense(d, pad))
 		return 0;
 	/* A later event for a driver already done is the original's business. */
 	if (drv[SHIM_DRV_SUBSTATE] == SHIM_DRV_DONE)
 		return 0;
+	/* The info pointer is trusted only as the validated pad's own info block
+	 * (pad+0x80): anything else - another object, another offset, NULL - would
+	 * have the 0x56-byte copy land somewhere unvalidated, so leave it all to
+	 * the original. */
 	info = ld_ptr(drv + SHIM_DRV_INFO);
-	if (!info)
+	if (info != pad + SHIM_PAD_INFO)
 		return 0;
 
 	/* 1. the DS3 info block (identity bytes zero in the template) */
@@ -115,7 +127,9 @@ int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv)
 
 	/* 2. this pad's identity: the completion count, then the fixed tag. The
 	 * start-up framework runs driver events one at a time, so a plain
-	 * increment numbers every DualSense of a boot uniquely. */
+	 * increment numbers every DualSense of a boot uniquely. stat_completed is
+	 * therefore not just a debug counter: nothing may ever reset it (see
+	 * shim_abi.h), or two pads of one boot could get the same identity. */
 	n = ++d->stat_completed;
 	info[SHIM_ID_OFF + 0] = (uint8_t)(n >> 24);
 	info[SHIM_ID_OFF + 1] = (uint8_t)(n >> 16);
@@ -194,6 +208,11 @@ int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
 		return DS3_REPORT_LEN;
 	}
 
+	/* stat_passed counts EVERY read not translated: a DS3's reads too (entry.c
+	 * scans the 16 manager entries for every plausible read, DS3 or not, and
+	 * calls this with vid/pid 0 for a non-DualSense), plus a DualSense's
+	 * non-translatable reports. On the console it grows at the DS3's report
+	 * rate; it is not a count of DualSense failures. */
 	if (d)
 		d->stat_passed++;
 	return len ? (int)*len : 0;

@@ -69,9 +69,10 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 
 		/* C3/C4 - the enable (0xF4) driver's event-handler slot (vtable
 		 * 0x37CF80) and the OPD it holds; that OPD's code 0xCB234 and the FNV
-		 * of the qword holding it. */
+		 * of the 8-aligned qword 0xCB230 holding it (hash_ok hashes addr & ~7;
+		 * NOT the 8 bytes from 0xCB234, which hash to 0xEF8C3F93F63DFDB3). */
 		0x800000000037CFB0ULL, 0x800000000033A310ULL,
-		0x80000000000CB234ULL, 0xEF8C3F93F63DFDB3ULL,
+		0x80000000000CB234ULL, 0xB52798EFCFE165A8ULL,
 
 		/* F2 - Bluetooth transport input read (method 4 of vtable 0x37CE18,
 		 * vtable+0x20) and the OPD it currently holds. */

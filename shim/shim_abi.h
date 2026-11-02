@@ -16,11 +16,14 @@
 #include <stdint.h>
 
 #define DS45_SHIM_MAGIC   0x4453343553484D31ULL   /* "DS45SHM1" */
-/* 3: the start-up completion layout (event and enable hooks, pad identity, the
- * DS3 info template); every v2 connection, send and start-up field is gone. The
+/* 4: the start-up completion layout (event and enable hooks, pad identity, the
+ * DS3 info template; every v2 connection, send and start-up field is gone) with
+ * the product-ID originals appended (pid_orig, pid_applied: 176 -> 208 bytes).
+ * 3 was the same layout without them and never reached a console. The
  * installer adopts a blob left by an earlier load only if its version matches,
- * since the plugin reaches into the data block by these offsets. */
-#define DS45_SHIM_VERSION 3
+ * since the plugin reaches into the data block by these offsets - so any change
+ * to this struct bumps the number. */
+#define DS45_SHIM_VERSION 4
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56
@@ -45,7 +48,11 @@ typedef struct {
 	uint64_t pad_mgr;              /* address of the pad-manager pointer: 0x80000000004A1CB8 */
 	ds45_shim_cfg_t cfg;
 	/* Debug counters, written by the blob. stat_completed also numbers the
-	 * DualSense identities: the first DualSense of a boot gets 1. */
+	 * DualSense identities: the first DualSense of a boot gets 1. It doubles as
+	 * the identity counter, so it must NEVER be reset (not by the plugin, not on
+	 * adoption, not to clear the stats): a reset would hand a later DualSense an
+	 * identity already in use this boot. stat_passed counts every read not
+	 * translated, a DS3's included (shim.c). */
 	uint32_t stat_completed;
 	uint32_t stat_enabled, stat_translated, stat_passed;
 	/* The DS3 info template; the first DS45_SHIM_INFO_LEN bytes are used and its

@@ -36,6 +36,7 @@
 #define SHIM_DRV_DONE     9
 #define SHIM_EN_DONE      0x96   /* u8, enable driver: 1 = done */
 #define SHIM_PAD_ID       0x68   /* big-endian VID then PID */
+#define SHIM_PAD_INFO     0x80   /* the pad's DS3 info block (DS45_SHIM_INFO_LEN bytes) */
 #define SHIM_PAD_XPORT    0x4F0  /* u64 pointer to the transport object */
 #define SHIM_MGR_OBJS     0x60   /* pad manager: u64 object pointers */
 #define SHIM_MGR_NOBJS    16
@@ -56,7 +57,8 @@ int shim_pid_ok(uint32_t vid, uint32_t pid);
 int shim_pad_is_dualsense(const ds45_shim_data_t *d, const uint8_t *pad);
 
 /* Start-up event decision. For an enabled shim and a DualSense driver whose
- * substate != 9: copy d->info_tmpl[0..DS45_SHIM_INFO_LEN) to the info block,
+ * substate != 9 and whose info pointer (drv+0x58) is exactly its pad + 0x80:
+ * copy d->info_tmpl[0..DS45_SHIM_INFO_LEN) to the info block,
  * bump stat_completed and write the identity bytes info+0x08..+0x0F =
  * stat_completed (u32 big-endian), 0xD5, 0x00, 0x44, 0x53; store status 0
  * (4 bytes) and substate 9; return 1 (the caller returns 0 to the framework).

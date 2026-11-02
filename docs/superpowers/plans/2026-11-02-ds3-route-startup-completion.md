@@ -115,7 +115,7 @@ Amended 2026-11-01 after Task 1 (spec section "Amendment after plan task 1", use
 `shim/shim_abi.h` - data block version 3 (replaces the v2 layout; every v2-only field and the conn/send fields are removed):
 
 ```c
-#define DS45_SHIM_VERSION 3
+#define DS45_SHIM_VERSION 3               /* shipped as 4: pid_orig/pid_applied appended in the Task 3 fix round (176 -> 208 bytes) */
 #define DS45_SHIM_INFO_LEN 0x56          /* pad+0x80 .. +0xD5 */
 typedef struct {
 	uint64_t magic; uint32_t version; uint32_t enabled;
@@ -185,7 +185,7 @@ typedef struct {
 	uint64_t event_slot, event_expect;          /* 0x37CFF8 / 0x33A2B0 OPD */
 	uint64_t event_code_addr, event_code_hash;  /* 0xCACF0 / 0x16E42A0B1EBFEFFA */
 	uint64_t enable_slot, enable_expect;        /* 0x37CFB0 / 0x33A310 OPD */
-	uint64_t enable_code_addr, enable_code_hash;/* 0xCB234 / 0xEF8C3F93F63DFDB3 */
+	uint64_t enable_code_addr, enable_code_hash;/* 0xCB234 / 0xB52798EFCFE165A8 (FNV of the aligned qword 0xCB230; corrected in the final review) */
 	uint64_t input_slot, input_expect;          /* 0x37CE38 / 0x33A010 OPD */
 	uint64_t pad_vtable;                        /* 0x800000000038CDC8 */
 	uint64_t pad_mgr;                           /* 0x80000000004A1CB8 */
@@ -197,7 +197,7 @@ typedef struct {
 
 `kshim_set_connection` is removed. `g_cfg.shim_inline_pid` (config key `SHIM_INLINE_PID`, VSH builds only, default 0, any non-zero number = 1) selects whether the inline rows are applied.
 
-DEX 4.92 row values: event `0x800000000037CFF8`/`0x800000000033A2B0`, event code `0x80000000000CACF0`/`0x16E42A0B1EBFEFFA`, enable `0x800000000037CFB0`/`0x800000000033A310`, enable code `0x80000000000CB234`/`0xEF8C3F93F63DFDB3`, input as today, `pad_vtable` `0x800000000038CDC8`, `pad_mgr` `0x80000000004A1CB8`, `info_tmpl` = the `DS3_INFO_TEMPLATE` array of the facts note C1.5 (copied as a `static const uint8_t` array), helper row `{ DS45_KPATCH_WORD, 0x800000000029E2CCULL, 0x8D1047F832C76096ULL, 0x68800CE6ULL }`, inline rows = today's two WORD rows (`0x11B5E4`, `0x11B5EC`). The F3 send fields and the start-up slot are deleted from the row.
+DEX 4.92 row values: event `0x800000000037CFF8`/`0x800000000033A2B0`, event code `0x80000000000CACF0`/`0x16E42A0B1EBFEFFA`, enable `0x800000000037CFB0`/`0x800000000033A310`, enable code `0x80000000000CB234`/`0xB52798EFCFE165A8` (the aligned qword `0xCB230`; corrected in the final review from `0xEF8C3F93F63DFDB3`, the hash of the unaligned 8 bytes), input as today, `pad_vtable` `0x800000000038CDC8`, `pad_mgr` `0x80000000004A1CB8`, `info_tmpl` = the `DS3_INFO_TEMPLATE` array of the facts note C1.5 (copied as a `static const uint8_t` array), helper row `{ DS45_KPATCH_WORD, 0x800000000029E2CCULL, 0x8D1047F832C76096ULL, 0x68800CE6ULL }`, inline rows = today's two WORD rows (`0x11B5E4`, `0x11B5EC`). The F3 send fields and the start-up slot are deleted from the row.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_shim.c` (drop the start-up/GET tests; fake driver = `uint8_t drv[0xB0]`, fake pad = `uint8_t pad[0x520]` with `*(uint64_t*)pad = d.pad_vtable`, VID/PID bytes `05 4C 0C E6` at 0x68, `*(uint8_t**)(drv+0x48) = pad`, `*(uint8_t**)(drv+0x58) = pad+0x80`, `drv[0x50..0x53] = 80 01 00 0C`):
   - `test_event_dualsense_completes`: returns 1; pad[0x80..0x87] and pad[0x90..0xD5] == info_tmpl; pad[0x88..0x8F] == `00 00 00 01 D5 00 44 53`; drv[0x50..0x53] == 0; drv[0x54] == 9; stat_completed == 1.

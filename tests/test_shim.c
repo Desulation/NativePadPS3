@@ -382,6 +382,45 @@ static int test_event_disabled(void)
 	return 0;
 }
 
+/* The info pointer at drv+0x58 is only trusted when it is the validated pad's
+ * own +0x80: pointing anywhere else (another buffer, the pad at another offset,
+ * NULL) the event passes to the original and not a byte of the driver, the pad,
+ * the other buffer or the data block changes. */
+static int test_event_info_not_pad_untouched(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t pad, other, other_before;
+	fake_drv_t drv;
+	static const int pad_offs[] = { 0, 0x78, 0x88 };
+	unsigned i;
+
+	pad_make(&other, 0, 0, 0);
+	other_before = other;
+
+	/* another object's +0x80 */
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	drv_make(&drv, &pad);
+	put_native(drv.b + SHIM_DRV_INFO, other.b + 0x80);
+	CHECK(event_passes(&d, &drv, &pad) == 0);
+	CHECK(memcmp(other.b, other_before.b, PAD_LEN) == 0);
+
+	/* the right pad at the wrong offset */
+	for (i = 0; i < sizeof(pad_offs) / sizeof(pad_offs[0]); i++) {
+		pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+		drv_make(&drv, &pad);
+		put_native(drv.b + SHIM_DRV_INFO, pad.b + pad_offs[i]);
+		CHECK(event_passes(&d, &drv, &pad) == 0);
+	}
+
+	/* no info block at all */
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	drv_make(&drv, &pad);
+	put_native(drv.b + SHIM_DRV_INFO, NULL);
+	CHECK(event_passes(&d, &drv, &pad) == 0);
+	CHECK(d.stat_completed == 0);
+	return 0;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Enable (0xF4) event completion                                             */
 /* ------------------------------------------------------------------------ */
@@ -856,6 +895,7 @@ int run_tests(void)
 		test_event_ds3_untouched,
 		test_event_bad_pad_untouched,
 		test_event_disabled,
+		test_event_info_not_pad_untouched,
 		test_enable_dualsense_completes,
 		test_enable_passes,
 		test_pad_from_xport,

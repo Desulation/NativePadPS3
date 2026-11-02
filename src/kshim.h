@@ -33,7 +33,13 @@
 /* One firmware. The fingerprint is the same (fp_addr, fp_hash) scheme
  * ds45_kernel_t uses, so a row is only ever applied to the kernel it was
  * researched against. The product-ID rows are WORD rows (a finished instruction
- * written as given); a BRANCH row would be aimed at shim_pid_ok. */
+ * written as given); a BRANCH row would be aimed at shim_pid_ok.
+ *
+ * Every code hash (event_code_hash, enable_code_hash and each product-ID row's
+ * expect) is the FNV-1a 64 of the 8-ALIGNED qword holding the address (addr & ~7,
+ * its 8 bytes in memory order) - never of the 8 bytes starting at an unaligned
+ * address. tests/test_kshim.c checks the built-in row against the pristine image
+ * when it is available locally. */
 typedef struct {
 	const char *name;
 	uint64_t fp_addr, fp_hash;
@@ -43,7 +49,7 @@ typedef struct {
 	uint64_t event_slot, event_expect;          /* 0x37CFF8 / 0x33A2B0 OPD */
 	uint64_t event_code_addr, event_code_hash;  /* 0xCACF0 / 0x16E42A0B1EBFEFFA */
 	uint64_t enable_slot, enable_expect;        /* 0x37CFB0 / 0x33A310 OPD */
-	uint64_t enable_code_addr, enable_code_hash;/* 0xCB234 / 0xEF8C3F93F63DFDB3 */
+	uint64_t enable_code_addr, enable_code_hash;/* 0xCB234 / 0xB52798EFCFE165A8 (qword 0xCB230) */
 	uint64_t input_slot, input_expect;          /* 0x37CE38 / 0x33A010 OPD */
 	uint64_t pad_vtable;                        /* 0x800000000038CDC8 */
 	uint64_t pad_mgr;                           /* 0x80000000004A1CB8 */

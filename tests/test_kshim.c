@@ -2,6 +2,8 @@
 /* CFLAGS: -DDS45_DEBUG */
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "fakes.h"
 #include "lv2.h"
@@ -163,6 +165,19 @@ int kernel_fingerprint_matches(uint64_t fp_addr, uint64_t fp_hash)
 
 /* g_cfg lives in config.c, which is not linked here. */
 ds45_config_t g_cfg;
+
+/* The debug trace (DS45_DEBUG): overrides the weak fake to catch the adopted
+ * product-ID mask. */
+static int      g_tr_applied_n;
+static uint32_t g_tr_applied;
+
+void ds45_boot_mark_hex(const char *stage, uint32_t value)
+{
+	if (strcmp(stage, "kshim_adopt_applied") == 0) {
+		g_tr_applied_n++;
+		g_tr_applied = value;
+	}
+}
 
 /* ----- the spare-syscall stand-in ---------------------------------------- */
 
@@ -391,7 +406,7 @@ static int check_blob_image(void)
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 3 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 4 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
 	          EVENT_ORIG ? 0 : __LINE__);
@@ -564,6 +579,37 @@ static int test_enable_code_hash_mismatch(void)
 	put_q(ENABLE_CODE_QA, ENABLE_CODE_Q ^ 0xFF);
 	take_snap(&before);
 	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+	return 0;
+}
+
+/* The code hashes are of the 8-aligned qword HOLDING the code address, never of
+ * the 8 bytes starting at it. ENABLE_CODE is not 8-aligned (like the real
+ * 0xCB234): a row carrying the hash of the 8 bytes from ENABLE_CODE (the low half
+ * of its qword and the high half of the next) must be refused untouched. */
+static int test_code_hash_is_of_the_aligned_qword(void)
+{
+	struct snap before;
+	uint8_t b[8];
+	uint64_t next = 0x9999AAAABBBBCCCCULL;
+	int i;
+
+	setup();
+	put_q(ENABLE_CODE_QA + 8, next);
+	for (i = 0; i < 4; i++) {
+		b[i]     = (uint8_t)(ENABLE_CODE_Q >> (24 - 8 * i));
+		b[4 + i] = (uint8_t)(next >> (56 - 8 * i));
+	}
+	g_ent.enable_code_hash = ds45_fnv1a64(b, 8);
+	CHECK(g_ent.enable_code_hash != qhash(ENABLE_CODE_Q));
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+
+	/* the aligned-qword hash of the same address installs */
+	setup();
+	put_q(ENABLE_CODE_QA + 8, next);
+	CHECK((ENABLE_CODE & 7) != 0);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	kshim_remove();
 	return 0;
 }
 
@@ -789,10 +835,13 @@ static int test_adopt_via_event_slot(void)
 		g_cfg.shim_inline_pid = !g;
 		g_spare_calls = 0;
 		pokes = fake_lv2_poke_count;
+		g_tr_applied_n = 0;
 		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 		CHECK(fake_lv2_poke_count == pokes);   /* zero pokes */
 		CHECK(g_spare_calls == 0);             /* nothing re-allocated */
 		CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+		/* the console log names the word edits the adopted install recorded */
+		CHECK(g_tr_applied_n == 1 && g_tr_applied == (g ? 7u : 1u));
 
 		/* removing the adopted install leaves the image as it was before the
 		 * first install: redirects, helper word and (with g) the inline words */
@@ -991,7 +1040,9 @@ static int test_builtin_table(void)
 	CHECK(k->enable_slot == 0x800000000037CFB0ULL);
 	CHECK(k->enable_expect == 0x800000000033A310ULL);
 	CHECK(k->enable_code_addr == 0x80000000000CB234ULL);
-	CHECK(k->enable_code_hash == 0xEF8C3F93F63DFDB3ULL);
+	/* FNV of the aligned qword 0xCB230 that holds 0xCB234 (hash_ok's rule), not
+	 * of the 8 bytes from 0xCB234 */
+	CHECK(k->enable_code_hash == 0xB52798EFCFE165A8ULL);
 	CHECK(k->input_slot == 0x800000000037CE38ULL);
 	CHECK(k->input_expect == 0x800000000033A010ULL);
 	CHECK(k->pad_vtable == 0x800000000038CDC8ULL);
@@ -1022,6 +1073,139 @@ static int test_builtin_table(void)
 	return 0;
 }
 
+/* ----- the built-in row against the pristine DEX 4.92 image -------------- */
+
+/* The pristine LV2 code image (LV2 offset = file offset) is Sony's code, so it
+ * lives outside the repository and never goes into git. It is found through the
+ * environment variable DS45_LV2_492_IMAGE, else at <repo>/../analysis/
+ * lv2_code_492.bin. Without it the image test prints SKIP and passes. */
+#define IMAGE_492_REL "../analysis/lv2_code_492.bin"
+
+/* Loads the image into the fake LV2 at DS45_LV2_BASE; its length, 0 if absent. */
+static long load_image_492(void)
+{
+	char path[1024];
+	const char *env = getenv("DS45_LV2_492_IMAGE");
+	const char *file = __FILE__;   /* <repo>/tests/test_kshim.c */
+	size_t len, cut = 0;
+	int seps = 0;
+	FILE *f;
+	uint8_t *buf;
+	long n;
+
+	if (env && *env) {
+		if (strlen(env) >= sizeof(path))
+			return 0;
+		strcpy(path, env);
+	} else {
+		for (len = strlen(file); len > 0; len--)
+			if (file[len - 1] == '/' || file[len - 1] == '\\')
+				if (++seps == 2) {
+					cut = len;
+					break;
+				}
+		if (seps < 2 || cut + sizeof(IMAGE_492_REL) > sizeof(path))
+			return 0;
+		memcpy(path, file, cut);
+		memcpy(path + cut, IMAGE_492_REL, sizeof(IMAGE_492_REL));
+	}
+
+	f = fopen(path, "rb");
+	if (!f)
+		return 0;
+	if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) <= 0 ||
+	    (uint64_t)n > DS45_LV2_BOUND - DS45_LV2_BASE || fseek(f, 0, SEEK_SET) != 0) {
+		fclose(f);
+		return 0;
+	}
+	buf = malloc((size_t)n);
+	if (!buf || fread(buf, 1, (size_t)n, f) != (size_t)n) {
+		free(buf);
+		fclose(f);
+		return 0;
+	}
+	fclose(f);
+	fake_lv2_set(B, buf, (int)n);
+	free(buf);
+	return n;
+}
+
+/* In [B, B + n): an address the installer reads from the code image. */
+static int in_image(uint64_t addr, long n)
+{
+	return addr >= B && addr + 8 <= B + (uint64_t)n;
+}
+
+/* The DEX 4.92 row, exactly as built in, against the pristine code image and
+ * the installer's own hash rules: the 32-byte fingerprint, the event and enable
+ * code qwords (the aligned qword holding each address) and every product-ID
+ * site. The data slots past the code image are planted with the row's own
+ * expected values (they are pointers the row states, not code). This is the test
+ * that catches a row hash computed over the wrong bytes - for example over the 8
+ * bytes starting at an unaligned code address instead of the qword holding it -
+ * which no synthetic row can. Both SHIM_INLINE_PID settings; remove restores the
+ * image. */
+static int test_builtin_row_on_pristine_image(void)
+{
+	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
+	uint64_t spare = k->syscall_table + (uint64_t)k->spare_syscall * 8;
+	uint64_t q[DS45_SHIM_PID_SITES], qa[DS45_SHIM_PID_SITES];
+	long n;
+	int inl, i;
+
+	for (inl = 0; inl < 2; inl++) {
+		setup();
+		n = load_image_492();
+		if (n == 0) {
+			printf("test_kshim: SKIP built-in row vs pristine DEX 4.92 image "
+			       "(not found; set DS45_LV2_492_IMAGE)\n");
+			return 0;
+		}
+
+		/* what the installer hashes lies in the image ... */
+		CHECK(in_image(k->fp_addr, n) && k->fp_addr + DS45_FP_LEN <= B + (uint64_t)n);
+		CHECK(in_image(k->event_code_addr & ~7ULL, n));
+		CHECK(in_image(k->enable_code_addr & ~7ULL, n));
+		for (i = 0; i < DS45_SHIM_PID_SITES; i++) {
+			qa[i] = (i < DS45_SHIM_PID_PATCHES ? k->pid_patches[i].addr
+			         : k->inline_patches[i - DS45_SHIM_PID_PATCHES].addr) & ~7ULL;
+			CHECK(in_image(qa[i], n));
+			q[i] = rd(qa[i]);
+		}
+		/* ... and what is planted lies past it, so it masks no image byte */
+		CHECK(!in_image(k->event_slot, n) && !in_image(k->enable_slot, n) &&
+		      !in_image(k->input_slot, n) && !in_image(spare, n) &&
+		      !in_image(k->alloc_desc, n) && BLOB_BASE >= B + (uint64_t)n);
+		put_q(k->event_slot, k->event_expect);
+		put_q(k->enable_slot, k->enable_expect);
+		put_q(k->input_slot, k->input_expect);
+		put_q(spare, k->spare_slot_expect);
+		put_q(k->alloc_desc, ALLOC_ENTRY);
+		put_q(k->alloc_desc + 8, KERNEL_TOC);
+		fake_spare_syscall = (int)k->spare_syscall;
+		g_cfg.shim_inline_pid = inl;
+
+		CHECK(kshim_install_from(ds45_shim_table, ds45_shim_table_count) ==
+		      KSHIM_INSTALLED);
+		CHECK(rd(k->event_slot) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+		CHECK(rd(k->enable_slot) == BLOB_BASE + DS45_SHIM_OFF_ENABLE);
+		CHECK(rd(k->input_slot) == BLOB_BASE + DS45_SHIM_OFF_INPUT);
+		CHECK(rd(qa[0]) != q[0]);
+		CHECK((rd(qa[1]) != q[1]) == (inl != 0));
+		CHECK((rd(qa[2]) != q[2]) == (inl != 0));
+
+		kshim_remove();
+		for (i = 0; i < DS45_SHIM_PID_SITES; i++)
+			CHECK(rd(qa[i]) == q[i]);
+		CHECK(rd(k->event_slot) == k->event_expect);
+		CHECK(rd(k->enable_slot) == k->enable_expect);
+		CHECK(rd(k->input_slot) == k->input_expect);
+		CHECK(rd(spare) == k->spare_slot_expect);
+		CHECK(fake_lv2_out_of_bounds == 0);
+	}
+	return 0;
+}
+
 int run_tests(void)
 {
 	int (*const tests[])(void) = {
@@ -1031,6 +1215,7 @@ int run_tests(void)
 		test_inline_rows_gated,
 		test_event_code_hash_mismatch,
 		test_enable_code_hash_mismatch,
+		test_code_hash_is_of_the_aligned_qword,
 		test_enable_slot_mismatch,
 		test_install_fails_each_step,
 		test_rollback_each_step,
@@ -1041,6 +1226,7 @@ int run_tests(void)
 		test_remove_restores_all,
 		test_word_rows_do_not_follow_the_load_base,
 		test_builtin_table,
+		test_builtin_row_on_pristine_image,
 	};
 	unsigned i;
 	int line;

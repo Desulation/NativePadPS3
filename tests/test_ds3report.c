@@ -1147,7 +1147,10 @@ static int test_abi_layout(void)
 	/* "DS45SHM1", most significant byte first */
 	for (i = 0; i < 8; i++)
 		CHECK((uint8_t)(DS45_SHIM_MAGIC >> (56 - 8 * i)) == (uint8_t)"DS45SHM1"[i]);
-	CHECK(DS45_SHIM_VERSION == 3);     /* 3: start-up completion, no connection table */
+	/* 4: start-up completion with the product-ID originals (pid_orig,
+	 * pid_applied) appended - 208 bytes. 3 was the 176-byte layout without them;
+	 * neither 3 nor 4 has been on a console before 4. */
+	CHECK(DS45_SHIM_VERSION == 4);
 	CHECK(DS45_SHIM_INFO_LEN == 0x56);
 
 	/* The plugin and the blob compile this header separately and meet in

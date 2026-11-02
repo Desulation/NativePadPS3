@@ -139,7 +139,10 @@ static uint64_t qword_hash(uint64_t v)
 	return ds45_fnv1a64(b, 8);
 }
 
-/* The qword containing addr hashes to expect; 0 if it differs or cannot be read. */
+/* The 8-aligned qword containing addr (addr & ~7) hashes to expect; 0 if it
+ * differs or cannot be read. A row's code hash for an unaligned address (the
+ * enable handler's 0xCB234) is therefore the hash of the qword at 0xCB230, never
+ * of the 8 bytes starting at 0xCB234 (kshim.h). */
 static int hash_ok(uint64_t addr, uint64_t expect)
 {
 	uint64_t cur;
@@ -190,7 +193,11 @@ static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int *n,
 /* The qword a product-ID site holds once row p is applied over orig: the
  * instruction replaces the high half when (addr & 4) == 0, the low half
  * otherwise (kpatch.h). A BRANCH row targets shim_pid_ok in the blob at base.
- * 0 if the row's instruction cannot be formed. */
+ * 0 if the row's instruction cannot be formed.
+ * The BRANCH arm here (and the BRANCH range check and retargeting in
+ * kshim_install_from) has no row and no test today: stage 1 is WORD rows only.
+ * It is kept on purpose for stage 1b, which may add a BRANCH row to
+ * shim_pid_ok - do not delete it; test it with that row. */
 static int pid_patched_qword(const ds45_kpatch_t *p, uint64_t orig, uint64_t base,
                              uint64_t *out)
 {
@@ -226,9 +233,14 @@ static void adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
 	uint32_t applied;
 	int i;
 
-	if (ds45_lv2_read(db + offsetof(ds45_shim_data_t, pid_applied), &q))
+	if (ds45_lv2_read(db + offsetof(ds45_shim_data_t, pid_applied), &q)) {
+		DS45_TRACE("kshim_adopt_applied_unreadable");
 		return;
+	}
 	applied = (uint32_t)(q >> 32);          /* the high word of its big-endian qword */
+	/* which word edits the adopted install recorded as live (bit 0 helper,
+	 * bits 1-2 inline); kshim_adopt_pid_skipped names any not restorable */
+	DS45_TRACE_HEX("kshim_adopt_applied", applied);
 	for (i = 0; i < DS45_SHIM_PID_SITES; i++) {
 		if (!(applied & (1u << i)))
 			continue;
@@ -437,7 +449,8 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	/* 4. the allocation must be writable (in-window, 8-aligned, whole region
 	 * inside the bound), and within a 26-bit branch of any BRANCH row's site. A
 	 * WORD row is a finished instruction that never points at the blob, so it
-	 * has no range to check. */
+	 * has no range to check. (No row is BRANCH today; the check is kept for
+	 * stage 1b - see pid_patched_qword.) */
 	if ((base & 7) || base < DS45_LV2_BASE ||
 	    base > DS45_LV2_BOUND - alloc_size) {
 		DS45_TRACE("kshim_alloc_window");
