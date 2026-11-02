@@ -97,21 +97,44 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n);
  * qword (pid_orig) and which sites it applied (pid_applied), and adoption
  * journals a site only if that original hashes to the row's expected value and
  * the site still holds it with the row's instruction applied; any other site is
- * left as found. After the redirects are switched back, the fixed blob region is
- * zeroed: it cannot be freed, so zeroing restores the pristine fill a later
- * install's zero-check needs (RAM-only; a reboot clears it regardless). The
- * redirects are switched back first, so no driver thread enters the blob after
- * it is zeroed. A no-op when nothing is installed. */
-void kshim_remove(void);
+ * left as found.
+ *
+ * Unload is two steps, because the fixed blob region cannot be freed and a driver
+ * thread may still be executing inside it:
+ *   kshim_unhook() switches the redirects and words back from the journal and
+ *   reads every reverted qword back; only if they all stuck does it ARM the scrub
+ *   (a still-live redirect would make zeroing the blob fatal). It traces
+ *   kshim_remove_kept and arms nothing if a revert did not read back. A no-op when
+ *   nothing is installed.
+ *   kshim_scrub() zeroes the fixed blob region [base, base + blob + flush OPD),
+ *   restoring the pristine fill a later install's zero-check needs. It does
+ *   nothing unless the preceding unhook armed it. RAM-only; a reboot clears it.
+ * The caller drains any in-blob thread between the two (bounded, straight-line
+ * blob code); the host tests, with no such thread, call them back to back. */
+void kshim_unhook(void);
+void kshim_scrub(void);
 
 #ifdef DS45_DEBUG
 /* Executability pre-flight (design Amendment 2, console step 0): poke a two-word
  * leaf stub `li r3,<magic>; blr` at k->exec_base, flush it, point the borrowed
  * spare slot at an OPD { exec_base, kernel TOC } and call it once, and report
- * what it returned in *out (expect 0x5AED, proving the region executes). Returns
- * 0 when the plumbing worked - whatever the stub returned - or non-zero on a
- * verify/poke/read failure; *out is 0 unless the call was made. Leaves exec_base
- * and its two scratch OPDs zeroed and the spare slot restored. Debug builds only;
+ * what it returned in *out (expect 0x5AED, proving the region executes).
+ *
+ * Before the first poke it verifies k->exec_base is 8-aligned in the window, the
+ * 40-byte scratch span (stub + two scratch OPDs) fits under exec_bound, the spare
+ * slot holds spare_slot_expect, and the whole span reads zero - any failing
+ * writes and borrows nothing. Return value:
+ *   0  success: the stub ran, *out holds its result, the span is zeroed again;
+ *   1  exec_base misaligned/out of window, or the 40-byte span past exec_bound;
+ *   2  the spare slot did not hold spare_slot_expect;
+ *   3  the 40-byte scratch span did not read all zero;
+ *   4  the kernel TOC (alloc_desc + 8) could not be read;
+ *   5  the stub poke did not read back;
+ *   6  a flush-stage write or the spare-slot borrow/restore did not read back;
+ *   7  an exec-stage write/borrow did not read back, or the span could not be
+ *      zeroed afterwards.
+ * On any non-zero return from code 5 on, the spare slot is restored and the span
+ * is zeroed (best effort); *out is 0 unless the call was made. Debug builds only;
  * it installs nothing and the kernel is not otherwise touched. main.c traces the
  * result. */
 int kshim_exec_probe(const ds45_shim_kernel_t *k, uint64_t *out);

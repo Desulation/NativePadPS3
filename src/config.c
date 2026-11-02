@@ -361,8 +361,10 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	ds45_boot_mark_hex("cfg_ps_only", (uint32_t)c->ps_only);
 	ds45_boot_mark_hex("cfg_bt_ps_combo", (uint32_t)c->bt_ps_combo);
 #ifndef DS45_GAME
-	/* Whether the kernel shim may be installed at all: the one setting that
-	 * decides if the plugin ever writes kernel memory. */
+	/* The settings that let the plugin touch kernel memory: ENABLE_SHIM installs
+	 * the shim, and in a debug build PROBE_EXEC runs the executability pre-flight
+	 * (which also pokes the fixed region). Either being set is worth seeing in
+	 * the boot trace. */
 	ds45_boot_mark_hex("cfg_enable_shim", (uint32_t)c->enable_shim);
 	ds45_boot_mark_hex("cfg_shim_inline_pid", (uint32_t)c->shim_inline_pid);
 	ds45_boot_mark_hex("cfg_probe_exec", (uint32_t)c->probe_exec);

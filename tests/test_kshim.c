@@ -200,21 +200,40 @@ static uint64_t spare_handler(uint64_t a1, uint64_t a2)
 /* The probe borrows the spare slot twice: the 0x29B8 flush, then one call into
  * the leaf stub at exec_base. The real dispatcher double-derefs the slot (slot
  * -> OPD -> entry); the fake does not model that, so do it here: read the OPD
- * the probe pointed the slot at, and when its entry lands inside the exec
- * region emulate running `li r3,imm; blr` by returning the stub's li immediate.
- * The flush call (entry 0x29B8, outside the region) returns 0. */
-static int g_probe_calls;
+ * the probe pointed the slot at, record the entry and args per call, and when
+ * the entry lands inside the exec region emulate running `li r3,imm; blr` by
+ * returning the stub's li immediate. The flush call (entry 0x29B8, outside the
+ * region) returns 0. */
+static int      g_probe_calls;
+static uint64_t g_probe_entry[4], g_probe_a1[4], g_probe_a2[4];
+static uint64_t g_probe_stub;    /* the stub qword the exec call ran */
 static uint64_t probe_spare_handler(uint64_t a1, uint64_t a2)
 {
-	uint64_t opd, entry;
+	uint64_t opd = rd(SPARE_SLOT);
+	uint64_t entry = rd(opd);
 
-	(void)a1; (void)a2;
+	if (g_probe_calls < 4) {
+		g_probe_entry[g_probe_calls] = entry;
+		g_probe_a1[g_probe_calls] = a1;
+		g_probe_a2[g_probe_calls] = a2;
+	}
 	g_probe_calls++;
-	opd = rd(SPARE_SLOT);
-	entry = rd(opd);
-	if (entry >= BLOB_BASE && entry < EXEC_BOUND)
-		return (uint64_t)((uint32_t)(rd(entry) >> 32) & 0xFFFF);
+	if (entry >= BLOB_BASE && entry < EXEC_BOUND) {
+		g_probe_stub = rd(entry);
+		return (uint64_t)((uint32_t)(g_probe_stub >> 32) & 0xFFFF);
+	}
 	return 0;
+}
+
+/* The transient-fault helper from test_kpatch: drop pokes from fail_after on,
+ * then lift the fault as soon as the first dropped poke has been read back, so
+ * the code under test can still land its own rollback / clean-up writes. */
+static int g_fault_at;
+static void clear_fault_after_failed_poke(uint64_t addr)
+{
+	(void)addr;
+	if (fake_lv2_poke_count > g_fault_at)
+		fake_lv2_poke_fail_after = -1;
 }
 
 /* ----- the LV2 write log -------------------------------------------------- */
@@ -262,8 +281,12 @@ static void setup(void)
 	fake_reset_all();
 	g_spare_calls = 0;
 	g_probe_calls = 0;
+	g_probe_stub = 0;
 	memset(g_spare_a1, 0, sizeof(g_spare_a1));
 	memset(g_spare_a2, 0, sizeof(g_spare_a2));
+	memset(g_probe_entry, 0, sizeof(g_probe_entry));
+	memset(g_probe_a1, 0, sizeof(g_probe_a1));
+	memset(g_probe_a2, 0, sizeof(g_probe_a2));
 	fake_spare_syscall = (int)SPARE_NUM;
 	fake_spare_handler = spare_handler;
 
@@ -374,6 +397,18 @@ static int snap_eq(const struct snap *a, const struct snap *b)
 /* A refusal before anything is written, borrowed or allocated (defined below,
  * forward-declared so the install-placement tests can use it). */
 static int refused_untouched(const struct snap *before, int pokes);
+
+/* The plugin unloads in two steps: unhook (revert the redirects and words,
+ * confirm they stuck, arm the scrub) then, after a short drain on the console,
+ * scrub (zero the fixed blob region). The host has no concurrent blob thread, so
+ * the tests call them back to back; most tests want the full effect, so this
+ * stands in for the old one-shot remove. Split-specific tests call the two
+ * directly. */
+static void kshim_remove(void)
+{
+	kshim_unhook();
+	kshim_scrub();
+}
 
 /* ----- tests ------------------------------------------------------------- */
 
@@ -647,7 +682,15 @@ static int test_exec_probe_stub(void)
 	fake_spare_handler = probe_spare_handler;
 	CHECK(kshim_exec_probe(&g_ent, &out) == 0);
 	CHECK(out == 0x5AED);
-	CHECK(g_probe_calls == 2);                /* the flush, then the one exec call */
+	CHECK(g_probe_calls == 2);                /* flush first, then the one exec call */
+
+	/* call 0 is the 0x29B8 flush of the 8 stub bytes at exec_base */
+	CHECK(g_probe_entry[0] == FLUSH_ENTRY);
+	CHECK(g_probe_a1[0] == BLOB_BASE && g_probe_a2[0] == 8);
+	/* call 1 runs the stub: its OPD entry is exec_base, holding the exact
+	 * big-endian `li r3,0x5AED; blr` qword */
+	CHECK(g_probe_entry[1] == BLOB_BASE);
+	CHECK(g_probe_stub == 0x38605AED4E800020ULL);
 
 	/* exec_base is left pristine: the stub and both scratch OPDs are zeroed */
 	CHECK(rd(BLOB_BASE) == 0);
@@ -666,6 +709,144 @@ static int test_exec_probe_stub(void)
 	CHECK(g_probe_calls == 0);                /* no call was made */
 	CHECK(out == 0);                          /* cleared */
 	CHECK(rd(BLOB_BASE) == 0x1234ULL);        /* untouched */
+
+	/* the spare slot must read as the ni stub before the probe borrows it */
+	setup();
+	fake_spare_handler = probe_spare_handler;
+	put_q(SPARE_SLOT, SPARE_STUB + 8);        /* not the expected value */
+	CHECK(kshim_exec_probe(&g_ent, &out) != 0);
+	CHECK(g_probe_calls == 0);
+	CHECK(rd(BLOB_BASE) == 0);                /* the stub was never poked */
+
+	/* the 40-byte scratch span must fit under exec_bound */
+	setup();
+	fake_spare_handler = probe_spare_handler;
+	g_ent.exec_bound = BLOB_BASE + 32;        /* 40 > 32 */
+	CHECK(kshim_exec_probe(&g_ent, &out) != 0);
+	CHECK(g_probe_calls == 0);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* A probe poke failing at any forward step still leaves the spare slot restored
+ * and the 40-byte scratch span zeroed (the single clean-up label runs on every
+ * non-zero return). Uses the transient-fault helper so the clean-up writes land. */
+static int probe_fault_at(int poke_index)
+{
+	uint64_t out = 0xDEAD;
+	int i;
+
+	setup();
+	fake_spare_handler = probe_spare_handler;
+	g_fault_at = poke_index;
+	fake_lv2_poke_fail_after = poke_index;
+	fake_lv2_on_peek = clear_fault_after_failed_poke;
+	CHECK_SUB(kshim_exec_probe(&g_ent, &out) != 0 ? 0 : __LINE__);
+	fake_lv2_on_peek = NULL;
+	fake_lv2_poke_fail_after = -1;
+	CHECK_SUB(rd(SPARE_SLOT) == SPARE_STUB ? 0 : __LINE__);
+	for (i = 0; i < 40; i += 8)
+		CHECK_SUB(rd(BLOB_BASE + i) == 0 ? 0 : __LINE__);
+	CHECK_SUB(fake_lv2_out_of_bounds == 0 ? 0 : __LINE__);
+	return 0;
+}
+
+static int test_probe_fault_each_step(void)
+{
+	int i;
+
+	/* eight forward pokes: stub, flush OPD x2, borrow, restore, exec OPD x2,
+	 * point. The four flush-stage pokes are indices 1..4. */
+	for (i = 0; i < 8; i++)
+		CHECK(probe_fault_at(i) == 0);
+	return 0;
+}
+
+/* Unload is a two-step split: unhook reverts the redirects and words and only
+ * then arms the scrub. If a revert does not stick (kpatch_revert swallows the
+ * failed write), a redirect may still point into the blob, so unhook must NOT
+ * arm the scrub - zeroing live blob code would send the kernel's next call to 0. */
+static int test_remove_keeps_hooks_on_failed_revert(void)
+{
+	int pokes;
+
+	setup();
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
+
+	/* drop every revert poke, so the hooks stay live */
+	pokes = fake_lv2_poke_count;
+	fake_lv2_poke_fail_after = pokes;
+	kshim_unhook();
+	fake_lv2_poke_fail_after = -1;
+
+	/* scrub must be a no-op: the blob is left intact */
+	kshim_scrub();
+	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
+	CHECK(rd(BLOB_BASE) != 0);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* The scrub target comes from the adopt path, not a prior install: install once
+ * at a different base and fully remove it, then adopt a blob laid down by hand at
+ * exec_base; unload must zero the ADOPTED base. */
+static int test_adopt_remove_zeroes_blob(void)
+{
+	const uint64_t A = BLOB_BASE + 0x40000;
+	uint64_t off;
+
+	setup();
+	g_ent.exec_base = A;
+	g_ent.exec_bound = A + 0x4000;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);   /* g_base = A */
+	kshim_remove();
+
+	/* a valid adoptable blob at BLOB_BASE (!= A), laid down by hand */
+	g_ent.exec_base = BLOB_BASE;
+	g_ent.exec_bound = EXEC_BOUND;
+	put_q(EVENT_SLOT, BLOB_BASE + DS45_SHIM_OFF_EVENT);
+	put_q(ENABLE_SLOT, BLOB_BASE + DS45_SHIM_OFF_ENABLE);
+	put_q(INPUT_SLOT, BLOB_BASE + DS45_SHIM_OFF_INPUT);
+	put_q(BLOB_BASE, 0xC0DEC0DEC0DEC0DEULL);                   /* fake blob code */
+	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA, DS45_SHIM_MAGIC);
+	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, version),
+	      ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
+	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_applied), 0);
+
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);     /* adopted at BLOB_BASE */
+
+	kshim_unhook();
+	kshim_scrub();
+
+	/* the adopted base is the one scrubbed */
+	for (off = 0; off < (uint64_t)DS45_SHIM_BLOB_LEN + 16; off += 8)
+		CHECK(rd(BLOB_BASE + off) == 0);
+	CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
+	CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
+	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* With flush_desc == 0 the install writes no flush OPD and borrows nothing, and
+ * unload zeroes only [base, base + blob): the 16 bytes past the blob are left
+ * untouched (sentinel survives). */
+static int test_install_no_flush_leaves_tail(void)
+{
+	const uint64_t sentinel = 0x5E5E5E5E5E5E5E5EULL;
+
+	setup();
+	g_ent.flush_desc = 0;
+	put_q(BLOB_BASE + DS45_SHIM_BLOB_LEN, sentinel);
+
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(g_spare_calls == 0);                                 /* nothing borrowed */
+	CHECK(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN) == sentinel);     /* no flush OPD written */
+
+	kshim_remove();
+	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == 0);            /* blob zeroed */
+	CHECK(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN) == sentinel);     /* tail untouched */
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }
@@ -813,17 +994,6 @@ static int test_enable_slot_mismatch(void)
 	take_snap(&before);
 	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
 	return 0;
-}
-
-/* The transient-fault helper from test_kpatch: drop pokes from fail_after on,
- * then lift the fault as soon as the first dropped poke has been read back, so
- * the installer's own rollback writes can still land. */
-static int g_fault_at;
-static void clear_fault_after_failed_poke(uint64_t addr)
-{
-	(void)addr;
-	if (fake_lv2_poke_count > g_fault_at)
-		fake_lv2_poke_fail_after = -1;
 }
 
 /* case: a redirect slot changes between the verify and the write. */
@@ -1387,11 +1557,15 @@ int run_tests(void)
 		test_install_fails_on_toctou,
 		test_rollback_each_step,
 		test_remove_zeroes_blob,
+		test_remove_keeps_hooks_on_failed_revert,
+		test_install_no_flush_leaves_tail,
 		test_exec_probe_stub,
+		test_probe_fault_each_step,
 		test_install_is_gated_by_enable_shim,
 		test_adopt_via_event_slot,
 		test_adopt_skips_corrupt_orig,
 		test_adopt_requires_the_same_version,
+		test_adopt_remove_zeroes_blob,
 		test_remove_restores_all,
 		test_word_rows_do_not_follow_the_load_base,
 		test_builtin_table,

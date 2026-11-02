@@ -473,32 +473,42 @@ static void ds45_thread(uint64_t arg)
 		 * ds45pad.txt says ENABLE_SHIM = 1; to recover from a hang, remove that
 		 * line and reboot. With the gate shut the kernel is not touched at all
 		 * (kshim_install() refuses by itself as well). */
-#ifdef DS45_DEBUG
-		/* Executability pre-flight (design Amendment 2, console step 0): before
-		 * any hook is installed, a debug build with PROBE_EXEC = 1 proves the
-		 * fixed executable region runs one leaf stub on the plugin's own one-shot
-		 * syscall thread - the smallest possible blast radius. It installs nothing
-		 * this boot, and runs only on a matched kernel (the region is
-		 * firmware-specific), exactly where the shim would otherwise install. */
+		/* Executability pre-flight (design Amendment 2, console step 0): with
+		 * PROBE_EXEC set, suppress the shim install this boot in EVERY VSH build,
+		 * so the pre-flight can never co-exist with a no-preflight install. A
+		 * debug build additionally runs the probe - proving the fixed executable
+		 * region runs one leaf stub on the plugin's own one-shot syscall thread
+		 * (the smallest possible blast radius) before any hook is installed, on a
+		 * fingerprint-matched row, exactly where the shim would otherwise go. */
 		if (g_cfg.probe_exec) {
-			const ds45_shim_kernel_t *ek =
-				ds45_shim_table_count > 0 ? &ds45_shim_table[0] : NULL;
-			uint64_t exec_out = 0;
-
 			probe_ran = 1;
-			ds45_boot_mark("exec_probe");
-			if (ek && kernel_fingerprint_matches(ek->fp_addr, ek->fp_hash)) {
-				int pr = kshim_exec_probe(ek, &exec_out);
+#ifdef DS45_DEBUG
+			{
+				const ds45_shim_kernel_t *ek = NULL;
+				uint64_t exec_out = 0;
+				int ei;
 
-				if (pr == 0)
-					DS45_TRACE_HEX("exec_probe", exec_out);
-				else
-					DS45_TRACE_HEX("exec_probe_FAILED", (uint64_t)pr);
-			} else {
-				DS45_TRACE("exec_probe_no_entry");
+				for (ei = 0; ei < ds45_shim_table_count; ei++)
+					if (ds45_shim_table[ei].fp_addr != 0 &&
+					    kernel_fingerprint_matches(ds45_shim_table[ei].fp_addr,
+					                               ds45_shim_table[ei].fp_hash)) {
+						ek = &ds45_shim_table[ei];
+						break;
+					}
+				ds45_boot_mark("exec_probe");
+				if (ek) {
+					int pr = kshim_exec_probe(ek, &exec_out);
+
+					if (pr == 0)
+						DS45_TRACE_HEX("exec_probe", exec_out);
+					else
+						DS45_TRACE_HEX("exec_probe_FAILED", (uint64_t)pr);
+				} else {
+					DS45_TRACE("exec_probe_no_entry");
+				}
 			}
-		}
 #endif
+		}
 		if (!probe_ran && g_cfg.enable_shim) {
 			ds45_boot_mark("kshim_install");
 			kshim = kshim_install();
@@ -665,12 +675,16 @@ static void ds45_stop_thread(uint64_t arg)
 		sys_ppu_thread_join(thread_id, &exit_code);
 
 #ifndef DS45_GAME
-	/* Switch the kernel shim's redirects back (and revert the product-ID
-	 * patches) so the DS3 driver stops calling into the blob; the blob itself
-	 * stays allocated, since a driver thread may still be executing inside it.
-	 * A no-op when nothing was installed (USB mode, ENABLE_SHIM off, or an
-	 * unmatched kernel). */
-	kshim_remove();
+	/* Unload the kernel shim in two steps. kshim_unhook() switches the redirects
+	 * and product-ID words back so the DS3 driver stops calling into the blob
+	 * (and arms the scrub only if that reverting actually stuck). Then drain: the
+	 * fixed blob region cannot be freed, so a thread already inside the bounded,
+	 * straight-line blob code must be given time to run out before kshim_scrub()
+	 * zeroes it - zeroing live code would fault the kernel. Both are a no-op when
+	 * nothing was installed (USB mode, ENABLE_SHIM off, or an unmatched kernel). */
+	kshim_unhook();
+	sys_timer_usleep(150 * 1000);
+	kshim_scrub();
 
 	/* Never in the game build. ds45_notify() resolves vshtask by walking the
 	 * table at 0x1008C + 0x984, which only *is* an import table in the VSH
