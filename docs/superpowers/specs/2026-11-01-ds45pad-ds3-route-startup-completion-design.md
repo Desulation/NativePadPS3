@@ -171,10 +171,10 @@ installed.
 3. **Output on port assignment:** find the DS3 output path (player LEDs) and
    what a refused output report does. Rule: if a refusal can remove the pad,
    add an output wrapper that, for a DualSense, returns success without sending.
-4. **Inline acceptance needed?** Decided by console stage 2 (helper edit only).
+4. **Inline acceptance needed?** Decided by console test step 2 (helper edit only).
    Rule: if the pad object forms without it, the inline site is never edited.
 5. **Basic report layout and length** as this DualSense sends it, captured
-   passively by the plugin in console stage 3 before translation is armed.
+   passively by the plugin in console test step 3 before translation is armed.
    Rule: the translator matches that layout exactly; Mute is mapped only if
    present.
 6. **Hook slot values:** `0x37CFF8` holds `0x800000000033A2B0`, and the event
@@ -193,7 +193,7 @@ Host (existing clang harness):
   write to `0x37CFE8`.
 - Packer accepts the new blob.
 
-Console (DEX 4.92, RAM-only, one change at a time; the plugin's in-process
+Console test steps (DEX 4.92, RAM-only, one change at a time; the plugin's in-process
 capture observes; webMAN polled at no more than 2-3 requests per second):
 1. Install with the DualSense off: redirects verified; a DS3 over USB and
    Bluetooth still works.
