@@ -27,8 +27,8 @@ native DS3 path. This is stage 1 of the start-up work: basic input only.
   kernel addresses and small device constants (version numbers, flags,
   calibration values) may be stored as values.
 - A DS3, and any other device, is untouched.
-- Staged: basic input first, with no requests sent by our kernel code. Full
-  reports (motion, touchpad) come in stage 2.
+- Staged: basic input first, with no requests sent by our kernel code. Stage 2
+  adds full reports (motion, touchpad) and USB-cable pairing.
 
 ## What is known (DEX 4.92)
 
@@ -204,9 +204,21 @@ capture observes; webMAN polled at no more than 2-3 requests per second):
 4. DS3 and DualSense together; reconnect cycles; plugin unload restores the
    redirects.
 
+## Later stages
+
+- **Stage 1b** (before any release build): restore Move devices (see
+  "Product-ID acceptance").
+- **Stage 2:** full reports and USB-cable pairing, specified together after
+  stage 1 proves a native port.
+  - Full reports `0x31` (motion, touchpad), which needs a request sent from the
+    kernel code; the earlier hang suspect is re-analysed and tested on its own
+    first.
+  - USB-cable pairing as designed in spec 1's "Pairing" section (spec 1 plan
+    tasks 9-11: pairing facts, `src/usbpair.c`, console stage), so a DualSense
+    is paired by plugging it in once, like a DS3. Until then a DualSense is
+    registered through the XMB and the debug tooling flips its type to Sony.
+
 ## Out of scope
 
-Stage 2 (full reports `0x31`: motion, touchpad, which needs a request sent from
-the kernel code), stage 1b (Move devices), output (spec 2: rumble, LEDs, light
-bar), USB pairing (spec 1, unchanged; debug tooling flips the type meanwhile),
-DS4 and DualSense Edge, firmwares other than table entries.
+Output (spec 2: rumble, LEDs, light bar), DS4 and DualSense Edge, firmwares
+other than table entries.
