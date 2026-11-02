@@ -51,6 +51,7 @@ static void setup(uint32_t off, uint32_t len)
 	for (i = 0; i < 72; i++)
 		img[i] = (uint8_t)(0xA1 + i);
 	fake_lv2_set(ADDR, img, 72);
+	g_cfg.capture_ptr = 0;
 	g_cfg.capture_off = off;
 	g_cfg.capture_len = len;
 }
@@ -185,6 +186,155 @@ static int test_config_keys(void)
 	return 0;
 }
 
+/* CAPTURE_PTR: watch through a pointer. The qword at CAPTURE_PTR holds an
+ * object address; CAPTURE_LV2 is then the offset into that object. */
+
+#define PTR_OFF  0x51B268u
+#define PTR_ADDR (DS45_LV2_BASE + PTR_OFF)
+#define OBJ_OFF  0x5C7800u
+#define OBJ2_OFF 0x5D0000u
+
+static void set_ptr(uint64_t value)
+{
+	uint8_t b[8];
+	int i;
+
+	for (i = 0; i < 8; i++)
+		b[i] = (uint8_t)(value >> (56 - 8 * i));
+	fake_lv2_set(PTR_ADDR, b, 8);
+}
+
+static void setup_ptr(uint32_t field_off, uint32_t len)
+{
+	uint8_t img[0x100];
+	int i;
+
+	fake_reset_all();
+	nlines = 0;
+	memset(&cap, 0, sizeof(cap));
+	for (i = 0; i < 0x100; i++)
+		img[i] = (uint8_t)i;
+	fake_lv2_set(DS45_LV2_BASE + OBJ_OFF, img, 0x100);
+	for (i = 0; i < 0x100; i++)
+		img[i] = (uint8_t)(0xFF - i);
+	fake_lv2_set(DS45_LV2_BASE + OBJ2_OFF, img, 0x100);
+	g_cfg.capture_ptr = PTR_OFF;
+	g_cfg.capture_off = field_off;
+	g_cfg.capture_len = len;
+}
+
+/* A null pointer is logged (once) with no bytes, and the capture keeps going. */
+static int test_ptr_null_logged_once(void)
+{
+	setup_ptr(0x80, 8);
+	set_ptr(0);
+	lv2capture_poll(&cap, 10);
+	lv2capture_poll(&cap, 20);
+	CHECK(nlines == 2);
+	CHECK(strcmp(lines[0], "cap_t=0x0000000A") == 0);
+	CHECK(strcmp(lines[1], "cap_p=0x00000000") == 0);
+	CHECK(!cap.stopped);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* A live pointer: its target is logged, then the bytes at target + offset. */
+static int test_ptr_follows_target(void)
+{
+	setup_ptr(0x80, 8);
+	set_ptr(DS45_LV2_BASE + OBJ_OFF);
+	lv2capture_poll(&cap, 10);
+	CHECK(nlines == 3);
+	CHECK(strcmp(lines[1], "cap_p=0x005C7800") == 0);
+	CHECK(strcmp(lines[2], "c00 8081828384858687") == 0);
+	return 0;
+}
+
+/* Pointer appears, moves to another object, then goes back to null: each
+ * transition is logged, with the new object's bytes. */
+static int test_ptr_transitions_logged(void)
+{
+	setup_ptr(0x80, 8);
+	set_ptr(0);
+	lv2capture_poll(&cap, 1);
+	set_ptr(DS45_LV2_BASE + OBJ_OFF);
+	lv2capture_poll(&cap, 2);
+	set_ptr(DS45_LV2_BASE + OBJ2_OFF);
+	lv2capture_poll(&cap, 3);
+	set_ptr(0);
+	lv2capture_poll(&cap, 4);
+	CHECK(nlines == 2 + 3 + 3 + 2);
+	CHECK(strcmp(lines[3], "cap_p=0x005C7800") == 0);
+	CHECK(strcmp(lines[6], "cap_p=0x005D0000") == 0);
+	CHECK(strcmp(lines[7], "c00 7F7E7D7C7B7A7978") == 0);
+	CHECK(strcmp(lines[9], "cap_p=0x00000000") == 0);
+	return 0;
+}
+
+/* Same pointer, changed field: logged as a change. */
+static int test_ptr_field_change_logged(void)
+{
+	uint8_t b = 0x00;
+
+	setup_ptr(0x80, 8);
+	set_ptr(DS45_LV2_BASE + OBJ_OFF);
+	lv2capture_poll(&cap, 1);
+	lv2capture_poll(&cap, 2);
+	CHECK(nlines == 3);
+	fake_lv2_set(DS45_LV2_BASE + OBJ_OFF + 0x80, &b, 1);
+	lv2capture_poll(&cap, 3);
+	CHECK(nlines == 6);
+	CHECK(strcmp(lines[5], "c00 0081828384858687") == 0);
+	return 0;
+}
+
+/* A pointer outside the window (or misaligned) is logged without bytes and
+ * never peeked; the capture keeps going and recovers when the pointer does. */
+static int test_ptr_bad_target_not_read(void)
+{
+	setup_ptr(0x80, 8);
+	set_ptr(0x0000000012345678ULL);
+	lv2capture_poll(&cap, 1);
+	CHECK(nlines == 2);
+	CHECK(strcmp(lines[1], "cap_p=0x12345678") == 0);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	CHECK(!cap.stopped);
+	set_ptr(DS45_LV2_BASE + OBJ_OFF + 4);           /* misaligned */
+	lv2capture_poll(&cap, 2);
+	CHECK(nlines == 4);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	set_ptr(DS45_LV2_BASE + OBJ_OFF);
+	lv2capture_poll(&cap, 3);
+	CHECK(nlines == 7);
+	CHECK(!cap.stopped);
+	return 0;
+}
+
+/* CAPTURE_PTR: debug-only key, 8-aligned and inside the window; off by default. */
+static int test_config_ptr_key(void)
+{
+	ds45_config_t c;
+
+	fake_reset_all();
+	ds45_config_defaults(&c);
+	CHECK(c.capture_ptr == 0);
+	fake_file_set("/c.txt", "CAPTURE_PTR = 0x51B268\nCAPTURE_LV2 = 0x60\n");
+	ds45_config_load(&c, "/c.txt");
+	CHECK(c.capture_ptr == 0x51B268u);
+	CHECK(c.capture_off == 0x60u);
+
+	ds45_config_defaults(&c);
+	fake_file_set("/c.txt", "CAPTURE_PTR = 0x51B26C\n");
+	ds45_config_load(&c, "/c.txt");
+	CHECK(c.capture_ptr == 0);                  /* not 8-aligned */
+
+	ds45_config_defaults(&c);
+	fake_file_set("/c.txt", "CAPTURE_PTR = 0x800000\n");
+	ds45_config_load(&c, "/c.txt");
+	CHECK(c.capture_ptr == 0);                  /* outside the window */
+	return 0;
+}
+
 int run_tests(void)
 {
 	int r;
@@ -196,5 +346,11 @@ int run_tests(void)
 	if ((r = test_read_failure_once()) != 0) return r;
 	if ((r = test_log_limit()) != 0) return r;
 	if ((r = test_config_keys()) != 0) return r;
+	if ((r = test_ptr_null_logged_once()) != 0) return r;
+	if ((r = test_ptr_follows_target()) != 0) return r;
+	if ((r = test_ptr_transitions_logged()) != 0) return r;
+	if ((r = test_ptr_field_change_logged()) != 0) return r;
+	if ((r = test_ptr_bad_target_not_read()) != 0) return r;
+	if ((r = test_config_ptr_key()) != 0) return r;
 	return 0;
 }

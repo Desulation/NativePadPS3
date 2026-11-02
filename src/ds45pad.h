@@ -326,6 +326,9 @@ typedef struct {
 	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
 	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */
 	uint32_t capture_len;      /* CAPTURE_LEN: bytes, multiple of 8, 0 = off   */
+	uint32_t capture_ptr;      /* CAPTURE_PTR: LV2 offset of a pointer qword;
+	                            * nonzero = watch CAPTURE_LV2 bytes into the
+	                            * object it points to, 0 = off                 */
 #endif
 } ds45_config_t;
 
@@ -508,6 +511,8 @@ typedef struct {
 	int      have;             /* snap holds the last logged bytes */
 	int      stopped;          /* read refused or log limit reached */
 	uint32_t logs;             /* changes written so far */
+	uint64_t ptr;              /* CAPTURE_PTR mode: last pointer value seen */
+	int      ptr_bytes;        /* CAPTURE_PTR mode: snap holds its bytes */
 	uint8_t  snap[DS45_CAPTURE_MAX_LEN];
 } lv2capture_t;
 void  lv2capture_poll(lv2capture_t *st, uint32_t now_ms);

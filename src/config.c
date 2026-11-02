@@ -258,6 +258,11 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		if (parse_int(val, &n) && n >= 0 && (n & 7) == 0 &&
 		    n <= DS45_CAPTURE_MAX_LEN)
 			c->capture_len = (uint32_t)n;
+	} else if (match(key, "CAPTURE_PTR")) {
+		/* The pointer qword itself: in the window, on a doubleword boundary. */
+		if (parse_int(val, &n) && n >= 0 && (n & 7) == 0 &&
+		    (uint64_t)n < DS45_LV2_BOUND - DS45_LV2_BASE)
+			c->capture_ptr = (uint32_t)n;
 #endif
 	}
 }
