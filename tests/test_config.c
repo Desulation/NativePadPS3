@@ -164,6 +164,41 @@ static int test_probe_exec_key(void)
 	return 0;
 }
 
+/* SHIM_INPUT_HOOK gates whether the shim installs its per-poll input redirect,
+ * so the start-up/enable completion can be isolated with the input hook off. On
+ * by default (a normal install is unchanged); 0 turns it off, any other number
+ * is on, and anything that is not a number leaves the default (on) in place. */
+static int test_shim_input_hook_key(void)
+{
+	ds45_config_t c;
+
+	ds45_config_defaults(&c);
+	CHECK(c.shim_input_hook == 1);
+	c = cfg_from("ENABLE_SHIM = 1\n");
+	CHECK(c.shim_input_hook == 1);                         /* never mentioned: default */
+
+	c = cfg_from("SHIM_INPUT_HOOK = 0\n");
+	CHECK(c.shim_input_hook == 0);
+	c = cfg_from("shim_input_hook = 0\n");                 /* keys are case-insensitive */
+	CHECK(c.shim_input_hook == 0);
+	CHECK(c.enable_shim == 0);                             /* a separate key */
+
+	c = cfg_from("SHIM_INPUT_HOOK = 1\n");
+	CHECK(c.shim_input_hook == 1);
+	c = cfg_from("SHIM_INPUT_HOOK = 7\n");                 /* any non-zero = on */
+	CHECK(c.shim_input_hook == 1);
+
+	c = cfg_from("SHIM_INPUT_HOOK = abc\n");               /* junk leaves the default */
+	CHECK(c.shim_input_hook == 1);
+	c = cfg_from("SHIM_INPUT_HOOK =\n");
+	CHECK(c.shim_input_hook == 1);
+	c = cfg_from("SHIM_INPUT_HOOK = 1\nSHIM_INPUT_HOOK = 0\n");  /* the last wins */
+	CHECK(c.shim_input_hook == 0);
+	c = cfg_from("SHIM_INPUT_HOOK = 0\nSHIM_INPUT_HOOK = 1\n");
+	CHECK(c.shim_input_hook == 1);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int r;
@@ -175,5 +210,6 @@ int run_tests(void)
 	if ((r = test_shim_key_is_independent_of_enable()) != 0) return r;
 	if ((r = test_shim_inline_pid_key()) != 0) return r;
 	if ((r = test_probe_exec_key()) != 0) return r;
+	if ((r = test_shim_input_hook_key()) != 0) return r;
 	return 0;
 }

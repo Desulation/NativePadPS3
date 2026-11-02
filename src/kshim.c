@@ -559,8 +559,16 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	             base + DS45_SHIM_OFF_EVENT);
 	put_redirect(&final[nfinal++], k->enable_slot, k->enable_expect,
 	             base + DS45_SHIM_OFF_ENABLE);
-	put_redirect(&final[nfinal++], k->input_slot, k->input_expect,
-	             base + DS45_SHIM_OFF_INPUT);
+	/* The input redirect only when SHIM_INPUT_HOOK is set (design Amendment 3).
+	 * With it off, the start-up and enable completion still install (helper, inline
+	 * words, event and enable), the input slot is left original and omitted from
+	 * the journal, and orig_input stays filled in the data block. The journal is
+	 * then one entry shorter; rollback and unload are journal-driven and handle it
+	 * unchanged. The step-2 verify of the input slot above is a read only, so it
+	 * still confirms a clean kernel without writing. */
+	if (g_cfg.shim_input_hook)
+		put_redirect(&final[nfinal++], k->input_slot, k->input_expect,
+		             base + DS45_SHIM_OFF_INPUT);
 
 	r = kpatch_apply(final, nfinal, &j);
 	if (r != 0) {
@@ -662,6 +670,19 @@ void kshim_scrub(void)
 }
 
 #ifdef DS45_DEBUG
+/* Debug tracing (design Amendment 3): the base of the installed data block, so
+ * the plugin's housekeeping can read the diagnostic counters back with
+ * ds45_lv2_read. 1 and *data_base = g_base + DS45_SHIM_OFF_DATA when a fresh or
+ * adopted install is live; 0 otherwise (and *data_base is left alone). */
+int kshim_dbg_data_base(uint64_t *data_base)
+{
+	if (g_state != KSHIM_INSTALLED && g_state != KSHIM_ALREADY)
+		return 0;
+	if (data_base)
+		*data_base = g_base + DS45_SHIM_OFF_DATA;
+	return 1;
+}
+
 /* Executability pre-flight. See kshim.h for the return codes. The leaf stub goes
  * at exec_base, with the flush OPD and the exec OPD just past it in the reserved
  * region (a 40-byte scratch span). Pre-poke checks fit/slot/zero; a single clean

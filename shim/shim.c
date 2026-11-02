@@ -107,9 +107,11 @@ int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv)
 
 	if (!d || !drv || !d->enabled)
 		return 0;
+	d->dbg_event_calls++;
 	pad = ld_ptr(drv + SHIM_DRV_PAD);
 	if (!shim_pad_is_dualsense(d, pad))
 		return 0;
+	d->dbg_event_ds++;
 	/* A later event for a driver already done is the original's business. */
 	if (drv[SHIM_DRV_SUBSTATE] == SHIM_DRV_DONE)
 		return 0;
@@ -151,8 +153,10 @@ int shim_enable_complete(ds45_shim_data_t *d, uint8_t *drv)
 {
 	if (!d || !drv || !d->enabled)
 		return 0;
+	d->dbg_enable_calls++;
 	if (!shim_pad_is_dualsense(d, ld_ptr(drv + SHIM_DRV_PAD)))
 		return 0;
+	d->dbg_enable_ds++;
 	if (drv[SHIM_EN_DONE] != 0)
 		return 0;
 
@@ -162,6 +166,26 @@ int shim_enable_complete(ds45_shim_data_t *d, uint8_t *drv)
 	drv[SHIM_EN_DONE] = 1;
 	d->stat_enabled++;
 	return 1;
+}
+
+void shim_input_note(ds45_shim_data_t *d, const uint8_t *pad)
+{
+	if (!d)
+		return;
+	d->dbg_input_calls++;
+	if (!pad) {
+		d->dbg_input_padmiss++;
+		return;
+	}
+	/* The class qword at pad+0 and the big-endian VID||PID at pad+0x68, read the
+	 * same byte-order-safe way the rest of this file reads kernel objects. */
+	d->dbg_last_vtable = ld64(pad);
+	d->dbg_last_pid = ((uint32_t)pad[SHIM_PAD_ID + 0] << 24) |
+	                  ((uint32_t)pad[SHIM_PAD_ID + 1] << 16) |
+	                  ((uint32_t)pad[SHIM_PAD_ID + 2] << 8) |
+	                  (uint32_t)pad[SHIM_PAD_ID + 3];
+	if (shim_pad_is_dualsense(d, pad))
+		d->dbg_input_ds++;
 }
 
 const uint8_t *shim_pad_from_xport(const ds45_shim_data_t *d, const void *xport)

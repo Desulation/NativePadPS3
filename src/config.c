@@ -79,6 +79,7 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->enable_shim = 0;
 	c->shim_inline_pid = 0;
 	c->probe_exec = 0;
+	c->shim_input_hook = 1;   /* on by default: a normal install is unchanged */
 #ifdef DS45_LV2DUMP
 	c->dump_lv2 = 0;
 	c->capture_off = 0;
@@ -256,6 +257,12 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		 * pre-flight instead of installing the shim. Any non-zero number turns
 		 * it on; anything else leaves it off. */
 		if (parse_int(val, &n)) c->probe_exec = n != 0;
+	} else if (match(key, "SHIM_INPUT_HOOK")) {
+		/* VSH builds only, like ENABLE_SHIM: gate the shim's per-poll input
+		 * redirect so the start-up/enable completion can be tested with the
+		 * input hook off (design Amendment 3). On by default; any non-zero = on,
+		 * anything that is not a number leaves the default (on) in place. */
+		if (parse_int(val, &n)) c->shim_input_hook = n != 0;
 #endif
 #ifdef DS45_LV2DUMP
 	} else if (match(key, "DUMP_LV2")) {
@@ -368,6 +375,7 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	ds45_boot_mark_hex("cfg_enable_shim", (uint32_t)c->enable_shim);
 	ds45_boot_mark_hex("cfg_shim_inline_pid", (uint32_t)c->shim_inline_pid);
 	ds45_boot_mark_hex("cfg_probe_exec", (uint32_t)c->probe_exec);
+	ds45_boot_mark_hex("cfg_shim_input_hook", (uint32_t)c->shim_input_hook);
 #endif
 
 	return 0;

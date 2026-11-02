@@ -1147,10 +1147,10 @@ static int test_abi_layout(void)
 	/* "DS45SHM1", most significant byte first */
 	for (i = 0; i < 8; i++)
 		CHECK((uint8_t)(DS45_SHIM_MAGIC >> (56 - 8 * i)) == (uint8_t)"DS45SHM1"[i]);
-	/* 4: start-up completion with the product-ID originals (pid_orig,
-	 * pid_applied) appended - 208 bytes. 3 was the 176-byte layout without them;
-	 * neither 3 nor 4 has been on a console before 4. */
-	CHECK(DS45_SHIM_VERSION == 4);
+	/* 5: the debug diagnostic counters (Amendment 3) appended after the
+	 * product-ID originals - 248 bytes. 4 was the 208-byte layout, 3 the 176-byte
+	 * one without the product-ID originals. */
+	CHECK(DS45_SHIM_VERSION == 5);
 	CHECK(DS45_SHIM_INFO_LEN == 0x56);
 
 	/* The plugin and the blob compile this header separately and meet in
@@ -1187,7 +1187,18 @@ static int test_abi_layout(void)
 	CHECK(offsetof(ds45_shim_data_t, pid_orig) == 176);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->pid_orig) == 8 * DS45_SHIM_PID_SITES);
 	CHECK(offsetof(ds45_shim_data_t, pid_applied) == 200);
-	CHECK(sizeof(ds45_shim_data_t) == 208);
+	/* the debug diagnostic counters (Amendment 3), appended after pid_reserved so
+	 * every offset above is kept; the data block grows 208 -> 248 */
+	CHECK(offsetof(ds45_shim_data_t, dbg_event_calls) == 208);
+	CHECK(offsetof(ds45_shim_data_t, dbg_enable_calls) == 212);
+	CHECK(offsetof(ds45_shim_data_t, dbg_input_calls) == 216);
+	CHECK(offsetof(ds45_shim_data_t, dbg_input_padmiss) == 220);
+	CHECK(offsetof(ds45_shim_data_t, dbg_event_ds) == 224);
+	CHECK(offsetof(ds45_shim_data_t, dbg_enable_ds) == 228);
+	CHECK(offsetof(ds45_shim_data_t, dbg_input_ds) == 232);
+	CHECK(offsetof(ds45_shim_data_t, dbg_last_pid) == 236);
+	CHECK(offsetof(ds45_shim_data_t, dbg_last_vtable) == 240);
+	CHECK(sizeof(ds45_shim_data_t) == 248);
 	return 0;
 }
 

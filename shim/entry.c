@@ -85,6 +85,7 @@ int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 {
 	int rc = ((orig_input_fn)(uintptr_t)ds45_shim_data.orig_input)(xport, dst,
 	                                                               len_in, flag);
+	const uint8_t *pad;
 	int ds;
 	uint16_t n;
 
@@ -92,8 +93,11 @@ int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 	    len_in < DS3_REPORT_LEN)
 		return rc;
 
-	ds = shim_pad_is_dualsense(&ds45_shim_data,
-	                           shim_pad_from_xport(&ds45_shim_data, xport));
+	/* Find the pad once, note what the hook saw for the debug trace, then decide
+	 * the identity from that same pad (no second manager scan). */
+	pad = shim_pad_from_xport(&ds45_shim_data, xport);
+	shim_input_note(&ds45_shim_data, pad);
+	ds = shim_pad_is_dualsense(&ds45_shim_data, pad);
 	n = (uint16_t)rc;
 	return shim_input_filter(&ds45_shim_data, ds ? 0x054C : 0, ds ? 0x0CE6 : 0,
 	                         dst, &n);

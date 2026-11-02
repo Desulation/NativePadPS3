@@ -318,6 +318,11 @@ static int event_passes(ds45_shim_data_t *d, fake_drv_t *drv, fake_pad_t *pad)
 	CHECK(shim_event_complete(d, drv->b) == 0);
 	CHECK(memcmp(drv->b, drv_before.b, DRV_LEN) == 0);
 	CHECK(memcmp(pad->b, pad_before.b, PAD_LEN) == 0);
+	/* Pass-through writes nothing lasting, but the event hook bumps its debug
+	 * counters on every entry (and dbg_event_ds whenever the pad is a DualSense),
+	 * so normalise those before comparing the rest of the data block. */
+	d_before.dbg_event_calls = d->dbg_event_calls;
+	d_before.dbg_event_ds = d->dbg_event_ds;
 	CHECK(memcmp(d, &d_before, sizeof(*d)) == 0);
 	return 0;
 }
@@ -461,6 +466,10 @@ static int enable_passes(ds45_shim_data_t *d, fake_en_t *en, fake_pad_t *pad)
 	CHECK(shim_enable_complete(d, en->b) == 0);
 	CHECK(memcmp(en->b, en_before.b, EN_LEN) == 0);
 	CHECK(memcmp(pad->b, pad_before.b, PAD_LEN) == 0);
+	/* As event_passes: the enable hook bumps dbg_enable_calls on every entry and
+	 * dbg_enable_ds whenever the pad is a DualSense, even on pass-through. */
+	d_before.dbg_enable_calls = d->dbg_enable_calls;
+	d_before.dbg_enable_ds = d->dbg_enable_ds;
 	CHECK(memcmp(d, &d_before, sizeof(*d)) == 0);
 	return 0;
 }
@@ -884,6 +893,108 @@ static int test_input_passthrough(void)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Diagnostic counters (debug tracing, Amendment 3)                           */
+/* ------------------------------------------------------------------------ */
+
+/* The event hook counts every entry past its guard in dbg_event_calls, and a
+ * DualSense match in dbg_event_ds; a DS3 (which passes to the original) bumps
+ * dbg_event_calls only, and a disabled shim counts nothing. */
+static int test_dbg_counts_event(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t pad;
+	fake_drv_t drv;
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	drv_make(&drv, &pad);
+	CHECK(shim_event_complete(&d, drv.b) == 1);
+	CHECK(d.dbg_event_calls == 1);
+	CHECK(d.dbg_event_ds == 1);
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DS3);
+	drv_make(&drv, &pad);
+	CHECK(shim_event_complete(&d, drv.b) == 0);
+	CHECK(d.dbg_event_calls == 2);
+	CHECK(d.dbg_event_ds == 1);                 /* not a DualSense: unchanged */
+
+	/* the enable counters belong to the other hook */
+	CHECK(d.dbg_enable_calls == 0 && d.dbg_enable_ds == 0);
+
+	/* a disabled shim returns from the guard before counting */
+	d.enabled = 0;
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	drv_make(&drv, &pad);
+	CHECK(shim_event_complete(&d, drv.b) == 0);
+	CHECK(d.dbg_event_calls == 2 && d.dbg_event_ds == 1);
+	return 0;
+}
+
+/* The enable hook counts the same way: dbg_enable_calls on every entry,
+ * dbg_enable_ds on a DualSense, a DS3 only calls, a disabled shim nothing. */
+static int test_dbg_counts_enable(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t pad;
+	fake_en_t en;
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	en_make(&en, &pad);
+	CHECK(shim_enable_complete(&d, en.b) == 1);
+	CHECK(d.dbg_enable_calls == 1);
+	CHECK(d.dbg_enable_ds == 1);
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DS3);
+	en_make(&en, &pad);
+	CHECK(shim_enable_complete(&d, en.b) == 0);
+	CHECK(d.dbg_enable_calls == 2);
+	CHECK(d.dbg_enable_ds == 1);
+
+	CHECK(d.dbg_event_calls == 0 && d.dbg_event_ds == 0);
+
+	d.enabled = 0;
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	en_make(&en, &pad);
+	CHECK(shim_enable_complete(&d, en.b) == 0);
+	CHECK(d.dbg_enable_calls == 2 && d.dbg_enable_ds == 1);
+	return 0;
+}
+
+/* shim_input_note records what the input hook saw: it always bumps
+ * dbg_input_calls; a NULL pad bumps dbg_input_padmiss and nothing else; a real
+ * pad records its vtable and big-endian VID||PID, and a DualSense bumps
+ * dbg_input_ds. A NULL data block is a no-op. */
+static int test_input_note(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t pad;
+
+	shim_input_note(NULL, NULL);                /* never crashes, counts nothing */
+
+	shim_input_note(&d, NULL);
+	CHECK(d.dbg_input_calls == 1);
+	CHECK(d.dbg_input_padmiss == 1);
+	CHECK(d.dbg_input_ds == 0);
+	CHECK(d.dbg_last_pid == 0 && d.dbg_last_vtable == 0);
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DS3);
+	shim_input_note(&d, pad.b);
+	CHECK(d.dbg_input_calls == 2);
+	CHECK(d.dbg_input_padmiss == 1);            /* a real pad is not a miss */
+	CHECK(d.dbg_input_ds == 0);                 /* not a DualSense */
+	CHECK(d.dbg_last_pid == 0x054C0268u);
+	CHECK(d.dbg_last_vtable == PAD_VTABLE);
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	shim_input_note(&d, pad.b);
+	CHECK(d.dbg_input_calls == 3);
+	CHECK(d.dbg_input_padmiss == 1);
+	CHECK(d.dbg_input_ds == 1);
+	CHECK(d.dbg_last_pid == 0x054C0CE6u);
+	CHECK(d.dbg_last_vtable == PAD_VTABLE);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int (*const tests[])(void) = {
@@ -908,6 +1019,9 @@ int run_tests(void)
 		test_glue_enable,
 		test_input_basic_translated,
 		test_input_passthrough,
+		test_dbg_counts_event,
+		test_dbg_counts_enable,
+		test_input_note,
 	};
 	unsigned i;
 	int line;

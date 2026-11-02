@@ -306,6 +306,7 @@ static void setup(void)
 	/* the shim is gated off by default (ENABLE_SHIM); every install test opts in */
 	g_cfg.enable_shim = 1;
 	g_cfg.shim_inline_pid = 0;
+	g_cfg.shim_input_hook = 1;   /* the input redirect installs as today */
 
 	/* fingerprint */
 	for (i = 0; i < DS45_FP_LEN; i++)
@@ -466,7 +467,7 @@ static int check_blob_image(void)
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 4 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 5 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
 	          EVENT_ORIG ? 0 : __LINE__);
@@ -896,6 +897,48 @@ static int refused_untouched(const struct snap *before, int pokes)
 	CHECK_SUB(g_spare_calls == 0 ? 0 : __LINE__);
 	take_snap(&after);
 	CHECK_SUB(snap_eq(before, &after) ? 0 : __LINE__);
+	return 0;
+}
+
+/* SHIM_INPUT_HOOK gates the input redirect (0x37CE38). With it off the event,
+ * enable and helper all install, but the input slot is left original and never
+ * journalled (orig_input is still filled in the data block), so the shorter,
+ * journal-driven unload restores the rest and leaves the input slot alone. With
+ * it on the input slot is redirected to the blob, exactly as today. */
+static int test_input_hook_gated(void)
+{
+	setup();
+	g_cfg.shim_input_hook = 0;
+	wlog_start();
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	fake_lv2_on_peek = NULL;
+
+	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);                       /* left original */
+	CHECK(!wlog_has(INPUT_SLOT));                              /* never written */
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);   /* the rest install */
+	CHECK(rd(ENABLE_SLOT) == BLOB_BASE + DS45_SHIM_OFF_ENABLE);
+	CHECK(rd(HELPER_QA) == ((HELPER_Q & HI32) | HELPER_WORD));
+	/* the data block still records the input original the hooks would tail-call */
+	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
+	         offsetof(ds45_shim_data_t, orig_input)) == INPUT_ORIG);
+
+	/* the shorter journal reverts event, enable and helper; the input slot was
+	 * never ours, so it is left exactly as found */
+	kshim_remove();
+	CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
+	CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
+	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+	CHECK(rd(HELPER_QA) == HELPER_Q);
+	CHECK(fake_lv2_out_of_bounds == 0);
+
+	/* with the hook on (the default) the input slot is redirected to the blob */
+	setup();
+	g_cfg.shim_input_hook = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);
+	kshim_remove();
+	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }
 
@@ -1550,6 +1593,7 @@ int run_tests(void)
 		test_install_refuses_nonzero_region,
 		test_install_refuses_over_bound,
 		test_inline_rows_gated,
+		test_input_hook_gated,
 		test_event_code_hash_mismatch,
 		test_enable_code_hash_mismatch,
 		test_code_hash_is_of_the_aligned_qword,

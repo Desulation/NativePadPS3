@@ -115,6 +115,13 @@ void kshim_unhook(void);
 void kshim_scrub(void);
 
 #ifdef DS45_DEBUG
+/* Debug tracing (design Amendment 3): the base of the installed shim data block
+ * (g_base + DS45_SHIM_OFF_DATA), so the plugin's debug housekeeping can read the
+ * diagnostic counters back with ds45_lv2_read at base + the ABI field offsets.
+ * Returns 1 and sets *data_base when a fresh or adopted install is live, 0
+ * otherwise. Debug builds only. */
+int kshim_dbg_data_base(uint64_t *data_base);
+
 /* Executability pre-flight (design Amendment 2, console step 0): poke a two-word
  * leaf stub `li r3,<magic>; blr` at k->exec_base, flush it, point the borrowed
  * spare slot at an OPD { exec_base, kernel TOC } and call it once, and report

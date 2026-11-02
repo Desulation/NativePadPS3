@@ -16,14 +16,13 @@
 #include <stdint.h>
 
 #define DS45_SHIM_MAGIC   0x4453343553484D31ULL   /* "DS45SHM1" */
-/* 4: the start-up completion layout (event and enable hooks, pad identity, the
- * DS3 info template; every v2 connection, send and start-up field is gone) with
- * the product-ID originals appended (pid_orig, pid_applied: 176 -> 208 bytes).
- * 3 was the same layout without them and never reached a console. The
- * installer adopts a blob left by an earlier load only if its version matches,
- * since the plugin reaches into the data block by these offsets - so any change
- * to this struct bumps the number. */
-#define DS45_SHIM_VERSION 4
+/* 5: the debug diagnostic counters (design Amendment 3) appended after the
+ * product-ID originals (208 -> 248 bytes). 4 added the product-ID originals
+ * (pid_orig, pid_applied: 176 -> 208); 3 was the start-up completion layout
+ * without them and never reached a console. The installer adopts a blob left by
+ * an earlier load only if its version matches, since the plugin reaches into the
+ * data block by these offsets - so any change to this struct bumps the number. */
+#define DS45_SHIM_VERSION 5
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56
@@ -67,6 +66,17 @@ typedef struct {
 	uint64_t pid_orig[DS45_SHIM_PID_SITES];
 	uint32_t pid_applied;
 	uint32_t pid_reserved;         /* keeps the size a multiple of 8 */
+	/* Debug diagnostic counters (design Amendment 3), written lock-free by the
+	 * blob exactly like the stat_* counters and read back by the plugin's debug
+	 * housekeeping (never on the console's shipping path; the game build installs
+	 * no shim). Per hook: how many times it was entered (dbg_*_calls) and matched
+	 * the DualSense identity (dbg_*_ds); the input hook's pad-lookup misses
+	 * (dbg_input_padmiss); and the last VID/PID (big-endian VID||PID) and pad
+	 * vtable the input hook identified. They answer "did the hooks fire for the
+	 * DS3, and what did they see". */
+	uint32_t dbg_event_calls, dbg_enable_calls, dbg_input_calls, dbg_input_padmiss;
+	uint32_t dbg_event_ds, dbg_enable_ds, dbg_input_ds, dbg_last_pid;
+	uint64_t dbg_last_vtable;
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */

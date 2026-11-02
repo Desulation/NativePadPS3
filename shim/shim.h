@@ -71,6 +71,14 @@ int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv);
  * stat_enabled, return 1. Otherwise write nothing and return 0. drv NULL -> 0. */
 int shim_enable_complete(ds45_shim_data_t *d, uint8_t *drv);
 
+/* Debug tracing (design Amendment 3): record what the input hook saw into the
+ * data block's diagnostic counters. Always bumps dbg_input_calls; a NULL pad
+ * bumps dbg_input_padmiss and returns; otherwise records dbg_last_vtable (the
+ * pad's class qword at pad+0) and dbg_last_pid (the big-endian VID||PID at
+ * pad+0x68), and bumps dbg_input_ds when the pad is a DualSense. NULL d is a
+ * no-op. Pure loads and lock-free counter bumps, like the stat_* counters. */
+void shim_input_note(ds45_shim_data_t *d, const uint8_t *pad);
+
 /* The pad object whose +0x4F0 holds xport: mgr = *(u64 *)d->pad_mgr; scan the
  * SHIM_MGR_NOBJS u64 pointers at mgr+0x60, skipping nulls. NULL when d->pad_mgr
  * or mgr is 0, or no entry matches. Pure loads, at most 16 iterations. */

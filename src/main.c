@@ -26,6 +26,11 @@
 #include "kernel.h"
 #include "btcheck.h"
 #include "kshim.h"
+#ifdef DS45_DEBUG
+#include <stddef.h>            /* offsetof, for the shim diagnostic trace */
+#include "lv2.h"               /* ds45_lv2_read */
+#include "../shim/shim_abi.h"  /* ds45_shim_data_t field offsets */
+#endif
 #endif
 
 int ds45_start(uint64_t arg);
@@ -308,6 +313,86 @@ static void dump_ports_once(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* Shim diagnostic trace (design Amendment 3, debug VSH builds only)         */
+/*                                                                           */
+/* Each housekeeping tick, when the shim is installed, read its data-block    */
+/* diagnostic counters (via ds45_lv2_read at the base kshim placed it, plus   */
+/* the ABI field offsets) and append one line to the boot trace. The file is  */
+/* flushed to the HDD, so the trajectory survives a network drop and can be   */
+/* read back over FTP. Nothing of this exists in release or game builds.      */
+/* ------------------------------------------------------------------------ */
+#ifdef DS45_DEBUG
+/* One 32-bit counter: ds45_lv2_read fetches the aligned qword holding it; the
+ * field is the high word of the big-endian qword when its offset is 8-aligned,
+ * the low word otherwise. 0 if the read refuses. */
+static uint32_t shim_dbg_u32(uint64_t data_base, size_t field_off)
+{
+	uint64_t q;
+
+	if (ds45_lv2_read(data_base + (field_off & ~7ULL), &q))
+		return 0;
+	return (field_off & 4) ? (uint32_t)q : (uint32_t)(q >> 32);
+}
+
+static char *shim_dbg_tag(char *p, const char *s)
+{
+	while (*s)
+		*p++ = *s++;
+	return p;
+}
+
+static char *shim_dbg_hex(char *p, uint32_t v)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	int d;
+
+	*p++ = '0';
+	*p++ = 'x';
+	for (d = 28; d >= 0; d -= 4)
+		*p++ = hex[(v >> d) & 0xF];
+	return p;
+}
+
+static void shim_dbg_trace(void)
+{
+	uint64_t base = 0, vt = 0;
+	char line[256];
+	char *p = line;
+
+	if (!kshim_dbg_data_base(&base))
+		return;
+
+	p = shim_dbg_tag(p, "shimdbg ev=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_event_calls)));
+	p = shim_dbg_tag(p, " en=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_enable_calls)));
+	p = shim_dbg_tag(p, " in=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_input_calls)));
+	p = shim_dbg_tag(p, " inds=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_input_ds)));
+	p = shim_dbg_tag(p, " padmiss=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_input_padmiss)));
+	p = shim_dbg_tag(p, " comp=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_completed)));
+	p = shim_dbg_tag(p, " en2=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_enabled)));
+	p = shim_dbg_tag(p, " xl=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_translated)));
+	p = shim_dbg_tag(p, " ps=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_passed)));
+	p = shim_dbg_tag(p, " lastpid=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_last_pid)));
+	p = shim_dbg_tag(p, " lastvt=");
+	(void)ds45_lv2_read(base + offsetof(ds45_shim_data_t, dbg_last_vtable), &vt);
+	p = shim_dbg_hex(p, (uint32_t)(vt >> 32));
+	p = shim_dbg_hex(p, (uint32_t)vt);
+	*p++ = '\n';
+
+	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+}
+#endif /* DS45_DEBUG */
+
+/* ------------------------------------------------------------------------ */
 /* Bluetooth kernel support                                                  */
 /* ------------------------------------------------------------------------ */
 
@@ -583,6 +668,13 @@ static void ds45_thread(uint64_t arg)
 			dump_ports_once();
 			if (usb_ok)
 				usb_report_probes();
+
+#ifdef DS45_DEBUG
+			/* The shim's diagnostic counters to the HDD trace (a no-op unless
+			 * the shim is installed), so the trajectory survives a network
+			 * drop (design Amendment 3). */
+			shim_dbg_trace();
+#endif
 
 			/* Persist whatever the sticks have taught us. Rate limited
 			 * inside, so this is a no-op most of the time. */

@@ -333,6 +333,13 @@ typedef struct {
 	 * returned, proving the region runs before any hook is wired. Off by default;
 	 * only the debug build acts on it. */
 	int      probe_exec;
+	/* SHIM_INPUT_HOOK (0/1, VSH builds only): gate whether the shim installs its
+	 * per-poll Bluetooth input redirect (0x37CE38). On by default, so a normal
+	 * install is unchanged; set to 0 to install the start-up and enable completion
+	 * hooks WITHOUT the input hook, which isolates the input hook (the only one
+	 * that runs on every poll and shares the Bluetooth transport vtable) when
+	 * finding the DS3 interaction on hardware (design Amendment 3). */
+	int      shim_input_hook;
 #ifdef DS45_LV2DUMP
 	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
 	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */
