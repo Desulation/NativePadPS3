@@ -88,6 +88,63 @@ sections that follow are updated to match.
   `shim_enable`, on that driver's event slot `0x37CFB0`. A refused output report
   (LEDs, rumble) cannot remove the pad, so no output wrapper is needed.
 
+## Amendment 2 (2026-11-02): the blob needs executable memory
+
+Console test step 1 installed cleanly, but the first kernel call into the blob
+hung the console (the pad-manager thread wedged; XMB froze, kernel and webMAN
+stayed up). Offline investigation (SDD ledger sections "ROOT CAUSE" and
+"EXEC-MEMORY SPIKE") found the cause and the fix:
+
+- **The blob was in non-executable memory.** The lv2 executable text is
+  `0x0..0x300000` (every code address in the project is below it; everything
+  above is OPD/vtable/heap data). The installer allocated the blob from the
+  driver's own heap pool `0x22`, which returns memory above `0x300000` (the same
+  heap as the pad and driver objects). That region is not executable, so the
+  first instruction fetch faulted. The blob code, descriptors, relocations and
+  the `0x29B8` i-cache flush are all correct; only the location was wrong. The
+  old "pool 0x22 executes" assumption is disproven.
+- **Executable memory above the text exists and is reserved by the CFW.** The
+  Evilnat/Cobra payload (the lv2 peek/poke/`0x8` syscalls the plugin already
+  uses) runs from `0x560000..~0x577800`, byte-identical across dumps (fixed every
+  boot). Its 64 KiB page runs to `0x580000`, and after the CFW's own code/data
+  (last byte at `0x57BCC7`) there is a free zero run `0x57BCC8..0x580000`
+  (`0x4338`), identical and unused across every dump sampled.
+- **Decision: place the blob at a fixed base in that executable tail** instead of
+  allocating from the heap. Default `0x57C000` (8-aligned, inside the free run;
+  the blob `0x1740` + the `0x10` flush OPD end well before `0x580000`). This is a
+  per-firmware row value, exactly like the hook addresses and the template.
+- **This is DEX 4.92 (Evilnat/Cobra) specific, and so is the whole kernel path**
+  (Cobra peek/poke syscalls 6/7, PS3MAPI syscall 8). The shim is fingerprint-gated
+  to DEX 4.92 and will not install on any other kernel. The DECR reference tool is
+  out of scope (it does not run Cobra; it would need its own executable region and
+  its own kernel-access path, researched only if it ever becomes a target).
+
+Installer changes (replacing the heap allocation in section 3):
+
+- The firmware row gains `exec_base` and `exec_bound` (DEX 4.92: `0x57C000`,
+  `0x580000`). The allocator descriptor/pool are no longer used to allocate; the
+  kernel TOC the flush OPD needs is still read from the allocator OPD's `+8`.
+- Install uses `base = exec_base`. Before writing, it **verifies the whole region
+  `[base, base + blob + flush OPD)` currently reads as zero** (so nothing is
+  clobbered) and that it ends at or before `exec_bound`; either check failing is
+  `KSHIM_FAILED` with nothing written. Everything after (reloc copy, data block,
+  `0x29B8` flush, redirects, journal, rollback, adoption via the event slot) is
+  unchanged.
+- Unload additionally **zeroes the blob region** after restoring the redirects
+  and words (a fixed region cannot be freed; zeroing restores the pristine fill so
+  a later install's zero-check passes). RAM-only; a reboot clears it regardless.
+
+**Executability pre-flight (new console step 0, before any hook is installed).**
+Because "executable" is inferred from the memory layout, not read from a page
+table, the first thing run in the region is a minimal, standalone probe: poke a
+two-instruction leaf stub (`li r3, <magic>; blr`) at `exec_base`, flush it, point
+the borrowed spare syscall at an OPD `{ exec_base, kernel TOC }`, call it once, and
+confirm it returns `<magic>`. A pass proves the region executes; the shim install
+proceeds. A fail (or a hang) happens on the plugin's own one-shot syscall thread
+with no hooks wired, the smallest possible blast radius, and tells us the region
+is unusable before anything touches the connect path. The probe is debug-build
+only and installs nothing.
+
 ## Design
 
 ### 1. Start-up completion (kernel side)
@@ -200,10 +257,14 @@ for the shim.
   devices by routing the helper and the inline site to the shim; each armed
   and console-tested on its own, which also isolates the earlier hang suspect.
 
-**Install order:** allocate, copy blob and data block, read back; instruction
-cache coherency as in spec 1; acceptance word edits; event redirect; enable
-redirect; input redirect. Any failure undoes every earlier write in reverse order. Plugin
-unload switches the redirects and word edits back; the blob stays allocated.
+**Install order** (superseded by Amendment 2 for where the blob lives): take the
+fixed `exec_base`, verify the region reads zero and fits under `exec_bound`, copy
+blob and data block, read back; instruction cache coherency as in spec 1 (the
+`0x29B8` flush over the blob); acceptance word edits; event redirect; enable
+redirect; input redirect. Any failure undoes every earlier write in reverse order.
+Plugin unload switches the redirects and word edits back and zeroes the blob
+region. (Amendment 2 replaces the former heap allocation; the executability
+pre-flight runs as console step 0, before any install.)
 
 ## Facts to settle read-only first (plan task 1)
 
@@ -279,4 +340,8 @@ capture observes; webMAN polled at no more than 2-3 requests per second):
 ## Out of scope
 
 Output (spec 2: rumble, LEDs, light bar), DS4 and DualSense Edge, firmwares
-other than table entries.
+other than table entries. The DECR reference tool (2026-11-02, user): it does
+not run Evilnat/Cobra, so neither the executable region (Amendment 2) nor the
+Cobra peek/poke kernel-access path exists there; the shim is fingerprint-gated
+to DEX 4.92 and will not install on it. Supporting the DECR would need its own
+executable-memory and kernel-access research, out of scope until it is a target.

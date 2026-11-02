@@ -245,6 +245,31 @@ Only if the Task 1 note concludes that a refused DS3 output report can remove th
 - [ ] **Step 2: Run** - FAIL. **Step 3: Implement.** **Step 4: Run** all tests and the four builds - PASS.
 - [ ] **Step 5: Commit** - "feat: swallow DS3 output reports for a DualSense".
 
+### Task 6: Fixed-base executable placement and exec-probe (spec Amendment 2)
+
+Added 2026-11-02 after console step 1 hung: the blob was allocated in the heap pool `0x22`, which is not executable (lv2 text is `0x0..0x300000`; the heap is above it), so the first kernel call into it faulted. The Evilnat/Cobra payload runs from a fixed executable region with a free zero tail at `0x57BCC8..0x580000`; place the blob there at a fixed base instead of allocating. Runs **before** Task 5. DEX 4.92 (Evilnat/Cobra) only; the shim is fingerprint-gated and the DECR is out of scope (spec "Out of scope").
+
+**Files:**
+- Modify: `src/kshim.h`, `src/kshim.c`, `src/kshim_table.c`, `src/config.c`, `src/ds45pad.h`, `src/main.c`, `tests/test_kshim.c`, `tests/test_config.c`
+
+**Interfaces:**
+- `ds45_shim_kernel_t` gains `uint64_t exec_base, exec_bound;` (DEX 4.92: `0x800000000057C000`, `0x8000000000580000`). `alloc_desc` stays, used only as the source of the kernel TOC (`alloc_desc + 8`) for the flush/probe OPD; `alloc_pool` and the allocator CALL are removed. `spare_syscall`/`spare_slot_expect` stay (the flush and the probe borrow the spare slot).
+- New debug-only probe: `int kshim_exec_probe(const ds45_shim_kernel_t *k, uint64_t *out);` — returns 0 and `*out` = the value the stub returned, or non-zero on a verify/plumbing failure. Config key `PROBE_EXEC` (`g_cfg.probe_exec`, VSH debug builds only, default 0); `src/main.c` runs the probe once after a kernel match when set and traces `exec_probe=<hex>`, installing nothing else.
+
+- [ ] **Step 1: Installer tests** in `tests/test_kshim.c` (rework the allocation tests to fixed-base):
+  - `test_install_uses_exec_base`: after install, the blob is at `exec_base` (event OPD at `exec_base + DS45_SHIM_OFF_EVENT`, data-block magic/version at `exec_base + DS45_SHIM_OFF_DATA`); the allocator syscall was never called (fake spare-call log records only the flush).
+  - `test_install_refuses_nonzero_region`: a non-zero byte anywhere in `[exec_base, exec_base + DS45_SHIM_BLOB_LEN + KSHIM_FLUSH_OPD_LEN)` -> `KSHIM_FAILED`, image byte-identical.
+  - `test_install_refuses_over_bound`: `exec_base + size > exec_bound` -> `KSHIM_FAILED`, nothing written.
+  - `test_remove_zeroes_blob`: after install then `kshim_remove`, the blob region reads all zero (and the redirects/words are restored as before).
+  - Keep `test_adopt_via_event_slot` (adoption now follows the event slot to the fixed base) and the hash/rollback/inline-gate tests.
+- [ ] **Step 2: Probe tests** in `tests/test_kshim.c` and `tests/test_config.c`:
+  - `test_exec_probe_stub`: over a fake LV2, `kshim_exec_probe` pokes the two-word leaf stub (`li r3,<magic>; blr`) at `exec_base`, the fake spare-call returns the stub's `li` immediate, and the probe reports that value then leaves `exec_base` zeroed.
+  - `test_probe_exec_key`: `PROBE_EXEC` default 0; `= 1` -> 1; `= abc` -> 0.
+- [ ] **Step 3: Run** `pwsh tests/run_tests.ps1 -Filter shim` and `-Filter config` - expected FAIL (undeclared `exec_base`, `kshim_exec_probe`).
+- [ ] **Step 4: Implement:** add the row fields and DEX 4.92 values; in `kshim_install` replace the allocator borrow/call with `base = k->exec_base`, a zero-region verify and a `base + size <= k->exec_bound` bound-check before any write (keep the reloc copy, data block, `0x29B8` flush via the borrowed spare slot, redirects, journal, rollback, adoption); `kshim_remove` zeroes `[base, base + DS45_SHIM_BLOB_LEN + KSHIM_FLUSH_OPD_LEN)` after restoring; add `kshim_exec_probe` (stub `li r3,<magic>; blr` as one BE qword, flush 8 bytes, borrow the spare slot pointed at `{exec_base, kernel_toc}`, call, read back, zero the stub); add the `PROBE_EXEC` key and the `src/main.c` debug hook.
+- [ ] **Step 5: Run** `pwsh tests/run_tests.ps1` and `python -I tools/test_shim_pack.py` - all PASS; build all four variants - four successes; game `.sprx` contain no `kshim`/`PROBE_EXEC` strings.
+- [ ] **Step 6: Commit** - "feat: place the shim blob in executable kernel memory at a fixed base".
+
 ### Task 5: Console test steps (with the user, DEX 4.92)
 
 **Files:**
@@ -254,7 +279,8 @@ Only if the Task 1 note concludes that a refused DS3 output report can remove th
 - Consumes: Tasks 2-3 (and 4 if done); the debug capture keys `CAPTURE_PTR`, `CAPTURE_LV2`, `CAPTURE_LEN` (commit 5515b6f); the pad manager at `0x51B200` (slots `+0x18`, objects `+0x60`; with a USB DS3 in slot 0 the DualSense's pointer is `0x51B268`).
 - Produces: ledger entries with each step's result; the recorded basic report bytes (Task 2 layout confirmed or corrected).
 
-- [ ] **Step 1: Install, DualSense off.** Config `ENABLE=1`, `ENABLE_SHIM=1`, `SHIM_INLINE_PID=0`. Expect trace `kshim_installed`; peek `0x37CFF8` = base+`OFF_EVENT`, `0x37CFB0` = base+`OFF_ENABLE`, `0x37CE38` = base+`OFF_INPUT`, `0x29E2C8` = `4E80002068800CE6`, `0x37CFE8` unchanged `800000000033A208`. A DS3 over USB and over Bluetooth still drives the XMB.
+- [ ] **Step 0: Executability probe (no hooks).** Config `ENABLE=1`, `ENABLE_SHIM=0`, `PROBE_EXEC=1`. Expect the trace `exec_probe=0x5AED` (the stub's magic), proving `0x57C000` executes. Peek `0x57C000` reads back zero afterwards (the probe cleans up) and no hook slot changed. If the console hangs here, the region is not executable — stop; do not proceed to step 1. (This is the one new install-nothing call; it replaces trusting the heap.)
+- [ ] **Step 1: Install, DualSense off.** Config `ENABLE=1`, `ENABLE_SHIM=1`, `SHIM_INLINE_PID=0`, `PROBE_EXEC=0`. Expect trace `kshim_installed`; peek `0x37CFF8` = `exec_base`+`OFF_EVENT` (`exec_base` = `0x57C000`), `0x37CFB0` = `exec_base`+`OFF_ENABLE`, `0x37CE38` = `exec_base`+`OFF_INPUT`, the blob's magic `DS45SHM1` at `0x57C000`+`OFF_DATA`, `0x29E2C8` = `4E80002068800CE6`, `0x37CFE8` unchanged `800000000033A208`. A DS3 over USB and over Bluetooth still drives the XMB.
 - [ ] **Step 2: Completion.** Add `CAPTURE_PTR=0x51B268`, `CAPTURE_LV2=0x60`, `CAPTURE_LEN=128`; flip the DualSense's link-key type to `0x01` with the pad off; power it on. Pass: the capture shows the object staying for more than 5 s with +0x80/+0x82 = the template's versions, +0x88..+0x8F = `00 00 00 01 D5 00 44 53` and +0xD8 cleared; the data block's `stat_completed` = 1 and `stat_enabled` = 1; the pad manager's port table (`mgr+0xE0`, count `mgr+0xF0`) holds the DualSense's slot. If `stat_completed` = 1 but `stat_enabled` stays 0, the DualSense never answered `0xF4`: record it and stop (design question for the user). If no object forms, repeat with `SHIM_INLINE_PID=1` and record that the inline site is needed.
 - [ ] **Step 3: Input.** Point the capture at the shared buffer (`CAPTURE_LV2=0x4326C8`, `CAPTURE_LEN=72`, no `CAPTURE_PTR`) and record one raw basic report before translation (temporarily `enabled=0` via a data-block poke, then back to 1). Compare with Task 2's layout; if it differs, fix the translator (Task 2 tests first) before continuing. Then check buttons, sticks and L2/R2 in the XMB and in one game.
 - [ ] **Step 4: Together and teardown.** DS3 + DualSense: both have ports and independent input; then both DualSense pads (#1 and #2) together: different identities, both ported; DualSense off/on three times, each reconnect completes (`stat_completed` and `stat_enabled` increment); plugin unload restores `0x37CFF8`, `0x37CFB0`, `0x37CE38` and the helper word.
