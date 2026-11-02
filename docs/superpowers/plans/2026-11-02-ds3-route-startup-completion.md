@@ -24,7 +24,7 @@
 
 ## Review Focus
 
-1. A DS3 connecting over Bluetooth while the shim is installed must start up through the original handler, every event, with nothing written to its driver or pad (Task 3 test `test_event_ds3_untouched`).
+1. A DS3 connecting over Bluetooth while the shim is installed must start up and enable through the original handlers, every event, with nothing written to its drivers or pad (Task 3 tests `test_event_ds3_untouched`, `test_enable_passes`).
 2. A DualSense that disconnects and reconnects gets a new driver object and must complete again; an event after completion (substate already 9) must go to the original (Task 3 tests `test_event_dualsense_completes`, `test_event_after_done_passes`).
 3. A driver whose pad pointer is null, or points at memory that is not a live Sony pad (wrong vtable), must reach the original with no writes (Task 3 test `test_event_bad_pad_untouched`).
 4. A DualSense read that is short, empty or not report `0x01` must pass through unchanged with no out-of-bounds read (Task 2 fuzz `test_basic_fuzz_all_lengths`, Task 3 `test_input_passthrough`).
@@ -110,6 +110,8 @@ The shim's data block and the installer share one ABI (`src/kshim.c` writes the 
 - Consumes: Task 2's `ds3_report_from_dualsense_basic`; Task 1 C1 template, C2 (embedding at 0x4F0), C4 values.
 - Produces:
 
+Amended 2026-11-01 after Task 1 (spec section "Amendment after plan task 1", user decisions): per-pad identity bytes from a counter, input pad found by scanning the pad manager (the transport is a pointer, not embedded), and a second completion hook `shim_enable` on the `0xF4` enable driver's event slot `0x37CFB0`. Task 4 (output wrapper) is not needed (C3).
+
 `shim/shim_abi.h` - data block version 3 (replaces the v2 layout; every v2-only field and the conn/send fields are removed):
 
 ```c
@@ -117,41 +119,57 @@ The shim's data block and the installer share one ABI (`src/kshim.c` writes the 
 #define DS45_SHIM_INFO_LEN 0x56          /* pad+0x80 .. +0xD5 */
 typedef struct {
 	uint64_t magic; uint32_t version; uint32_t enabled;
-	uint64_t orig_event, orig_input;     /* original descriptors: 0x37CFF8, 0x37CE38 */
+	uint64_t orig_event, orig_enable, orig_input; /* original descriptors: 0x37CFF8, 0x37CFB0, 0x37CE38 */
 	uint64_t pad_vtable;                 /* 0x800000000038CDC8 on DEX 4.92 */
+	uint64_t pad_mgr;                    /* address of the manager pointer: 0x80000000004A1CB8 */
 	ds45_shim_cfg_t cfg;
-	uint32_t stat_completed, stat_translated, stat_passed, stat_reserved;
-	uint8_t  info_tmpl[0x58];            /* first DS45_SHIM_INFO_LEN bytes used */
+	uint32_t stat_completed;             /* also numbers the identities: first DualSense = 1 */
+	uint32_t stat_enabled, stat_translated, stat_passed;
+	uint8_t  info_tmpl[0x58];            /* first DS45_SHIM_INFO_LEN bytes used; identity bytes zero */
 } ds45_shim_data_t;
 ```
 
 `shim/shim.h` - remove the GET/send/start-up declarations (`SHIM_HIDP_*`, `SHIM_SEND_*`, `SHIM_START_TRIES_MAX`, `SHIM_F1_*`, `shim_send_fn`, `shim_startup_dualsense`); keep `shim_is_dualsense`, `shim_pid_ok` (stage 1b) and add:
 
 ```c
-/* Kernel object offsets (DEX 4.92, ledger "START-UP DRIVER MAPPED"). */
-#define SHIM_DRV_PAD      0x48   /* u64 pad object */
-#define SHIM_DRV_STATUS   0x50   /* u32 status passed to the ready callback */
-#define SHIM_DRV_SUBSTATE 0x54   /* u8, 9 = done */
-#define SHIM_DRV_INFO     0x58   /* u64 -> pad+0x80 */
+/* Kernel object offsets (DEX 4.92, ledger "START-UP DRIVER MAPPED", facts note C1-C3). */
+#define SHIM_DRV_PAD      0x48   /* u64 pad object (both drivers) */
+#define SHIM_DRV_STATUS   0x50   /* u32 status passed to the callback (both drivers) */
+#define SHIM_DRV_SUBSTATE 0x54   /* u8, start-up driver: 9 = done */
+#define SHIM_DRV_INFO     0x58   /* u64 -> pad+0x80, start-up driver */
 #define SHIM_DRV_DONE     9
+#define SHIM_EN_DONE      0x96   /* u8, enable driver: 1 = done */
 #define SHIM_PAD_ID       0x68   /* big-endian VID then PID */
-#define SHIM_PAD_XPORT    0x4F0  /* embedded transport object */
+#define SHIM_PAD_XPORT    0x4F0  /* u64 pointer to the transport object */
+#define SHIM_MGR_OBJS     0x60   /* pad manager: u64 object pointers */
+#define SHIM_MGR_NOBJS    16
+#define SHIM_ID_OFF       0x08   /* identity bytes in the info block: +0x08..+0x0F */
 /* 1 if pad is a live Sony pad object (u64 at pad+0 == d->pad_vtable) whose
  * pad+0x68 reads 054C/0CE6, else 0. NULL pad -> 0. */
 int shim_pad_is_dualsense(const ds45_shim_data_t *d, const uint8_t *pad);
-/* Event-handler decision. For an enabled shim and a DualSense driver whose
+/* Start-up event decision. For an enabled shim and a DualSense driver whose
  * substate != 9: copy d->info_tmpl[0..DS45_SHIM_INFO_LEN) to the info block,
- * store status 0 (4 bytes) and substate 9, bump stat_completed, return 1 (the
- * caller returns 0 to the framework). Otherwise write nothing and return 0
- * (the caller tail-calls the original). drv NULL -> 0. */
+ * bump stat_completed and write the identity bytes info+0x08..+0x0F =
+ * stat_completed (u32 big-endian), 0xD5, 0x00, 0x44, 0x53; store status 0
+ * (4 bytes) and substate 9; return 1 (the caller returns 0 to the framework).
+ * Otherwise write nothing and return 0 (the caller tail-calls the original).
+ * drv NULL -> 0. */
 int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv);
+/* Enable event decision. For an enabled shim and a DualSense whose enable
+ * driver has drv[0x96] == 0: store status 0 (4 bytes) and drv[0x96] = 1, bump
+ * stat_enabled, return 1. Otherwise write nothing and return 0. drv NULL -> 0. */
+int shim_enable_complete(ds45_shim_data_t *d, uint8_t *drv);
+/* The pad object whose +0x4F0 holds xport: mgr = *(u64 *)d->pad_mgr; scan the
+ * SHIM_MGR_NOBJS u64 pointers at mgr+0x60, skipping nulls. NULL when d->pad_mgr
+ * or mgr is 0, or no entry matches. Pure loads, at most 16 iterations. */
+const uint8_t *shim_pad_from_xport(const ds45_shim_data_t *d, const void *xport);
 ```
 
 `shim_input_filter` keeps its signature; for a DualSense it now tries `ds3_report_from_dualsense_basic` when `buf[0]==0x01`, else the existing `0x31` path.
 
-`shim/entry.c`: `int shim_event(void *drv, long status, long len)` returns 0 when `shim_event_complete` returns 1, else tail-calls `orig_event(drv, status, len)`; `shim_input` identifies the pad as `(uint8_t *)xport - SHIM_PAD_XPORT` via `shim_pad_is_dualsense` (vid/pid passed to the filter as `054C/0CE6`). `shim_startup` and `entry_identity` are deleted.
+`shim/entry.c`: `int shim_event(void *drv, long status, long len)` returns 0 when `shim_event_complete` returns 1, else tail-calls `orig_event(drv, status, len)`; `int shim_enable(void *drv, long status, long len)` likewise with `shim_enable_complete` and `orig_enable`; `shim_input` identifies the pad with `shim_pad_from_xport` then `shim_pad_is_dualsense` (vid/pid passed to the filter as `054C/0CE6`). `shim_startup` and `entry_identity` are deleted.
 
-`tools/shim_pack.py`: required symbol `shim_event` replaces `shim_startup`; header define `DS45_SHIM_OFF_EVENT` replaces `DS45_SHIM_OFF_STARTUP` (the `shim_pid_ok` checks and `DS45_SHIM_OFF_PID_OK` stay).
+`tools/shim_pack.py`: required symbols `shim_event` and `shim_enable` replace `shim_startup`; header defines `DS45_SHIM_OFF_EVENT` and `DS45_SHIM_OFF_ENABLE` replace `DS45_SHIM_OFF_STARTUP` (the `shim_pid_ok` checks and `DS45_SHIM_OFF_PID_OK` stay).
 
 `src/kshim.h` - the v3 row:
 
@@ -166,9 +184,12 @@ typedef struct {
 	uint64_t flush_desc;
 	uint64_t event_slot, event_expect;          /* 0x37CFF8 / 0x33A2B0 OPD */
 	uint64_t event_code_addr, event_code_hash;  /* 0xCACF0 / 0x16E42A0B1EBFEFFA */
+	uint64_t enable_slot, enable_expect;        /* 0x37CFB0 / 0x33A310 OPD */
+	uint64_t enable_code_addr, enable_code_hash;/* 0xCB234 / 0xEF8C3F93F63DFDB3 */
 	uint64_t input_slot, input_expect;          /* 0x37CE38 / 0x33A010 OPD */
 	uint64_t pad_vtable;                        /* 0x800000000038CDC8 */
-	const uint8_t *info_tmpl;                   /* DS45_SHIM_INFO_LEN bytes (Task 1 C1) */
+	uint64_t pad_mgr;                           /* 0x80000000004A1CB8 */
+	const uint8_t *info_tmpl;                   /* DS45_SHIM_INFO_LEN bytes (facts note C1.5) */
 	ds45_kpatch_t pid_patches[DS45_SHIM_PID_PATCHES];
 	ds45_kpatch_t inline_patches[DS45_SHIM_INLINE_PATCHES];
 } ds45_shim_kernel_t;
@@ -176,28 +197,32 @@ typedef struct {
 
 `kshim_set_connection` is removed. `g_cfg.shim_inline_pid` (config key `SHIM_INLINE_PID`, VSH builds only, default 0, any non-zero number = 1) selects whether the inline rows are applied.
 
-DEX 4.92 row values: event `0x800000000037CFF8`/`0x800000000033A2B0`, event code `0x80000000000CACF0`/`0x16E42A0B1EBFEFFA`, input as today, `pad_vtable` `0x800000000038CDC8`, helper row `{ DS45_KPATCH_WORD, 0x800000000029E2CCULL, 0x8D1047F832C76096ULL, 0x68800CE6ULL }`, inline rows = today's two WORD rows (`0x11B5E4`, `0x11B5EC`). The F3 send fields and the start-up slot are deleted from the row.
+DEX 4.92 row values: event `0x800000000037CFF8`/`0x800000000033A2B0`, event code `0x80000000000CACF0`/`0x16E42A0B1EBFEFFA`, enable `0x800000000037CFB0`/`0x800000000033A310`, enable code `0x80000000000CB234`/`0xEF8C3F93F63DFDB3`, input as today, `pad_vtable` `0x800000000038CDC8`, `pad_mgr` `0x80000000004A1CB8`, `info_tmpl` = the `DS3_INFO_TEMPLATE` array of the facts note C1.5 (copied as a `static const uint8_t` array), helper row `{ DS45_KPATCH_WORD, 0x800000000029E2CCULL, 0x8D1047F832C76096ULL, 0x68800CE6ULL }`, inline rows = today's two WORD rows (`0x11B5E4`, `0x11B5EC`). The F3 send fields and the start-up slot are deleted from the row.
 
 - [ ] **Step 1: Write the failing tests** in `tests/test_shim.c` (drop the start-up/GET tests; fake driver = `uint8_t drv[0xB0]`, fake pad = `uint8_t pad[0x520]` with `*(uint64_t*)pad = d.pad_vtable`, VID/PID bytes `05 4C 0C E6` at 0x68, `*(uint8_t**)(drv+0x48) = pad`, `*(uint8_t**)(drv+0x58) = pad+0x80`, `drv[0x50..0x53] = 80 01 00 0C`):
-  - `test_event_dualsense_completes`: returns 1; pad[0x80..0xD5] == info_tmpl; drv[0x50..0x53] == 0; drv[0x54] == 9; stat_completed == 1.
+  - `test_event_dualsense_completes`: returns 1; pad[0x80..0x87] and pad[0x90..0xD5] == info_tmpl; pad[0x88..0x8F] == `00 00 00 01 D5 00 44 53`; drv[0x50..0x53] == 0; drv[0x54] == 9; stat_completed == 1.
+  - `test_event_identities_differ`: two fresh DualSense drivers/pads complete in turn -> the second pad's [0x88..0x8B] == `00 00 00 02`, stat_completed == 2.
   - `test_event_after_done_passes`: drv[0x54]=9 -> returns 0, no byte of drv or pad changed.
   - `test_event_ds3_untouched`: PID `02 68` -> 0, no change.
   - `test_event_bad_pad_untouched`: pad pointer NULL; then vtable mismatch -> 0, no change.
   - `test_event_disabled`: `d.enabled=0` -> 0, no change.
-  - `test_input_basic_translated`: DualSense basic report in buf, len 10 -> returns 49, buf[0]==0x01, stat_translated==1.
-  - `test_input_passthrough`: DS3 identity, short report (len 5), id 0x02 -> unchanged buf and len, stat_passed counts each.
+  - `test_enable_dualsense_completes` (fake enable driver = `uint8_t en[0x98]`, pad at +0x48, status `80 01 00 0C` at +0x50, en[0x96] = 0): returns 1; en[0x50..0x53] == 0; en[0x96] == 1; stat_enabled == 1; pad unchanged.
+  - `test_enable_passes`: DS3 pad, NULL pad, wrong vtable, en[0x96] == 1, `d.enabled=0` -> each 0, no byte changed.
+  - `test_pad_from_xport`: fake manager (`uint8_t mgr[0x60 + 16*8]`, `d.pad_mgr` = address of a u64 holding `mgr`) with a DS3 pad in entry 0, null entries, and the DualSense pad in entry 5; each pad's +0x4F0 holds its own fake transport address -> the DualSense's transport finds the DualSense pad, the DS3's finds the DS3 pad, an unknown transport -> NULL, `d.pad_mgr` = 0 -> NULL, manager pointer 0 -> NULL.
+  - `test_input_basic_translated`: DualSense pad found through the fake manager, basic report in buf, len 10 -> returns 49, buf[0]==0x01, stat_translated==1.
+  - `test_input_passthrough`: DS3 pad, transport not in the manager, short report (len 5), id 0x02 -> unchanged buf and len, stat_passed counts each.
   - `test_pad_identity`: `shim_pad_is_dualsense` NULL / wrong vtable / DS3 / DualSense -> 0/0/0/1.
 - [ ] **Step 2: Write the failing installer tests** in `tests/test_kshim.c` (rework the existing install/rollback tests to the v3 row; drop the `kshim_set_connection` tests):
-  - `test_install_writes_v3`: after install, `0x37CFF8` holds base+`DS45_SHIM_OFF_EVENT`, `0x37CE38` holds base+`DS45_SHIM_OFF_INPUT`, the helper word at `0x29E2CC` is `0x68800CE6`, the data block has version 3, `pad_vtable`, `orig_event = 0x800000000033A2B0`, `info_tmpl` == the row's template; `0x37CFE8` was never written (fake LV2 write log).
+  - `test_install_writes_v3`: after install, `0x37CFF8` holds base+`DS45_SHIM_OFF_EVENT`, `0x37CFB0` holds base+`DS45_SHIM_OFF_ENABLE`, `0x37CE38` holds base+`DS45_SHIM_OFF_INPUT`, the helper word at `0x29E2CC` is `0x68800CE6`, the data block has version 3, `pad_vtable`, `pad_mgr = 0x80000000004A1CB8`, `orig_event = 0x800000000033A2B0`, `orig_enable = 0x800000000033A310`, `info_tmpl` == the row's template; `0x37CFE8` was never written (fake LV2 write log).
   - `test_inline_rows_gated`: `shim_inline_pid=0` -> `0x11B5E4`/`0x11B5EC` untouched; `=1` -> both written.
-  - `test_event_code_hash_mismatch`: wrong code hash -> `KSHIM_FAILED`, image byte-identical, nothing allocated beyond the spare-syscall restore.
-  - `test_rollback_each_step`: a write failure at each step (helper, event, input, data block) leaves the image byte-identical.
+  - `test_event_code_hash_mismatch` and `test_enable_code_hash_mismatch`: wrong code hash -> `KSHIM_FAILED`, image byte-identical, nothing allocated beyond the spare-syscall restore. Likewise `test_enable_slot_mismatch`: `0x37CFB0` not holding `0x800000000033A310` -> `KSHIM_FAILED`, image byte-identical.
+  - `test_rollback_each_step`: a write failure at each step (helper, event, enable, input, data block) leaves the image byte-identical.
   - `test_adopt_via_event_slot`: a second install with the blob present returns `KSHIM_ALREADY` by following `0x37CFF8`.
-  - `test_remove_restores_all`: `kshim_remove` restores event, input and helper word (and inline words when they were applied).
+  - `test_remove_restores_all`: `kshim_remove` restores event, enable, input and helper word (and inline words when they were applied).
   - In `tests/test_config.c`: `test_shim_inline_pid_key`: default 0; `SHIM_INLINE_PID = 1` -> 1; `= abc` -> 0.
 - [ ] **Step 3: Run** `pwsh tests/run_tests.ps1 -Filter shim` (matches test_shim and test_kshim) and `-Filter config` - expected FAIL (undeclared `shim_event_complete`, v3 row fields).
-- [ ] **Step 4: Implement the shim side:** data block v3, `shim.h`/`shim.c`, `entry.c`; `tools/shim_pack.py` and `tools/test_shim_pack.py` for `shim_event`/`DS45_SHIM_OFF_EVENT`. Byte stores only for status/substate (big-endian, endian-explicit); the info pointer and pad pointer are read as native u64.
-- [ ] **Step 5: Implement the installer side:** row type and DEX 4.92 row (template from Task 1 C1 as a `static const uint8_t` array in `kshim_table.c`); event-code hash check before any write; data block fill with `pad_vtable`, `orig_event`, `orig_input`, `info_tmpl`, cfg; patch order helper -> [inline] -> event -> input; journal and rollback as today; adoption via `event_slot`; the `SHIM_INLINE_PID` key; remove `kshim_set_connection` and every caller.
+- [ ] **Step 4: Implement the shim side:** data block v3, `shim.h`/`shim.c`, `entry.c`; `tools/shim_pack.py` and `tools/test_shim_pack.py` for `shim_event`/`shim_enable`/`DS45_SHIM_OFF_EVENT`/`DS45_SHIM_OFF_ENABLE`. Byte stores only for status, substate, done flag and identity bytes (big-endian, endian-explicit); the info pointer, pad pointer, manager pointer and object pointers are read as native u64.
+- [ ] **Step 5: Implement the installer side:** row type and DEX 4.92 row (template from the facts note C1.5 as a `static const uint8_t` array in `kshim_table.c`); event- and enable-code hash checks and slot-value checks before any write; data block fill with `pad_vtable`, `pad_mgr`, `orig_event`, `orig_enable`, `orig_input`, `info_tmpl`, cfg; patch order helper -> [inline] -> event -> enable -> input; journal and rollback as today; adoption via `event_slot`; the `SHIM_INLINE_PID` key; remove `kshim_set_connection` and every caller.
 - [ ] **Step 6: Run** `pwsh tests/run_tests.ps1` and `python -I tools/test_shim_pack.py` - expected all PASS; then build all four variants (`$env:CELL_SDK='C:/usr/local/cell'`; `src/build.ps1 -Variant vsh`, `-Variant vsh -Debug`, `-Variant game`, `-Variant game -Debug`) - expected four "Successfully built" lines; game `.sprx` files contain no `kshim`/`SHIM_INLINE_PID` strings.
 - [ ] **Step 7: Commit**
 
@@ -207,6 +232,8 @@ git commit -m "feat: complete a DualSense's DS3 start-up from the event handler"
 ```
 
 ### Task 4 (conditional on Task 1 C3): Swallow DS3 output for a DualSense
+
+**Not needed (C3, 2026-11-01):** a refused output report cannot remove the pad. The port gate C3 found instead (the `0xF4` enable driver) is handled by `shim_enable` in Task 3. Kept below for the record.
 
 Only if the Task 1 note concludes that a refused DS3 output report can remove the pad. Otherwise mark this task "not needed (C3)" in the ledger and skip it.
 
@@ -227,8 +254,8 @@ Only if the Task 1 note concludes that a refused DS3 output report can remove th
 - Consumes: Tasks 2-3 (and 4 if done); the debug capture keys `CAPTURE_PTR`, `CAPTURE_LV2`, `CAPTURE_LEN` (commit 5515b6f); the pad manager at `0x51B200` (slots `+0x18`, objects `+0x60`; with a USB DS3 in slot 0 the DualSense's pointer is `0x51B268`).
 - Produces: ledger entries with each step's result; the recorded basic report bytes (Task 2 layout confirmed or corrected).
 
-- [ ] **Step 1: Install, DualSense off.** Config `ENABLE=1`, `ENABLE_SHIM=1`, `SHIM_INLINE_PID=0`. Expect trace `kshim_installed`; peek `0x37CFF8` = base+`OFF_EVENT`, `0x37CE38` = base+`OFF_INPUT`, `0x29E2C8` = `4E80002068800CE6`, `0x37CFE8` unchanged `800000000033A208`. A DS3 over USB and over Bluetooth still drives the XMB.
-- [ ] **Step 2: Completion.** Add `CAPTURE_PTR=0x51B268`, `CAPTURE_LV2=0x60`, `CAPTURE_LEN=128`; flip the DualSense's link-key type to `0x01` with the pad off; power it on. Pass: the capture shows the object staying for more than 5 s with +0x80/+0x82 = the template's versions and +0xD8 cleared; the data block's `stat_completed` = 1. If no object forms, repeat with `SHIM_INLINE_PID=1` and record that the inline site is needed.
+- [ ] **Step 1: Install, DualSense off.** Config `ENABLE=1`, `ENABLE_SHIM=1`, `SHIM_INLINE_PID=0`. Expect trace `kshim_installed`; peek `0x37CFF8` = base+`OFF_EVENT`, `0x37CFB0` = base+`OFF_ENABLE`, `0x37CE38` = base+`OFF_INPUT`, `0x29E2C8` = `4E80002068800CE6`, `0x37CFE8` unchanged `800000000033A208`. A DS3 over USB and over Bluetooth still drives the XMB.
+- [ ] **Step 2: Completion.** Add `CAPTURE_PTR=0x51B268`, `CAPTURE_LV2=0x60`, `CAPTURE_LEN=128`; flip the DualSense's link-key type to `0x01` with the pad off; power it on. Pass: the capture shows the object staying for more than 5 s with +0x80/+0x82 = the template's versions, +0x88..+0x8F = `00 00 00 01 D5 00 44 53` and +0xD8 cleared; the data block's `stat_completed` = 1 and `stat_enabled` = 1; the pad manager's port table (`mgr+0xE0`, count `mgr+0xF0`) holds the DualSense's slot. If `stat_completed` = 1 but `stat_enabled` stays 0, the DualSense never answered `0xF4`: record it and stop (design question for the user). If no object forms, repeat with `SHIM_INLINE_PID=1` and record that the inline site is needed.
 - [ ] **Step 3: Input.** Point the capture at the shared buffer (`CAPTURE_LV2=0x4326C8`, `CAPTURE_LEN=72`, no `CAPTURE_PTR`) and record one raw basic report before translation (temporarily `enabled=0` via a data-block poke, then back to 1). Compare with Task 2's layout; if it differs, fix the translator (Task 2 tests first) before continuing. Then check buttons, sticks and L2/R2 in the XMB and in one game.
-- [ ] **Step 4: Together and teardown.** DS3 + DualSense: both have ports and independent input; DualSense off/on three times, each reconnect completes (`stat_completed` increments); plugin unload restores `0x37CFF8`, `0x37CE38` and the helper word.
+- [ ] **Step 4: Together and teardown.** DS3 + DualSense: both have ports and independent input; then both DualSense pads (#1 and #2) together: different identities, both ported; DualSense off/on three times, each reconnect completes (`stat_completed` and `stat_enabled` increment); plugin unload restores `0x37CFF8`, `0x37CFB0`, `0x37CE38` and the helper word.
 - [ ] **Step 5: Record** each step's result in the ledger; commit the script change - "test: start-up completion console mode".
