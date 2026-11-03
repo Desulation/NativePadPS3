@@ -18,8 +18,20 @@ Relocation handling (verified against the real clang-15 / ld.lld build, see
                   .opd function descriptor; it
                   is an ABSOLUTE address, so it
                   must get the load base added
-  R_PPC64_REL24   PC-relative branch             -> drop (position independent)
+  R_PPC64_REL24   PC-relative branch             -> RETARGETED to code, then
+                                                    not rebased (position
+                                                    independent); see below
   R_PPC64_TOC16*  TOC-relative (offset from r2)  -> drop (position independent)
+
+REL24 and the ELFv1 function descriptor: on ELFv1 a C function's symbol is the
+address of its .opd DESCRIPTOR, not of its code, and ld.lld does not redirect a
+REL24 against such a symbol to the code entry - the linked `bl` lands on the
+descriptor (whose first bytes are data, e.g. 0 = an illegal instruction). So
+for every REL24 whose target (symbol value + addend) falls inside .opd, this
+script reads the descriptor's first word (the code entry; the image links at 0
+so the link-time value is the offset) and rewrites the branch's LI field to
+reach that code instead. A REL24 already aimed at code is left alone. After
+that, any REL24 that still lands in .opd is a hard error.
 
   anything else, a relocation against an undefined symbol, or a TOC/data
   reference inside shim_pid_ok (which the kernel calls with ITS OWN r2, so the
@@ -54,6 +66,9 @@ SHN_UNDEF = 0
 # PowerPC64 relocation types.
 R_PPC64_ADDR64 = 38
 R_PPC64_TOC = 51
+R_PPC64_REL24 = 10
+STT_SECTION = 3
+SHF_EXECINSTR = 0x4
 
 # Absolute 64-bit words that take the load base.
 _REBASE = frozenset((R_PPC64_ADDR64, R_PPC64_TOC))
@@ -162,10 +177,10 @@ def pack(data):
     syms = []
     for i in range(symtab["size"] // 24):
         o = symtab["offset"] + i * 24
-        st_name, _info, _other, st_shndx, st_value, st_size = struct.unpack(
+        st_name, st_info, _other, st_shndx, st_value, st_size = struct.unpack(
             ">IBBHQQ", data[o:o + 24])
         syms.append(dict(name=_cstr(strs, st_name), shndx=st_shndx,
-                         value=st_value, size=st_size))
+                         value=st_value, size=st_size, typ=st_info & 0xF))
 
     # --- image: every SHF_ALLOC section, laid out at its virtual address -
     image_len = 0
@@ -183,15 +198,26 @@ def pack(data):
     # --- relocations ----------------------------------------------------
     rebase = []
     all_relocs = []
+    rel24 = []          # (branch offset, target = symbol value + addend)
     for s in sects:
         if s["type"] != SHT_RELA:
             continue
         for i in range(s["size"] // 24):
             o = s["offset"] + i * 24
-            r_offset, r_info, _r_add = struct.unpack(">QQq", data[o:o + 24])
+            r_offset, r_info, r_add = struct.unpack(">QQq", data[o:o + 24])
             sym_i = r_info >> 32
             rtype = r_info & 0xFFFFFFFF
             all_relocs.append((r_offset, rtype))
+
+            if rtype == R_PPC64_REL24:
+                base = 0
+                if 0 < sym_i < len(syms):
+                    sy = syms[sym_i]
+                    base = sy["value"]
+                    if (sy["typ"] == STT_SECTION and sy["shndx"] != SHN_UNDEF
+                            and sy["shndx"] < len(sects)):
+                        base = sects[sy["shndx"]]["addr"]
+                rel24.append((r_offset, base + r_add))
 
             if sym_i != 0:
                 if sym_i >= len(syms):
@@ -214,6 +240,53 @@ def pack(data):
                 raise PackError(
                     "unsupported relocation type %d at 0x%x - it may need a "
                     "load base this packer does not handle" % (rtype, r_offset))
+
+    # --- REL24 -> code --------------------------------------------------
+    opd = next((s for s in sects if s["sname"] == ".opd"), None)
+    exec_secs = [s for s in sects
+                 if (s["flags"] & SHF_ALLOC) and (s["flags"] & SHF_EXECINSTR)]
+
+    def in_opd(addr):
+        return opd is not None and opd["addr"] <= addr < opd["addr"] + opd["size"]
+
+    def in_text(addr):
+        return any(s["addr"] <= addr < s["addr"] + s["size"] for s in exec_secs)
+
+    for (o, target) in rel24:
+        if o % 4 != 0 or o + 4 > image_len:
+            raise PackError("REL24 at 0x%x is not an aligned instruction "
+                            "inside the image" % o)
+        if not in_opd(target):
+            continue                          # already aimed at code
+        if target + 8 > image_len:
+            raise PackError("REL24 at 0x%x targets a descriptor outside the "
+                            "image" % o)
+        code = struct.unpack(">Q", bytes(image[target:target + 8]))[0]
+        if not in_text(code) or code % 4 != 0:
+            raise PackError(
+                "REL24 at 0x%x targets descriptor 0x%x whose entry 0x%x is "
+                "not in an executable section" % (o, target, code))
+        delta = code - o
+        if not (-0x2000000 <= delta < 0x2000000):
+            raise PackError("REL24 at 0x%x cannot reach code 0x%x (distance "
+                            "%d does not fit 26 bits)" % (o, code, delta))
+        word = struct.unpack(">I", bytes(image[o:o + 4]))[0]
+        if (word >> 26) != 18 or (word & 2):
+            raise PackError("REL24 at 0x%x is not a relative b/bl "
+                            "instruction (0x%08x)" % (o, word))
+        word = (word & 0xFC000003) | (delta & 0x03FFFFFC)
+        image[o:o + 4] = struct.pack(">I", word)
+
+    # Guard: after retargeting, no branch named by a REL24 may still land in
+    # .opd (it would execute descriptor data).
+    for (o, _target) in rel24:
+        word = struct.unpack(">I", bytes(image[o:o + 4]))[0]
+        li = word & 0x03FFFFFC
+        if li & 0x02000000:
+            li -= 0x04000000
+        if in_opd(o + li):
+            raise PackError("REL24 at 0x%x still branches into .opd (0x%x)"
+                            % (o, o + li))
 
     # --- exported offsets ----------------------------------------------
     def find(name):

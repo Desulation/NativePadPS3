@@ -18,7 +18,10 @@ Relocation policy under test (see shim_pack.py for the full rationale):
                       pointing at link-time address 0; see the report.)
   * R_PPC64_TOC16* -> dropped (TOC-relative: an offset from r2, so it is
                       genuinely position independent)
-  * R_PPC64_REL24  -> dropped (PC-relative branch)
+  * R_PPC64_REL24  -> never rebased (PC-relative), but a REL24 that lands in
+                      .opd (an ELFv1 function descriptor, not code) is
+                      rewritten to branch to the descriptor's code entry, and
+                      the pack fails if any is left pointing into .opd
   * anything else, any undefined symbol, or a TOC/data reference inside
     shim_pid_ok's code -> hard error (non-zero exit)
 """
@@ -334,6 +337,136 @@ class TocRelativeDropTest(unittest.TestCase):
         self.assertNotIn(0x14, p.relocs)
         # Unchanged from the clean build.
         self.assertEqual(p.relocs, _CLEAN_RELOCS)
+
+
+def _bl(frm, to):
+    """Encode `bl to` placed at address `frm`."""
+    return struct.pack(">I", 0x48000001 | ((to - frm) & 0x03FFFFFC))
+
+
+def _decode_bl(blob, at):
+    w = struct.unpack(">I", blob[at:at + 4])[0]
+    assert (w >> 26) == 18 and (w & 1) == 1 and (w & 2) == 0, hex(w)
+    li = w & 0x03FFFFFC
+    if li & 0x02000000:
+        li -= 0x04000000
+    return at + li
+
+
+class Rel24RetargetTest(unittest.TestCase):
+    """A REL24 aimed at an .opd descriptor must end up aimed at its code."""
+
+    OPD_LO, OPD_HI = 0x100, 0x160
+
+    def test_named_function_symbol_is_retargeted(self):
+        b = ElfBuilder()
+        # lld left the branch on the descriptor of shim_input (0x130).
+        b.text[0x10:0x14] = _bl(0x10, 0x130)
+        b.add_text_reloc(0x10, R_PPC64_REL24, "shim_input")
+        p = shim_pack.pack(b.build())
+        self.assertEqual(_decode_bl(p.blob, 0x10), 0x40)    # shim_input code
+        self.assertNotIn(0x10, p.relocs)                   # PC-relative
+
+    def test_section_symbol_with_addend_is_retargeted(self):
+        b = ElfBuilder()
+        b.text[0x14:0x18] = _bl(0x14, 0x118)               # .opd+0x18 = enable
+        b.add_text_reloc(0x14, R_PPC64_REL24, ".opd", 0x18)
+        p = shim_pack.pack(b.build())
+        self.assertEqual(_decode_bl(p.blob, 0x14), 0xC0)    # shim_enable code
+        self.assertNotIn(0x14, p.relocs)
+
+    def test_branch_to_text_is_left_alone(self):
+        b = ElfBuilder()
+        b.text[0x18:0x1C] = _bl(0x18, 0x40)
+        b.add_text_reloc(0x18, R_PPC64_REL24, ".text", 0x40)
+        p = shim_pack.pack(b.build())
+        self.assertEqual(_decode_bl(p.blob, 0x18), 0x40)
+        self.assertEqual(p.relocs, _CLEAN_RELOCS)
+
+    def test_retarget_keeps_other_instruction_bits(self):
+        b = ElfBuilder()
+        b.text[0x1C:0x20] = _bl(0x1C, 0x130)               # bl, LK=1
+        b.add_text_reloc(0x1C, R_PPC64_REL24, "shim_input")
+        p = shim_pack.pack(b.build())
+        w = struct.unpack(">I", p.blob[0x1C:0x20])[0]
+        self.assertEqual(w >> 26, 18)
+        self.assertEqual(w & 3, 1)                          # AA=0, LK=1
+
+    def test_descriptor_entry_outside_text_errors(self):
+        b = ElfBuilder()
+        b.text[0x10:0x14] = _bl(0x10, 0x130)
+        b.add_text_reloc(0x10, R_PPC64_REL24, "shim_input")
+        # shim_input's descriptor (index 2, .opd+0x30) -> an address in .opd.
+        b.opd[0x30:0x38] = struct.pack(">Q", 0x110)
+        with self.assertRaises(shim_pack.PackError):
+            shim_pack.pack(b.build())
+
+    def test_branch_still_into_opd_is_a_guard_error(self):
+        # The reloc claims the target is .text, but the instruction really
+        # branches into .opd: the final guard must refuse it.
+        b = ElfBuilder()
+        b.text[0x10:0x14] = _bl(0x10, 0x130)
+        b.add_text_reloc(0x10, R_PPC64_REL24, ".text", 0x40)
+        with self.assertRaises(shim_pack.PackError):
+            shim_pack.pack(b.build())
+
+
+_REAL_ELF = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                         "shim", "shim.elf")
+
+
+@unittest.skipUnless(os.path.exists(_REAL_ELF),
+                     "shim/shim.elf not built (run src/build.ps1 -Variant vsh)")
+class RealElfRel24Test(unittest.TestCase):
+    """Over the real linked blob: no direct branch in the code section may
+    land in .opd, and every REL24 the link recorded as aimed at a descriptor
+    now decodes to a branch into code."""
+
+    def test_no_internal_branch_lands_in_opd(self):
+        with open(_REAL_ELF, "rb") as f:
+            data = f.read()
+        p = shim_pack.pack(data)
+        # Section bounds straight from the ELF section headers.
+        e_shoff = struct.unpack(">Q", data[0x28:0x30])[0]
+        e_shnum, e_shstrndx = struct.unpack(">HH", data[0x3C:0x40])
+        secs = []
+        for i in range(e_shnum):
+            f = struct.unpack(">IIQQQQIIQQ", data[e_shoff + 64 * i:e_shoff + 64 * i + 64])
+            secs.append(f)
+        stro = secs[e_shstrndx][4]
+
+        def name(f):
+            end = data.index(b"\0", stro + f[0])
+            return data[stro + f[0]:end].decode()
+        by = {name(f): f for f in secs}
+        text_lo, text_hi = by[".text"][3], by[".text"][3] + by[".text"][5]
+        opd_lo, opd_hi = by[".opd"][3], by[".opd"][3] + by[".opd"][5]
+        self.assertLess(text_hi, opd_hi)
+        # Every REL24 relocation site: the packed branch must be code.
+        n_rel24 = 0
+        for f in secs:
+            if f[1] != SHT_RELA:
+                continue
+            for i in range(f[5] // 24):
+                o = f[4] + i * 24
+                r_off, r_info, _add = struct.unpack(">QQq", data[o:o + 24])
+                if (r_info & 0xFFFFFFFF) != R_PPC64_REL24:
+                    continue
+                n_rel24 += 1
+                tgt = _decode_branch(p.blob, r_off)
+                self.assertTrue(text_lo <= tgt < text_hi,
+                                "REL24 at 0x%x -> 0x%x not in .text" % (r_off, tgt))
+                self.assertFalse(opd_lo <= tgt < opd_hi)
+        self.assertGreater(n_rel24, 0)
+
+
+def _decode_branch(blob, at):
+    w = struct.unpack(">I", blob[at:at + 4])[0]
+    assert (w >> 26) == 18, hex(w)
+    li = w & 0x03FFFFFC
+    if li & 0x02000000:
+        li -= 0x04000000
+    return at + li
 
 
 class ErrorTest(unittest.TestCase):

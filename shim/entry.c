@@ -118,13 +118,20 @@ int SHIM_HOOK(shim_input)(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 /* The kernel's vtable dispatch (framework 0xCB5C0, input caller 0x2A4E00) loads
  * the descriptor's env word (opd+0x10) into r11 and the entry (opd+0) but never
  * r2, assuming the one kernel TOC. Our descriptors put the blob TOC in BOTH toc
- * and env, so r11 = blob TOC on entry; the trampoline adopts it into r2 before
- * the C body's TOC-relative data access. It then jumps to the impl's code through
- * the impl's own function descriptor (a plain "b shim_x_impl" would branch INTO
- * the .opd descriptor, because on ELFv1 the C symbol names the descriptor, not
- * the code): r11 = word 0 of that descriptor, read TOC-relative so it stays
- * position independent. Only r11 and CTR are clobbered; r3..r6 and LR are kept,
- * so the impl returns straight to the kernel. The packer rebases all three
+ * and env, so r11 = blob TOC on entry.
+ *
+ * The kernel also does NOT reload r2 after the call returns (it assumes every
+ * callee preserves the one shared TOC), so each hook is a small framed wrapper:
+ * save the kernel's r2 in its own frame, adopt r11 into r2 for the C body's
+ * TOC-relative data access, call the impl, restore the kernel's r2 and return.
+ * r3..r6 are untouched until the call, so the impl gets its arguments, and the
+ * impl's return value (r3) survives the epilogue.
+ *
+ * "bl shim_x_impl" names the impl's .opd DESCRIPTOR on ELFv1 (the C symbol is
+ * the descriptor, not the code); tools/shim_pack.py retargets every such REL24
+ * to the descriptor's code entry and fails the build if any is left. The nop
+ * after each bl is the slot a linker may rewrite for a TOC restore; we restore
+ * r2 ourselves from the frame, right after it. The packer rebases all three
  * descriptor words (entry = ADDR64, toc and env = TOC base) to the load base. */
 __asm__(
 "\t.section .opd,\"aw\",@progbits\n"
@@ -134,17 +141,17 @@ __asm__(
 "\t.globl shim_input\n"  "shim_input:\n"  "\t.quad .Ltr_input, .TOC.@tocbase, .TOC.@tocbase\n"
 "\t.text\n"
 "\t.p2align 2\n"
-".Ltr_event:\n"  "\tmr 2, 11\n"
-"\taddis 11, 2, shim_event_impl@toc@ha\n"
-"\tld 11, shim_event_impl@toc@l(11)\n"
-"\tmtctr 11\n" "\tbctr\n"
-".Ltr_enable:\n" "\tmr 2, 11\n"
-"\taddis 11, 2, shim_enable_impl@toc@ha\n"
-"\tld 11, shim_enable_impl@toc@l(11)\n"
-"\tmtctr 11\n" "\tbctr\n"
-".Ltr_input:\n"  "\tmr 2, 11\n"
-"\taddis 11, 2, shim_input_impl@toc@ha\n"
-"\tld 11, shim_input_impl@toc@l(11)\n"
-"\tmtctr 11\n" "\tbctr\n"
+".Ltr_event:\n"
+"\tmflr 0\n" "\tstd 0, 16(1)\n" "\tstdu 1, -0x30(1)\n" "\tstd 2, 0x20(1)\n"
+"\tmr 2, 11\n" "\tbl shim_event_impl\n" "\tnop\n"
+"\tld 2, 0x20(1)\n" "\taddi 1, 1, 0x30\n" "\tld 0, 16(1)\n" "\tmtlr 0\n" "\tblr\n"
+".Ltr_enable:\n"
+"\tmflr 0\n" "\tstd 0, 16(1)\n" "\tstdu 1, -0x30(1)\n" "\tstd 2, 0x20(1)\n"
+"\tmr 2, 11\n" "\tbl shim_enable_impl\n" "\tnop\n"
+"\tld 2, 0x20(1)\n" "\taddi 1, 1, 0x30\n" "\tld 0, 16(1)\n" "\tmtlr 0\n" "\tblr\n"
+".Ltr_input:\n"
+"\tmflr 0\n" "\tstd 0, 16(1)\n" "\tstdu 1, -0x30(1)\n" "\tstd 2, 0x20(1)\n"
+"\tmr 2, 11\n" "\tbl shim_input_impl\n" "\tnop\n"
+"\tld 2, 0x20(1)\n" "\taddi 1, 1, 0x30\n" "\tld 0, 16(1)\n" "\tmtlr 0\n" "\tblr\n"
 );
 #endif
