@@ -345,6 +345,34 @@ __asm__(
 - [ ] **Step 4: Run** `pwsh tests/run_tests.ps1` (host unaffected - the C bodies and pure functions are unchanged) and `python -I tools/test_shim_pack.py` - all PASS.
 - [ ] **Step 5: Commit** - "fix: shim hooks adopt the blob TOC from r11 (kernel dispatch does not set r2)".
 
+**Fix round 1 (review, 2026-11-03): internal branches + r2 restore.** The review and a controller objdump of `shim/shim.elf` found two more defects the trampoline alone does not solve; both are console-fatal and must be fixed before Task 5.
+
+- **(a) Every internal `bl` in the blob branches to the callee's `.opd` DESCRIPTOR, not its code** (`.text` ends `0x15b4`, `.opd` is `0x15b8..0x17e0`; e.g. `bl 0x1690 <shim_event_complete>` targets a descriptor whose word0 is `0x00000000` = illegal). lld does not redirect REL24-against-an-`.opd`-symbol to the code entry, and the packer DROPs REL24. So the first helper call in any hook faults - the blob's internal calls have never worked. **Fix in `tools/shim_pack.py`:** for each REL24 (type 10) at offset O whose target symbol/section resolves into `.opd`, compute `D = sym_value + addend` (the descriptor), read `code = be64(image[D:D+8])` (descriptor word0 = code offset, link-time == absolute since the image links at 0), rewrite the branch's LI field `image[O] = (be32(image[O]) & 0xFC000003) | ((code - O) & 0x03FFFFFC)` (assert `code` is in `.text` and `code - O` fits signed 26 bits), and do NOT rebase O (PC-relative). A REL24 whose target is already in `.text` is left as-is. Add a guard: after packing, no REL24 target resolves into `.opd` (hard error). A `tools/test_shim_pack.py` case over the real ELF asserts the `*_complete`/helper call sites now point into `.text`.
+- **(b) The hook must restore the kernel's r2 before returning** (the dispatch sites `0xCB5C0`/`0x2A4E00` do not `ld r2` after `bctrl`; they assume the callee preserves r2). **Fix:** the trampoline becomes a framed wrapper, not a tail jump. With (a) fixing REL24, the wrapper's `bl <impl>` reaches code, so per hook:
+
+```
+.Ltr_event:
+	mflr 0
+	std  0, 16(1)        ; LR -> caller frame
+	stdu 1, -0x30(1)
+	std  2, 0x20(1)      ; save the kernel's r2
+	mr   2, 11           ; r2 = blob TOC (the descriptor env the kernel passed in r11)
+	bl   shim_event_impl ; packer redirects this REL24 to impl code; impl runs on the blob TOC
+	nop
+	ld   2, 0x20(1)      ; restore the kernel's r2
+	addi 1, 1, 0x30
+	ld   0, 16(1)
+	mtlr 0
+	blr
+```
+
+	Keep the three `.opd` descriptors `{ .Ltr_x, .TOC.@tocbase, .TOC.@tocbase }` from the first attempt (env = blob TOC). The impl bodies are unchanged. Host build/release unaffected (asm still under `#ifndef DS45_HOST_TEST`).
+
+- [ ] **Fix step 1: packer REL24->code** + the guard and the test_shim_pack case.
+- [ ] **Fix step 2: the framed wrapper** (replaces the tail-`b`/`@toc`-jump trampoline).
+- [ ] **Fix step 3: build all four + run the host suite + `python -I tools/test_shim_pack.py`;** then disassemble `src/shim_blob.h` and verify: every former `.opd`-targeting `bl` now lands in `.text`; each hook descriptor is `{tramp, blob TOC, blob TOC}` (all three rebased); each trampoline saves r2, sets r2 from r11, calls the impl's CODE, restores r2, returns. Evidence in the report.
+- [ ] **Fix step 4: Commit** - "fix: packer retargets internal branches to code; hooks preserve the kernel TOC".
+
 ### Task 5: Console test steps (with the user, DEX 4.92)
 
 **Files:**
