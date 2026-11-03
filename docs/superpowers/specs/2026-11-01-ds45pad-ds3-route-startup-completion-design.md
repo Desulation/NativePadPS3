@@ -175,6 +175,33 @@ Debug-only; the release behaviour and the shipping data the installer writes are
 unchanged apart from the data block growing (version 5). The counters live in the
 shared data block for one ABI across builds; the game build installs no shim.
 
+## Amendment 4 (2026-11-03): the hooks must set their own TOC (r2)
+
+The console isolation (SHIM_*_HOOK gates) found that any blob hook on the
+DS3's start-up path breaks the DS3 and storms/freezes the console, while a
+helper-word-only install is perfect. The cause, from the kernel disassembly, is
+the ELFv1 TOC register. The kernel's vtable dispatch does NOT reload r2 from the
+descriptor it calls: the start-up/enable framework (`0xCB5C0`) and the input
+caller (`0x2A4E00`) both do `ld r11,0x10(opd)` (the descriptor's env word) then
+`ld r9,0(opd); mtctr; bctrl`, with no `ld r2,8(opd)`. Every kernel handler shares
+one TOC (`0x3759C0`) set once up the call chain, so the dispatch leaves r2 alone.
+Our blob has its own TOC (base+`0x9660`); the hooks reach `ds45_shim_data` through
+r2-relative GOT loads, so with r2 still the kernel's TOC they read garbage and
+`orig_*` becomes a wild pointer - hence the storm. This is why the executability
+probe passed (its stub touches no TOC) yet every real hook fails; it is a
+blob-wide ABI bug, not logic, and the shim could not have worked as built.
+
+The kernel does pass the descriptor's env word (`opd+0x10`) in r11 at every
+dispatch site. Fix: each hook's descriptor carries the blob TOC in its env word,
+and the hook entry is a two-instruction trampoline that adopts it -
+`mr r2, r11; b <impl>` - before the C body runs. Then the C body has the right
+r2. The impl bodies (the existing wrappers: decide, else tail-call the original)
+are unchanged. Build-time only, freestanding blob only; the host tests call the
+pure functions directly and are unaffected, and the installer, data block and
+release behaviour do not change (the packer already rebases the env word because
+it is a TOC-base reloc like the descriptor's toc word). All three hooks get the
+trampoline. See plan Task 8 for the exact assembly.
+
 ## Design
 
 ### 1. Start-up completion (kernel side)

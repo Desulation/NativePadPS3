@@ -298,6 +298,53 @@ Added 2026-11-02 after console step 1: the shim installed and ran (no freeze), b
 - [ ] **Step 4: Run** `pwsh tests/run_tests.ps1`, `python -I tools/test_shim_pack.py`, and the four builds - all PASS; game `.sprx` contain no `kshim`/`SHIM_INPUT_HOOK`/`shimdbg` strings.
 - [ ] **Step 5: Commit** - "debug: shim diagnostic counters, on-disk trace and input-hook isolation".
 
+### Task 8: Hooks set their own TOC (spec Amendment 4) - THE DS3-break fix
+
+Console isolation proved the start-up/enable/input hooks all run with the kernel's TOC in r2, not the blob's (the kernel's vtable dispatch never reloads r2; it passes the descriptor's env word in r11). So every hook reads `ds45_shim_data` through a wrong-r2 GOT load and `orig_*` becomes a wild pointer -> storm/freeze. Fix: each hook descriptor carries the blob TOC in its env word, and the hook entry is a trampoline `mr r2, r11; b <impl>`. Freestanding blob only; host build and release unchanged. This is the fix that should make the shim actually work.
+
+**Files:** Modify: `shim/entry.c` (only). The packer, installer, shim.c, data block and tests do not change (the host tests call the pure functions; the packer already rebases the env word because `.TOC.@tocbase` is a TOC reloc).
+
+**Interfaces / structure (entry.c):** keep the three wrapper bodies exactly as they are (decide via `shim_*_complete`/filter, else tail-call `orig_*`), but make their NAME build-dependent so the kernel-called entry can be a trampoline in the blob while the host keeps a plain C function:
+
+```c
+#ifdef DS45_HOST_TEST
+#define SHIM_HOOK(n) n              /* host: the C function IS the hook (tests call it) */
+#else
+#define SHIM_HOOK(n) n##_impl       /* blob: C body is the impl; asm trampoline is the hook */
+#endif
+int SHIM_HOOK(shim_event)(void *drv, long status, long len) { /* current body */ }
+int SHIM_HOOK(shim_enable)(void *drv, long status, long len) { /* current body */ }
+int SHIM_HOOK(shim_input)(void *xport, uint8_t *dst, uint16_t len_in, int flag) { /* current body */ }
+
+#ifndef DS45_HOST_TEST
+/* The kernel's vtable dispatch (framework 0xCB5C0, input caller 0x2A4E00) loads
+ * the descriptor's env word (opd+0x10) into r11 and the entry (opd+0) but never
+ * r2, assuming the one kernel TOC. Our descriptors put the blob TOC in BOTH toc
+ * and env, so r11 = blob TOC on entry; the trampoline adopts it into r2 before
+ * the C body's TOC-relative data access. b <impl> keeps r3..r6 and LR, so the
+ * impl returns straight to the kernel. The packer rebases all three descriptor
+ * words (entry = ADDR64, toc and env = TOC base) to the load base. */
+__asm__(
+"\t.section .opd,\"aw\",@progbits\n"
+"\t.p2align 3\n"
+"\t.globl shim_event\n"  "shim_event:\n"  "\t.quad .Ltr_event, .TOC.@tocbase, .TOC.@tocbase\n"
+"\t.globl shim_enable\n" "shim_enable:\n" "\t.quad .Ltr_enable, .TOC.@tocbase, .TOC.@tocbase\n"
+"\t.globl shim_input\n"  "shim_input:\n"  "\t.quad .Ltr_input, .TOC.@tocbase, .TOC.@tocbase\n"
+"\t.text\n"
+"\t.p2align 2\n"
+".Ltr_event:\n"  "\tmr 2, 11\n" "\tb shim_event_impl\n"
+".Ltr_enable:\n" "\tmr 2, 11\n" "\tb shim_enable_impl\n"
+".Ltr_input:\n"  "\tmr 2, 11\n" "\tb shim_input_impl\n"
+);
+#endif
+```
+
+- [ ] **Step 1: Restructure entry.c** as above (bodies unchanged; the `SHIM_HOOK` macro; the `#ifndef DS45_HOST_TEST` asm block). Nothing else in the repo changes.
+- [ ] **Step 2: Build** all four variants (`$env:CELL_SDK='C:/usr/local/cell'`). Expect the blob to pack (packer accepts the new `.opd`); `DS45_SHIM_RELOC_COUNT` rises by 3 (the three env words); game `.sprx` unchanged/clean.
+- [ ] **Step 3: Disassemble the built blob to verify the ABI** (the only way to check PPC codegen off-console). Using `shim_blob.h` + capstone (scratchpad tools): (a) the descriptor at `DS45_SHIM_OFF_EVENT` has word[0] = a trampoline code offset, word[1] == word[2] == the blob TOC offset (`OFF_DATA`-ish `+0x8000` region), and all three offsets are in `ds45_shim_relocs`; (b) the trampoline at word[0] disassembles to `mr r2,r11` then `b` into `shim_event_impl`; (c) same for enable and input. Put the evidence in the report.
+- [ ] **Step 4: Run** `pwsh tests/run_tests.ps1` (host unaffected - the C bodies and pure functions are unchanged) and `python -I tools/test_shim_pack.py` - all PASS.
+- [ ] **Step 5: Commit** - "fix: shim hooks adopt the blob TOC from r11 (kernel dispatch does not set r2)".
+
 ### Task 5: Console test steps (with the user, DEX 4.92)
 
 **Files:**
