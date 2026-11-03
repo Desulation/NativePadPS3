@@ -995,9 +995,215 @@ static int test_input_note(void)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Stable identity from the Bluetooth connection (stage 1b)                   */
+/* ------------------------------------------------------------------------ */
+
+#define CONN_LEN    0x60
+#define CONN_HANDLES 7
+
+typedef union { uint64_t q[CONN_LEN / 8]; uint8_t b[CONN_LEN]; } fake_conn_t;
+
+/* A connection entry for `handle` whose +0x08..+0x0F hold a controller's
+ * Bluetooth address in the pad-identity layout (u32 @+8, byte @+0xC, an unused
+ * byte @+0xD that is deliberately non-zero junk here, u16 @+0xE). */
+static void conn_make(fake_conn_t *c, uint8_t handle, const uint8_t id[8])
+{
+	memset(c->b, 0x77, sizeof(c->b));
+	memcpy(c->b + 8, id, 8);
+	c->b[0x10] = handle;
+}
+
+/* The connection table: 7 native pointers. A data block pointed at it with the
+ * stable identity switched on. */
+static uint64_t g_ctbl[CONN_HANDLES];
+
+static ds45_shim_data_t data_stable(void)
+{
+	ds45_shim_data_t d = data_enabled();
+
+	memset(g_ctbl, 0, sizeof(g_ctbl));
+	d.conn_tbl = (uint64_t)(uintptr_t)g_ctbl;
+	d.stable_id = 1;
+	return d;
+}
+
+static void drv_handle(fake_drv_t *drv, uint8_t h)
+{
+	drv->b[SHIM_DRV_HANDLE] = h;
+}
+
+/* Two controllers on handles 0 and 1: each pad's identity bytes are exactly its
+ * connection's address (the unused byte +0x0D forced to 0), distinct from each
+ * other, and the fixed-tag counter form is not used. */
+static int test_stable_identity_from_connection(void)
+{
+	ds45_shim_data_t d = data_stable();
+	fake_conn_t ca, cb;
+	fake_pad_t pa, pb;
+	fake_drv_t da, db;
+	static const uint8_t bd_a[8] = { 0x00, 0x13, 0x24, 0xA8, 0x9B, 0x64, 0x4C, 0xB9 };
+	static const uint8_t bd_b[8] = { 0x00, 0xA6, 0xC9, 0x13, 0x51, 0x00, 0xA0, 0xAB };
+	static const uint8_t want_a[8] = { 0x00, 0x13, 0x24, 0xA8, 0x9B, 0x00, 0x4C, 0xB9 };
+	static const uint8_t want_b[8] = { 0x00, 0xA6, 0xC9, 0x13, 0x51, 0x00, 0xA0, 0xAB };
+
+	conn_make(&ca, 0, bd_a);
+	conn_make(&cb, 1, bd_b);
+	g_ctbl[0] = (uint64_t)(uintptr_t)ca.b;
+	g_ctbl[1] = (uint64_t)(uintptr_t)cb.b;
+
+	pad_make(&pa, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	pad_make(&pb, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	drv_make(&da, &pa);
+	drv_make(&db, &pb);
+	drv_handle(&da, 0);
+	drv_handle(&db, 1);
+
+	CHECK(shim_event_complete(&d, da.b) == 1);
+	CHECK(shim_event_complete(&d, db.b) == 1);
+	CHECK(memcmp(pa.b + 0x88, want_a, 8) == 0);
+	CHECK(memcmp(pb.b + 0x88, want_b, 8) == 0);
+	CHECK(memcmp(pa.b + 0x88, pb.b + 0x88, 8) != 0);
+
+	/* the template outside the identity is still copied, and the driver is done */
+	CHECK(memcmp(pa.b + 0x90, d.info_tmpl + 0x10, DS45_SHIM_INFO_LEN - 0x10) == 0);
+	CHECK(da.b[SHIM_DRV_SUBSTATE] == SHIM_DRV_DONE);
+
+	CHECK(d.dbg_id_bd == 2 && d.dbg_id_fallback == 0);
+	CHECK(d.dbg_last_handle == 1);
+	CHECK(d.stat_completed == 2);               /* still counts every completion */
+	/* the connection entries were only read */
+	CHECK(ca.b[0x08] == 0x00 && ca.b[0x0D] == 0x64 && cb.b[0x10] == 1);
+	return 0;
+}
+
+/* The same controller reconnecting on a new pad object (even a different handle
+ * and a different completion count) gets the identical identity. */
+static int test_stable_identity_survives_reconnect(void)
+{
+	ds45_shim_data_t d = data_stable();
+	fake_conn_t c1, c2;
+	fake_pad_t p1, p2;
+	fake_drv_t d1, d2;
+	static const uint8_t bd[8] = { 0x00, 0x13, 0x24, 0xA8, 0x9B, 0x64, 0x4C, 0xB9 };
+
+	conn_make(&c1, 0, bd);
+	g_ctbl[0] = (uint64_t)(uintptr_t)c1.b;
+	pad_make(&p1, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	drv_make(&d1, &p1);
+	drv_handle(&d1, 0);
+	CHECK(shim_event_complete(&d, d1.b) == 1);
+
+	/* gone, then back on handle 3 */
+	g_ctbl[0] = 0;
+	conn_make(&c2, 3, bd);
+	g_ctbl[3] = (uint64_t)(uintptr_t)c2.b;
+	pad_make(&p2, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	drv_make(&d2, &p2);
+	drv_handle(&d2, 3);
+	CHECK(shim_event_complete(&d, d2.b) == 1);
+
+	CHECK(memcmp(p1.b + 0x88, p2.b + 0x88, 8) == 0);
+	CHECK(d.stat_completed == 2);
+	CHECK(d.dbg_id_bd == 2 && d.dbg_id_fallback == 0);
+	return 0;
+}
+
+/* One completion with the stable identity requested, whose connection lookup is
+ * set up by `setup`, must fall back to the counter form
+ * (stat_completed, 0xD5, 0x00, 0x44, 0x53) and count the fallback. */
+static int expect_fallback(ds45_shim_data_t *d, fake_drv_t *drv, fake_pad_t *pad)
+{
+	static const uint8_t id1[8] = { 0x00, 0x00, 0x00, 0x01, 0xD5, 0x00, 0x44, 0x53 };
+
+	CHECK(shim_event_complete(d, drv->b) == 1);
+	CHECK(memcmp(pad->b + 0x88, id1, 8) == 0);
+	CHECK(d->stat_completed == 1);
+	CHECK(d->dbg_id_bd == 0 && d->dbg_id_fallback == 1);
+	CHECK(drv->b[SHIM_DRV_SUBSTATE] == SHIM_DRV_DONE);
+	return 0;
+}
+
+static int test_stable_identity_fallbacks(void)
+{
+	static const uint8_t bd[8] = { 0x00, 0x13, 0x24, 0xA8, 0x9B, 0x64, 0x4C, 0xB9 };
+	static const uint8_t zero[8] = { 0 };
+	/* +0x8C == 0x18 with the u16 at +0x8E == 0x000D: the kernel's alternate branch */
+	static const uint8_t alt[8] = { 0x00, 0x13, 0x24, 0xA8, 0x18, 0x00, 0x00, 0x0D };
+	ds45_shim_data_t d;
+	fake_conn_t c;
+	fake_pad_t pad;
+	fake_drv_t drv;
+	int r;
+
+	/* handle past the table */
+	d = data_stable(); conn_make(&c, 0, bd); g_ctbl[0] = (uint64_t)(uintptr_t)c.b;
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE); drv_make(&drv, &pad);
+	drv_handle(&drv, 7);
+	if ((r = expect_fallback(&d, &drv, &pad)) != 0) return r;
+
+	/* an empty slot */
+	d = data_stable(); conn_make(&c, 0, bd); g_ctbl[0] = (uint64_t)(uintptr_t)c.b;
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE); drv_make(&drv, &pad);
+	drv_handle(&drv, 2);
+	if ((r = expect_fallback(&d, &drv, &pad)) != 0) return r;
+
+	/* the entry's own handle byte does not match the slot it was found in */
+	d = data_stable(); conn_make(&c, 5, bd); g_ctbl[0] = (uint64_t)(uintptr_t)c.b;
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE); drv_make(&drv, &pad);
+	drv_handle(&drv, 0);
+	if ((r = expect_fallback(&d, &drv, &pad)) != 0) return r;
+
+	/* an all-zero address */
+	d = data_stable(); conn_make(&c, 0, zero); g_ctbl[0] = (uint64_t)(uintptr_t)c.b;
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE); drv_make(&drv, &pad);
+	drv_handle(&drv, 0);
+	if ((r = expect_fallback(&d, &drv, &pad)) != 0) return r;
+
+	/* the alternate-branch pattern */
+	d = data_stable(); conn_make(&c, 0, alt); g_ctbl[0] = (uint64_t)(uintptr_t)c.b;
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE); drv_make(&drv, &pad);
+	drv_handle(&drv, 0);
+	if ((r = expect_fallback(&d, &drv, &pad)) != 0) return r;
+	return 0;
+}
+
+/* Off by configuration (stable_id 0) or no table address: the counter form, and
+ * nothing is counted as a fallback because the lookup was never tried. */
+static int test_stable_identity_off(void)
+{
+	static const uint8_t bd[8] = { 0x00, 0x13, 0x24, 0xA8, 0x9B, 0x64, 0x4C, 0xB9 };
+	static const uint8_t id1[8] = { 0x00, 0x00, 0x00, 0x01, 0xD5, 0x00, 0x44, 0x53 };
+	ds45_shim_data_t d;
+	fake_conn_t c;
+	fake_pad_t pad;
+	fake_drv_t drv;
+
+	d = data_stable(); d.stable_id = 0;
+	conn_make(&c, 0, bd); g_ctbl[0] = (uint64_t)(uintptr_t)c.b;
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE); drv_make(&drv, &pad);
+	drv_handle(&drv, 0);
+	CHECK(shim_event_complete(&d, drv.b) == 1);
+	CHECK(memcmp(pad.b + 0x88, id1, 8) == 0);
+	CHECK(d.dbg_id_bd == 0 && d.dbg_id_fallback == 0);
+
+	d = data_stable(); d.conn_tbl = 0;
+	conn_make(&c, 0, bd); g_ctbl[0] = (uint64_t)(uintptr_t)c.b;
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE); drv_make(&drv, &pad);
+	drv_handle(&drv, 0);
+	CHECK(shim_event_complete(&d, drv.b) == 1);
+	CHECK(memcmp(pad.b + 0x88, id1, 8) == 0);
+	CHECK(d.dbg_id_bd == 0 && d.dbg_id_fallback == 0);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int (*const tests[])(void) = {
+		test_stable_identity_from_connection,
+		test_stable_identity_survives_reconnect,
+		test_stable_identity_fallbacks,
+		test_stable_identity_off,
 		test_pid_ok_table,
 		test_pad_identity,
 		test_event_dualsense_completes,

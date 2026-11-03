@@ -82,6 +82,7 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->shim_input_hook = 1;   /* on by default: a normal install is unchanged */
 	c->shim_event_hook = 1;
 	c->shim_enable_hook = 1;
+	c->shim_stable_id = 1;    /* on by default; the counter identity is the fallback */
 #ifdef DS45_LV2DUMP
 	c->dump_lv2 = 0;
 	c->capture_off = 0;
@@ -271,6 +272,11 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 	} else if (match(key, "SHIM_ENABLE_HOOK")) {
 		/* Like SHIM_INPUT_HOOK, for the enable redirect. */
 		if (parse_int(val, &n)) c->shim_enable_hook = n != 0;
+	} else if (match(key, "SHIM_STABLE_ID")) {
+		/* VSH builds only: take each DualSense's identity from its Bluetooth
+		 * address (stage 1b). On by default; 0 = the per-boot counter identity,
+		 * any other number = on, anything that is not a number keeps the default. */
+		if (parse_int(val, &n)) c->shim_stable_id = n != 0;
 #endif
 #ifdef DS45_LV2DUMP
 	} else if (match(key, "DUMP_LV2")) {
@@ -386,6 +392,7 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	ds45_boot_mark_hex("cfg_shim_input_hook", (uint32_t)c->shim_input_hook);
 	ds45_boot_mark_hex("cfg_shim_event_hook", (uint32_t)c->shim_event_hook);
 	ds45_boot_mark_hex("cfg_shim_enable_hook", (uint32_t)c->shim_enable_hook);
+	ds45_boot_mark_hex("cfg_shim_stable_id", (uint32_t)c->shim_stable_id);
 #endif
 
 	return 0;

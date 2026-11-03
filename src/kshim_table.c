@@ -89,6 +89,13 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		0x800000000038CDC8ULL,
 		0x80000000004A1CB8ULL,
 
+		/* Stage 1b - the Bluetooth connection table: 7 entry pointers indexed by
+		 * the connection handle (the TOC slot -0x3410 of the lookup 0xF719C
+		 * holds this address). An entry's +0x10 byte is its own handle and its
+		 * +0x08..+0x0F the controller's address in the pad-identity layout; the
+		 * start-up driver's handle byte (drv+0xAC) indexes it. */
+		0x8000000000432690ULL,
+
 		DS3_INFO_TEMPLATE,
 
 		/* C4 - helper 0x29E2B4: its `xori 0x042F` at 0x29E2CC becomes

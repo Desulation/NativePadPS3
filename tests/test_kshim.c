@@ -54,6 +54,7 @@
 /* The values the data block carries for the shim; never dereferenced here. */
 #define PAD_VTABLE   0x800000000038CDC8ULL
 #define PAD_MGR      0x80000000004A1CB8ULL
+#define CONN_TBL     0x8000000000432690ULL
 
 /* The product-ID WORD rows, shaped like the DEX 4.92 row: the patched
  * instruction is the LOW half of its qword (addr & 4 set) and the high half is a
@@ -309,6 +310,7 @@ static void setup(void)
 	g_cfg.shim_input_hook = 1;   /* the input redirect installs as today */
 	g_cfg.shim_event_hook = 1;   /* event/enable redirects on by default */
 	g_cfg.shim_enable_hook = 1;
+	g_cfg.shim_stable_id = 1;    /* the stable identity is on by default */
 
 	/* fingerprint */
 	for (i = 0; i < DS45_FP_LEN; i++)
@@ -358,6 +360,7 @@ static void setup(void)
 	g_ent.input_expect = INPUT_ORIG;
 	g_ent.pad_vtable = PAD_VTABLE;
 	g_ent.pad_mgr = PAD_MGR;
+	g_ent.conn_tbl = CONN_TBL;
 	g_ent.info_tmpl = g_tmpl;
 	g_ent.pid_patches[0].kind = DS45_KPATCH_WORD;
 	g_ent.pid_patches[0].addr = HELPER_SITE;
@@ -469,7 +472,7 @@ static int check_blob_image(void)
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 5 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 6 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
 	          EVENT_ORIG ? 0 : __LINE__);
@@ -481,6 +484,12 @@ static int check_blob_image(void)
 	          PAD_VTABLE ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pad_mgr)) ==
 	          PAD_MGR ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, conn_tbl)) ==
+	          CONN_TBL ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stable_id)) == 1 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_id_bd)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_id_fallback)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_last_handle)) == 0 ? 0 : __LINE__);
 
 	cfg = db + offsetof(ds45_shim_data_t, cfg);
 	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, deadzone)] == 12 ? 0 : __LINE__);
@@ -940,6 +949,28 @@ static int test_input_hook_gated(void)
 	CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);
 	kshim_remove();
 	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* SHIM_STABLE_ID reaches the blob: off writes stable_id = 0 (the counter form
+ * is then used), and the connection-table address is written either way. */
+static int test_stable_id_switch(void)
+{
+	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+
+	setup();
+	g_cfg.shim_stable_id = 0;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK((rd(db + offsetof(ds45_shim_data_t, stable_id)) >> 32) == 0);
+	CHECK(rd(db + offsetof(ds45_shim_data_t, conn_tbl)) == CONN_TBL);
+	kshim_remove();
+
+	setup();
+	g_cfg.shim_stable_id = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK((rd(db + offsetof(ds45_shim_data_t, stable_id)) >> 32) == 1);
+	kshim_remove();
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }
@@ -1424,6 +1455,9 @@ static int test_builtin_table(void)
 	CHECK(k->input_expect == 0x800000000033A010ULL);
 	CHECK(k->pad_vtable == 0x800000000038CDC8ULL);
 	CHECK(k->pad_mgr == 0x80000000004A1CB8ULL);
+	/* the connection table: the pointer array the handle indexes (TOC slot
+	 * -0x3410), where each entry's +8..+0xF is the controller's address */
+	CHECK(k->conn_tbl == 0x8000000000432690ULL);
 
 	/* the template is the facts note's C1.5 array, identity bytes zero */
 	CHECK(k->info_tmpl != NULL);
@@ -1596,6 +1630,7 @@ int run_tests(void)
 		test_install_refuses_over_bound,
 		test_inline_rows_gated,
 		test_input_hook_gated,
+		test_stable_id_switch,
 		test_event_code_hash_mismatch,
 		test_enable_code_hash_mismatch,
 		test_code_hash_is_of_the_aligned_qword,

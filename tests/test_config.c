@@ -218,10 +218,37 @@ static int test_shim_event_enable_hook_keys(void)
 	return 0;
 }
 
+/* SHIM_STABLE_ID switches the shim's stable per-controller identity (taken from
+ * the Bluetooth connection) on or off; the counter identity is the fallback. On
+ * by default; 0 turns it off, any other number is on, junk leaves the default. */
+static int test_shim_stable_id_key(void)
+{
+	ds45_config_t c;
+
+	ds45_config_defaults(&c);
+	CHECK(c.shim_stable_id == 1);
+	c = cfg_from("ENABLE_SHIM = 1\n");
+	CHECK(c.shim_stable_id == 1);
+
+	c = cfg_from("SHIM_STABLE_ID = 0\n");
+	CHECK(c.shim_stable_id == 0);
+	c = cfg_from("shim_stable_id = 0\n");
+	CHECK(c.shim_stable_id == 0);
+	CHECK(c.enable_shim == 0);                             /* a separate key */
+	c = cfg_from("SHIM_STABLE_ID = 7\n");
+	CHECK(c.shim_stable_id == 1);
+	c = cfg_from("SHIM_STABLE_ID = abc\n");
+	CHECK(c.shim_stable_id == 1);
+	c = cfg_from("SHIM_STABLE_ID = 0\nSHIM_STABLE_ID = 1\n");
+	CHECK(c.shim_stable_id == 1);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int r;
 
+	if ((r = test_shim_stable_id_key()) != 0) return r;
 	if ((r = test_shim_is_off_by_default()) != 0) return r;
 	if ((r = test_shim_is_enabled_by_one()) != 0) return r;
 	if ((r = test_shim_can_be_switched_back_off()) != 0) return r;

@@ -328,6 +328,8 @@ static void build_data_block(const ds45_shim_kernel_t *k,
 	put_be64(buf + offsetof(ds45_shim_data_t, orig_input), k->input_expect);
 	put_be64(buf + offsetof(ds45_shim_data_t, pad_vtable), k->pad_vtable);
 	put_be64(buf + offsetof(ds45_shim_data_t, pad_mgr), k->pad_mgr);
+	put_be64(buf + offsetof(ds45_shim_data_t, conn_tbl), k->conn_tbl);
+	put_be32(buf + offsetof(ds45_shim_data_t, stable_id), g_cfg.shim_stable_id ? 1 : 0);
 
 	cfg = buf + offsetof(ds45_shim_data_t, cfg);
 	cfg[offsetof(ds45_shim_cfg_t, deadzone)]     = (uint8_t)g_cfg.stick_deadzone;
