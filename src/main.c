@@ -22,6 +22,16 @@
 
 #include "ds45pad.h"
 #include "hook.h"
+#ifndef DS45_GAME
+#include "kernel.h"
+#include "btcheck.h"
+#include "kshim.h"
+#ifdef DS45_DEBUG
+#include <stddef.h>            /* offsetof, for the shim diagnostic trace */
+#include "lv2.h"               /* ds45_lv2_read */
+#include "../shim/shim_abi.h"  /* ds45_shim_data_t field offsets */
+#endif
+#endif
 
 int ds45_start(uint64_t arg);
 int ds45_stop(void);
@@ -154,8 +164,11 @@ static int vsh_getdata_hook(uint32_t port_no, CellPadData *data)
 		return CELL_PAD_ERROR_UNINITIALIZED;
 
 	r = orig(port_no, data);
-	if (r == CELL_PAD_OK && data && data->len > 0) {
-		if (port_no > 0 && is_bt_source_port(port_no))
+	if (r == CELL_PAD_OK && data) {
+		/* The cross-check's ground truth: what VSH itself read, before
+		 * any masking of ours. */
+		passthru_observe_vsh(port_no, data);
+		if (data->len > 0 && port_no > 0 && is_bt_source_port(port_no))
 			silence_pad_data(data);
 	}
 
@@ -173,8 +186,9 @@ static int vsh_getdataextra_hook(uint32_t port_no, uint32_t *device_type,
 		return CELL_PAD_ERROR_UNINITIALIZED;
 
 	r = orig(port_no, device_type, data);
-	if (r == CELL_PAD_OK && data && data->len > 0) {
-		if (port_no > 0 && is_bt_source_port(port_no))
+	if (r == CELL_PAD_OK && data) {
+		passthru_observe_vsh(port_no, data);
+		if (data->len > 0 && port_no > 0 && is_bt_source_port(port_no))
 			silence_pad_data(data);
 	}
 
@@ -298,6 +312,102 @@ static void dump_ports_once(void)
 	}
 }
 
+/* ------------------------------------------------------------------------ */
+/* Shim diagnostic trace (design Amendment 3, debug VSH builds only)         */
+/*                                                                           */
+/* Each housekeeping tick, when the shim is installed, read its data-block    */
+/* diagnostic counters (via ds45_lv2_read at the base kshim placed it, plus   */
+/* the ABI field offsets) and append one line to the boot trace. The file is  */
+/* flushed to the HDD, so the trajectory survives a network drop and can be   */
+/* read back over FTP. Nothing of this exists in release or game builds.      */
+/* ------------------------------------------------------------------------ */
+#ifdef DS45_DEBUG
+/* One 32-bit counter: ds45_lv2_read fetches the aligned qword holding it; the
+ * field is the high word of the big-endian qword when its offset is 8-aligned,
+ * the low word otherwise. 0 if the read refuses. */
+static uint32_t shim_dbg_u32(uint64_t data_base, size_t field_off)
+{
+	uint64_t q;
+
+	if (ds45_lv2_read(data_base + (field_off & ~7ULL), &q))
+		return 0;
+	return (field_off & 4) ? (uint32_t)q : (uint32_t)(q >> 32);
+}
+
+static char *shim_dbg_tag(char *p, const char *s)
+{
+	while (*s)
+		*p++ = *s++;
+	return p;
+}
+
+static char *shim_dbg_hex(char *p, uint32_t v)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	int d;
+
+	*p++ = '0';
+	*p++ = 'x';
+	for (d = 28; d >= 0; d -= 4)
+		*p++ = hex[(v >> d) & 0xF];
+	return p;
+}
+
+static void shim_dbg_trace(void)
+{
+	uint64_t base = 0, vt = 0;
+	char line[256];
+	char *p = line;
+
+	if (!kshim_dbg_data_base(&base))
+		return;
+
+	p = shim_dbg_tag(p, "shimdbg ev=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_event_calls)));
+	p = shim_dbg_tag(p, " en=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_enable_calls)));
+	p = shim_dbg_tag(p, " in=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_input_calls)));
+	p = shim_dbg_tag(p, " inds=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_input_ds)));
+	p = shim_dbg_tag(p, " padmiss=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_input_padmiss)));
+	p = shim_dbg_tag(p, " comp=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_completed)));
+	p = shim_dbg_tag(p, " en2=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_enabled)));
+	p = shim_dbg_tag(p, " xl=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_translated)));
+	p = shim_dbg_tag(p, " ps=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_passed)));
+	p = shim_dbg_tag(p, " lastpid=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_last_pid)));
+	p = shim_dbg_tag(p, " lastvt=");
+	(void)ds45_lv2_read(base + offsetof(ds45_shim_data_t, dbg_last_vtable), &vt);
+	p = shim_dbg_hex(p, (uint32_t)(vt >> 32));
+	p = shim_dbg_hex(p, (uint32_t)vt);
+	*p++ = '\n';
+
+	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+}
+#endif /* DS45_DEBUG */
+
+/* ------------------------------------------------------------------------ */
+/* Bluetooth kernel support                                                  */
+/* ------------------------------------------------------------------------ */
+
+#define TOAST_BT_UNSUPPORTED "DS45Pad: Bluetooth not supported on this kernel"
+
+/* No usable kernel record, or the cross-check rejected the one we had. USB
+ * mode never reads the Bluetooth report, so it never reports this. */
+static int bt_unsupported(void)
+{
+	if (g_cfg.mode == DS45_MODE_USB)
+		return 0;
+	return kernel_active_source() == DS45_KMATCH_NONE ||
+	       passthru_btcheck_state() == BTCHECK_FAILED;
+}
+
 #endif /* !DS45_GAME */
 
 static void pads_reset(void)
@@ -325,7 +435,13 @@ static void ds45_thread(uint64_t arg)
 	uint32_t since_diag = 0;
 	uint32_t uptime = 0;
 	int announced = 0;
+	int bt_toast_shown = 0;
+	int last_btcheck = -1;
 	int usb_ok;
+#ifdef DS45_LV2DUMP
+	lv2dump_t lv2dump = { 0, 0, 0, 0, 0, 0 };
+	static lv2capture_t lv2capture;   /* zeroed; off the 16 KiB stack */
+#endif
 #endif
 
 	(void)arg;
@@ -412,7 +528,81 @@ static void ds45_thread(uint64_t arg)
 	rumble_install();
 	ds45_boot_mark("rumble");
 
+	/* The cross-check lock must exist before the detours can call in. */
+	passthru_init();
 	vsh_hooks_install();
+
+	/* Where this kernel keeps the Bluetooth report: once, before the loop.
+	 * A pad that connects meanwhile is adopted on the first rescan after. */
+	kernel_log_fw();
+	if (g_cfg.mode != DS45_MODE_USB) {
+		ds45_kmatch_t kmatch;
+		kshim_result_t kshim;
+		int probe_ran = 0;
+
+		ds45_boot_mark("kernel_resolve");
+		kmatch = kernel_resolve(NULL);
+		ds45_boot_mark("kernel_resolve_done");
+		DS45_TRACE_HEX("kmatch", kmatch);
+		(void)kmatch;                /* release: the trace compiles away */
+
+		/* On a fingerprinted kernel, install the DS3-route shim so a DualSense
+		 * runs through the PS3's own Sony-pad path. Entirely RAM-only, verified
+		 * and read back; a mismatch or a failure writes nothing and the pad
+		 * keeps today's generic behaviour. The result (and, in debug builds,
+		 * the failing step) is traced.
+		 *
+		 * Gated by ENABLE_SHIM, which is off by default: the shim patches live
+		 * kernel code, so a freshly deployed build never does that on its own and
+		 * a bad one cannot hang the console at boot. The shim goes in only when
+		 * ds45pad.txt says ENABLE_SHIM = 1; to recover from a hang, remove that
+		 * line and reboot. With the gate shut the kernel is not touched at all
+		 * (kshim_install() refuses by itself as well). */
+		/* Executability pre-flight (design Amendment 2, console step 0): with
+		 * PROBE_EXEC set, suppress the shim install this boot in EVERY VSH build,
+		 * so the pre-flight can never co-exist with a no-preflight install. A
+		 * debug build additionally runs the probe - proving the fixed executable
+		 * region runs one leaf stub on the plugin's own one-shot syscall thread
+		 * (the smallest possible blast radius) before any hook is installed, on a
+		 * fingerprint-matched row, exactly where the shim would otherwise go. */
+		if (g_cfg.probe_exec) {
+			probe_ran = 1;
+#ifdef DS45_DEBUG
+			{
+				const ds45_shim_kernel_t *ek = NULL;
+				uint64_t exec_out = 0;
+				int ei;
+
+				for (ei = 0; ei < ds45_shim_table_count; ei++)
+					if (ds45_shim_table[ei].fp_addr != 0 &&
+					    kernel_fingerprint_matches(ds45_shim_table[ei].fp_addr,
+					                               ds45_shim_table[ei].fp_hash)) {
+						ek = &ds45_shim_table[ei];
+						break;
+					}
+				ds45_boot_mark("exec_probe");
+				if (ek) {
+					int pr = kshim_exec_probe(ek, &exec_out);
+
+					if (pr == 0)
+						DS45_TRACE_HEX("exec_probe", exec_out);
+					else
+						DS45_TRACE_HEX("exec_probe_FAILED", (uint64_t)pr);
+				} else {
+					DS45_TRACE("exec_probe_no_entry");
+				}
+			}
+#endif
+		}
+		if (!probe_ran && g_cfg.enable_shim) {
+			ds45_boot_mark("kshim_install");
+			kshim = kshim_install();
+			DS45_TRACE_HEX("kshim", kshim);
+			(void)kshim;             /* release: the trace compiles away */
+		} else if (!probe_ran) {
+			DS45_TRACE("kshim_gated_off");
+		}
+	}
 
 	if (g_cfg.diag) {
 		diag_msg("=== DS45PAD " DS45PAD_VERSION " ===");
@@ -438,10 +628,27 @@ static void ds45_thread(uint64_t arg)
 			announced = 1;
 			if (g_cfg.notify) {
 				ds45_boot_mark("notify");
-				ds45_notify("DS45Pad Caricato / Loaded");
+				if (bt_unsupported()) {
+					bt_toast_shown = 1;
+					ds45_notify(TOAST_BT_UNSUPPORTED);
+				} else {
+					ds45_notify("DS45Pad Caricato / Loaded");
+				}
 				ds45_boot_mark("notify_ok");
 			}
 		}
+
+#ifdef DS45_LV2DUMP
+		/* Debug builds, DUMP_LV2 = 1: after the XMB is up, two dumps once a
+		 * Bluetooth pad is connected. Each holds this thread for a few
+		 * seconds while 8 MiB are read through syscall 6. */
+		if (announced && g_cfg.dump_lv2)
+			lv2dump_poll(&lv2dump, uptime);
+
+		/* CAPTURE_LV2 / CAPTURE_LEN: every tick from the first, so a pad
+		 * connecting during boot is caught too. */
+		lv2capture_poll(&lv2capture, uptime);
+#endif
 
 		/* Fast enough to catch a button press, slow enough not to drown the
 		 * log or the console in file writes. */
@@ -462,16 +669,46 @@ static void ds45_thread(uint64_t arg)
 			if (usb_ok)
 				usb_report_probes();
 
+#ifdef DS45_DEBUG
+			/* The shim's diagnostic counters to the HDD trace (a no-op unless
+			 * the shim is installed), so the trajectory survives a network
+			 * drop (design Amendment 3). */
+			shim_dbg_trace();
+#endif
+
 			/* Persist whatever the sticks have taught us. Rate limited
 			 * inside, so this is a no-op most of the time. */
 			if (g_cfg.stick_calibrate)
 				sticks_save_if_dirty(0);
 
 			/* In AUTO mode a cabled controller always wins: only look for
-			 * Bluetooth pads when nothing is attached over USB and capacity remains. */
+			 * Bluetooth pads when nothing is attached over USB. Not gated on
+			 * capacity: a bound source pad waits here for the cross-check
+			 * before it is registered, and passthru_scan binds at most one. */
 			if (g_cfg.mode == DS45_MODE_BT ||
-			    (g_cfg.mode == DS45_MODE_AUTO && ds45_usb_pads_active() == 0 && ds45_bt_pads_active() < (int)g_cfg.max_pads))
+			    (g_cfg.mode == DS45_MODE_AUTO && ds45_usb_pads_active() == 0))
 				passthru_scan();
+
+			if (g_cfg.mode != DS45_MODE_USB) {
+				int st = passthru_btcheck_state();
+
+				DS45_TRACE_HEX("btcheck_vsh_samples",
+				               passthru_btcheck_vsh_samples());
+#ifdef DS45_DEBUG
+				passthru_trace_vsh_reads();
+#endif
+				if (st != last_btcheck) {
+					last_btcheck = st;
+					DS45_TRACE_HEX("btcheck", st);
+				}
+				/* A cross-check that fails after the announcement still
+				 * gets its toast, once. */
+				if (announced && !bt_toast_shown && g_cfg.notify &&
+				    bt_unsupported()) {
+					bt_toast_shown = 1;
+					ds45_notify(TOAST_BT_UNSUPPORTED);
+				}
+			}
 		}
 	}
 
@@ -481,6 +718,7 @@ static void ds45_thread(uint64_t arg)
 	vsh_hooks_remove();
 	rumble_remove();
 	passthru_release();
+	passthru_shutdown();
 	if (usb_ok)
 		usb_shutdown();
 	diag_flush();
@@ -529,6 +767,17 @@ static void ds45_stop_thread(uint64_t arg)
 		sys_ppu_thread_join(thread_id, &exit_code);
 
 #ifndef DS45_GAME
+	/* Unload the kernel shim in two steps. kshim_unhook() switches the redirects
+	 * and product-ID words back so the DS3 driver stops calling into the blob
+	 * (and arms the scrub only if that reverting actually stuck). Then drain: the
+	 * fixed blob region cannot be freed, so a thread already inside the bounded,
+	 * straight-line blob code must be given time to run out before kshim_scrub()
+	 * zeroes it - zeroing live code would fault the kernel. Both are a no-op when
+	 * nothing was installed (USB mode, ENABLE_SHIM off, or an unmatched kernel). */
+	kshim_unhook();
+	sys_timer_usleep(150 * 1000);
+	kshim_scrub();
+
 	/* Never in the game build. ds45_notify() resolves vshtask by walking the
 	 * table at 0x1008C + 0x984, which only *is* an import table in the VSH
 	 * process. In a game process that address holds arbitrary EBOOT data being

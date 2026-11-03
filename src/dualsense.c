@@ -10,12 +10,14 @@
  * Note the field order differs from the DualShock 4: the DualSense puts the
  * analog triggers *before* the button bytes, so the two parsers cannot share
  * a common payload layout.
+ *
+ * The input half is split in two. The report layout (DS_IN_*, DS_OFF_*,
+ * DS_C_*) is in ds45_state.h and the field decoding in ds_body.c, because the
+ * kernel shim builds those freestanding; what stays here is what needs the
+ * plugin: the framing checks, the Bluetooth CRC and the output reports.
  */
 
 #include "ds45pad.h"
-
-#define DS_IN_USB           0x01
-#define DS_IN_BT            0x31
 
 #define DS_OUT_USB          0x02
 #define DS_OUT_BT           0x31
@@ -25,29 +27,6 @@
 #define DS_OUT_TAG          0x10
 
 #define DS_CRC_SEED_OUT     0xA2
-
-#define DS_OFF_USB          1
-#define DS_OFF_BT           2
-
-/* Offsets inside the 63 byte common payload. */
-#define DS_C_LX             0x00
-#define DS_C_LY             0x01
-#define DS_C_RX             0x02
-#define DS_C_RY             0x03
-#define DS_C_L2             0x04
-#define DS_C_R2             0x05
-#define DS_C_SEQ            0x06
-#define DS_C_BUTTONS        0x07  /* 4 bytes      */
-#define DS_C_GYRO           0x0F  /* 3 x int16 LE */
-#define DS_C_ACCEL          0x15  /* 3 x int16 LE */
-#define DS_C_TOUCH          0x20  /* 2 x 4 bytes  */
-#define DS_C_STATUS         0x34  /* 3 bytes      */
-#define DS_C_SIZE           0x3F
-
-#define DS_STATUS0_BATTERY  0x0F
-#define DS_STATUS0_CHARGING 0xF0
-#define DS_CHARGING_ACTIVE  0x10
-#define DS_CHARGING_FULL    0x20
 
 /* Output report field offsets, relative to the start of the common block. */
 #define DS_O_VALID0         0x00
@@ -70,43 +49,9 @@
 #define DS_VALID2_COMPAT_VIBRATION2  0x04
 #define DS_LIGHTBAR_SETUP_LIGHT_OUT  0x02
 
-static int16_t rd16le(const uint8_t *p)
-{
-	return (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
-static void decode_hat(uint8_t hat, uint32_t *buttons)
-{
-	static const uint32_t dirs[8] = {
-		DS45_B_UP,
-		DS45_B_UP | DS45_B_RIGHT,
-		DS45_B_RIGHT,
-		DS45_B_RIGHT | DS45_B_DOWN,
-		DS45_B_DOWN,
-		DS45_B_DOWN | DS45_B_LEFT,
-		DS45_B_LEFT,
-		DS45_B_LEFT | DS45_B_UP,
-	};
-
-	if (hat < 8)
-		*buttons |= dirs[hat];
-}
-
-static void decode_touch(const uint8_t *p, ds45_touch_t *t)
-{
-	t->active = (p[0] & 0x80) ? 0 : 1;
-	t->id     = p[0] & 0x7F;
-	t->x      = (uint16_t)p[1] | (((uint16_t)p[2] & 0x0F) << 8);
-	t->y      = (uint16_t)((p[2] & 0xF0) >> 4) | ((uint16_t)p[3] << 4);
-}
-
 int dualsense_parse(const uint8_t *buf, int len, ds45_link_t link,
                     ds45_state_t *st)
 {
-	const uint8_t *c;
-	int off, i;
-	uint8_t b0, b1, b2, b3, status0, charge;
-
 	if (!st)
 		return -1;
 	st->valid = 0;
@@ -128,74 +73,14 @@ int dualsense_parse(const uint8_t *buf, int len, ds45_link_t link,
 			if (~ds45_crc32(crc, buf, 74) != expected)
 				return -1;
 		}
-		off = DS_OFF_BT;
-	} else {
-		if (link != DS45_LINK_USB || buf[0] != DS_IN_USB || len != 64)
-			return -1;
-		off = DS_OFF_USB;
+		/* The CRC holds; the fields come from the decoding the kernel shim
+		 * shares (ds_body.c). */
+		return dualsense_parse_bt_body(buf, len, st);
 	}
 
-	c = buf + off;
-
-	st->lx = c[DS_C_LX];
-	st->ly = c[DS_C_LY];
-	st->rx = c[DS_C_RX];
-	st->ry = c[DS_C_RY];
-	st->l2 = c[DS_C_L2];
-	st->r2 = c[DS_C_R2];
-
-	b0 = c[DS_C_BUTTONS + 0];
-	b1 = c[DS_C_BUTTONS + 1];
-	b2 = c[DS_C_BUTTONS + 2];
-	b3 = c[DS_C_BUTTONS + 3];
-	(void)b3;
-
-	st->buttons = 0;
-	decode_hat(b0 & 0x0F, &st->buttons);
-	if (b0 & 0x10) st->buttons |= DS45_B_SQUARE;
-	if (b0 & 0x20) st->buttons |= DS45_B_CROSS;
-	if (b0 & 0x40) st->buttons |= DS45_B_CIRCLE;
-	if (b0 & 0x80) st->buttons |= DS45_B_TRIANGLE;
-
-	if (b1 & 0x01) st->buttons |= DS45_B_L1;
-	if (b1 & 0x02) st->buttons |= DS45_B_R1;
-	if (b1 & 0x04) st->buttons |= DS45_B_L2;
-	if (b1 & 0x08) st->buttons |= DS45_B_R2;
-	if (b1 & 0x10) st->buttons |= DS45_B_SHARE;    /* Create */
-	if (b1 & 0x20) st->buttons |= DS45_B_OPTIONS;
-	if (b1 & 0x40) st->buttons |= DS45_B_L3;
-	if (b1 & 0x80) st->buttons |= DS45_B_R3;
-
-	if (b2 & 0x01) st->buttons |= DS45_B_PS;
-	if (b2 & 0x02) st->buttons |= DS45_B_TOUCHPAD;
-	if (b2 & 0x04) st->buttons |= DS45_B_MUTE;
-
-	/* DualSense Edge extras. Mainline Linux does not decode these; the bit
-	 * positions below are the community documented layout and are worth
-	 * re-checking with the diagnostic dump on an actual Edge. */
-	if (b2 & 0x10) st->buttons |= DS45_B_FN_L;
-	if (b2 & 0x20) st->buttons |= DS45_B_FN_R;
-	if (b2 & 0x40) st->buttons |= DS45_B_PADDLE_L;
-	if (b2 & 0x80) st->buttons |= DS45_B_PADDLE_R;
-
-	for (i = 0; i < 3; i++) {
-		st->gyro[i]  = rd16le(c + DS_C_GYRO  + i * 2);
-		st->accel[i] = rd16le(c + DS_C_ACCEL + i * 2);
-	}
-
-	decode_touch(c + DS_C_TOUCH + 0, &st->touch[0]);
-	decode_touch(c + DS_C_TOUCH + 4, &st->touch[1]);
-
-	status0      = c[DS_C_STATUS];
-	st->battery  = status0 & DS_STATUS0_BATTERY;
-	charge       = status0 & DS_STATUS0_CHARGING;
-	st->charging = (charge == DS_CHARGING_ACTIVE);
-	st->full     = (charge == DS_CHARGING_FULL);
-	if (st->battery > 10)
-		st->battery = 10;
-
-	st->valid = 1;
-	st->sticks_valid = 1;
+	if (link != DS45_LINK_USB || buf[0] != DS_IN_USB || len != 64)
+		return -1;
+	dualsense_decode_common(buf + DS_OFF_USB, st);
 	return 0;
 }
 

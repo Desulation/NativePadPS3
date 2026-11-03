@@ -7,8 +7,12 @@
  */
 
 #include <string.h>
+#include <cell/pad.h>   /* CellPadData, needed by ds45pad.h */
 
 #include "ds45pad.h"
+#ifdef DS45_LV2DUMP
+#include "lv2.h"        /* the window CAPTURE_LV2 must fall inside */
+#endif
 
 ds45_config_t g_cfg;
 
@@ -68,6 +72,21 @@ void ds45_config_defaults(ds45_config_t *c)
 
 	c->diag   = 0;
 	c->notify = 0;   /* the boot trace is the safe way to confirm loading */
+
+	/* The kernel shim patches live kernel code, so it is never installed unless
+	 * ds45pad.txt says ENABLE_SHIM = 1 - deploying the plugin cannot hang the
+	 * console by itself (see ds45pad.h). */
+	c->enable_shim = 0;
+	c->shim_inline_pid = 0;
+	c->probe_exec = 0;
+	c->shim_input_hook = 1;   /* on by default: a normal install is unchanged */
+	c->shim_event_hook = 1;
+	c->shim_enable_hook = 1;
+#ifdef DS45_LV2DUMP
+	c->dump_lv2 = 0;
+	c->capture_off = 0;
+	c->capture_len = 0;
+#endif
 }
 
 static int is_space(char c)
@@ -226,6 +245,51 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		if (parse_int(val, &n)) c->diag = n;
 	} else if (match(key, "NOTIFY")) {
 		if (parse_int(val, &n)) c->notify = n;
+#ifndef DS45_GAME
+	} else if (match(key, "ENABLE_SHIM")) {
+		/* VSH builds only: the in-game build has no kernel shim, nor any of its
+		 * strings. Anything but a number leaves the gate shut. */
+		if (parse_int(val, &n)) c->enable_shim = n != 0;
+	} else if (match(key, "SHIM_INLINE_PID")) {
+		/* VSH builds only, like ENABLE_SHIM: also apply the inline product-ID
+		 * words. Any non-zero number turns it on; anything else leaves it off. */
+		if (parse_int(val, &n)) c->shim_inline_pid = n != 0;
+	} else if (match(key, "PROBE_EXEC")) {
+		/* VSH builds only, like ENABLE_SHIM: run the debug-only executability
+		 * pre-flight instead of installing the shim. Any non-zero number turns
+		 * it on; anything else leaves it off. */
+		if (parse_int(val, &n)) c->probe_exec = n != 0;
+	} else if (match(key, "SHIM_INPUT_HOOK")) {
+		/* VSH builds only, like ENABLE_SHIM: gate the shim's per-poll input
+		 * redirect so the start-up/enable completion can be tested with the
+		 * input hook off (design Amendment 3). On by default; any non-zero = on,
+		 * anything that is not a number leaves the default (on) in place. */
+		if (parse_int(val, &n)) c->shim_input_hook = n != 0;
+	} else if (match(key, "SHIM_EVENT_HOOK")) {
+		/* Like SHIM_INPUT_HOOK, for the start-up event redirect. */
+		if (parse_int(val, &n)) c->shim_event_hook = n != 0;
+	} else if (match(key, "SHIM_ENABLE_HOOK")) {
+		/* Like SHIM_INPUT_HOOK, for the enable redirect. */
+		if (parse_int(val, &n)) c->shim_enable_hook = n != 0;
+#endif
+#ifdef DS45_LV2DUMP
+	} else if (match(key, "DUMP_LV2")) {
+		if (parse_int(val, &n)) c->dump_lv2 = n;
+	} else if (match(key, "CAPTURE_LV2")) {
+		/* An offset into the 8 MiB window, on a doubleword boundary. */
+		if (parse_int(val, &n) && n >= 0 && (n & 7) == 0 &&
+		    (uint64_t)n < DS45_LV2_BOUND - DS45_LV2_BASE)
+			c->capture_off = (uint32_t)n;
+	} else if (match(key, "CAPTURE_LEN")) {
+		if (parse_int(val, &n) && n >= 0 && (n & 7) == 0 &&
+		    n <= DS45_CAPTURE_MAX_LEN)
+			c->capture_len = (uint32_t)n;
+	} else if (match(key, "CAPTURE_PTR")) {
+		/* The pointer qword itself: in the window, on a doubleword boundary. */
+		if (parse_int(val, &n) && n >= 0 && (n & 7) == 0 &&
+		    (uint64_t)n < DS45_LV2_BOUND - DS45_LV2_BASE)
+			c->capture_ptr = (uint32_t)n;
+#endif
 	}
 }
 
@@ -311,6 +375,18 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	ds45_boot_mark_hex("cfg_bt_source_port", (uint32_t)c->bt_source_port);
 	ds45_boot_mark_hex("cfg_ps_only", (uint32_t)c->ps_only);
 	ds45_boot_mark_hex("cfg_bt_ps_combo", (uint32_t)c->bt_ps_combo);
+#ifndef DS45_GAME
+	/* The settings that let the plugin touch kernel memory: ENABLE_SHIM installs
+	 * the shim, and in a debug build PROBE_EXEC runs the executability pre-flight
+	 * (which also pokes the fixed region). Either being set is worth seeing in
+	 * the boot trace. */
+	ds45_boot_mark_hex("cfg_enable_shim", (uint32_t)c->enable_shim);
+	ds45_boot_mark_hex("cfg_shim_inline_pid", (uint32_t)c->shim_inline_pid);
+	ds45_boot_mark_hex("cfg_probe_exec", (uint32_t)c->probe_exec);
+	ds45_boot_mark_hex("cfg_shim_input_hook", (uint32_t)c->shim_input_hook);
+	ds45_boot_mark_hex("cfg_shim_event_hook", (uint32_t)c->shim_event_hook);
+	ds45_boot_mark_hex("cfg_shim_enable_hook", (uint32_t)c->shim_enable_hook);
+#endif
 
 	return 0;
 }

@@ -15,9 +15,22 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <cell/pad.h>   /* CellPadData in the VSH detour prototypes below */
 #include "report_queue.h"
+#include "ds45_state.h" /* ds45_state_t, DS45_B_*, ds45_map_t, DualSense layout */
+#include "sixaxis.h"    /* DS45_SENSOR_CENTER, sixaxis_from_accel/gyro */
 
+#ifdef DS45_DEBUG
+#define DS45PAD_VERSION "1.0.1-ps-usb-candidate-debug"
+#else
 #define DS45PAD_VERSION "1.0.1-ps-usb-candidate"
+#endif
+
+/* The LV2 dumper (lv2dump.c): debug builds of the VSH plugin only. Nothing of
+ * it - code, config key, file names, toast - exists in release or game builds. */
+#if defined(DS45_DEBUG) && !defined(DS45_GAME)
+#define DS45_LV2DUMP 1
+#endif
 
 /* Where the plugin looks for its data files. */
 #define DS45_DIR          "/dev_hdd0/plugins/ds45pad"
@@ -112,9 +125,8 @@
 #define DS45_DEV_TYPE_STANDARD  0
 #define DS45_DEV_TYPE_LDD       5
 
-/* Neutral values for a DS3 at rest. */
-#define DS45_STICK_CENTER       0x0080
-#define DS45_SENSOR_CENTER      0x0200  /* 512, sensors are 10-bit */
+/* DS45_STICK_CENTER (ds45_state.h) and DS45_SENSOR_CENTER (sixaxis.h), the
+ * neutral values of a DS3 at rest, are in headers the kernel shim builds. */
 
 /* ------------------------------------------------------------------------ */
 /* Controller models                                                         */
@@ -141,70 +153,10 @@ typedef enum {
 /* ------------------------------------------------------------------------ */
 /* Normalised controller state                                               */
 /*                                                                           */
-/* Both HID parsers fill this in; a single translation stage turns it into   */
-/* CellPadData. Keeping the parsers free of any libpad knowledge is what     */
-/* lets the DS4 and DualSense paths share all downstream behaviour.          */
+/* ds45_state_t, its DS45_B_* bits and ds45_map_t are in ds45_state.h, which */
+/* has no SDK dependency so the kernel shim can build against it too. It is  */
+/* included at the top of this file.                                         */
 /* ------------------------------------------------------------------------ */
-
-typedef struct {
-	uint16_t x;      /* 0..1919 (DS4) / 0..1919 (DualSense) */
-	uint16_t y;      /* 0..941  (DS4) / 0..1079 (DualSense) */
-	uint8_t  id;
-	uint8_t  active;
-} ds45_touch_t;
-
-typedef struct {
-	/* Sticks: 0..255, 0x80 centred, Y grows downwards (same as a DS3). */
-	uint8_t  lx, ly, rx, ry;
-
-	/* Triggers: 0..255 analog travel. */
-	uint8_t  l2, r2;
-
-	/* Digital buttons, DS45_BTN_* independent bitfield. */
-	uint32_t buttons;
-
-	/* Motion, raw signed sensor units straight off the controller. */
-	int16_t  gyro[3];   /* pitch, yaw, roll */
-	int16_t  accel[3];  /* x, y, z          */
-
-	/* Touchpad. */
-	ds45_touch_t touch[2];
-
-	/* Power: level 0..10, charging/full flags. */
-	uint8_t  battery;
-	uint8_t  charging;
-	uint8_t  full;
-
-	uint8_t  valid;         /* report parsed successfully              */
-	uint8_t  sticks_valid;  /* the stick values came from the device,
-	                         * not from an unpopulated report - the
-	                         * calibration must never learn from those */
-} ds45_state_t;
-
-/* ds45_state_t.buttons bits (parser-neutral, not the libpad layout) */
-#define DS45_B_CROSS      0x00000001
-#define DS45_B_CIRCLE     0x00000002
-#define DS45_B_SQUARE     0x00000004
-#define DS45_B_TRIANGLE   0x00000008
-#define DS45_B_L1         0x00000010
-#define DS45_B_R1         0x00000020
-#define DS45_B_L2         0x00000040
-#define DS45_B_R2         0x00000080
-#define DS45_B_SHARE      0x00000100  /* Share / Create        */
-#define DS45_B_OPTIONS    0x00000200
-#define DS45_B_L3         0x00000400
-#define DS45_B_R3         0x00000800
-#define DS45_B_PS         0x00001000
-#define DS45_B_TOUCHPAD   0x00002000  /* touchpad click        */
-#define DS45_B_MUTE       0x00004000  /* DualSense mic mute    */
-#define DS45_B_UP         0x00008000
-#define DS45_B_RIGHT      0x00010000
-#define DS45_B_DOWN       0x00020000
-#define DS45_B_LEFT       0x00040000
-#define DS45_B_FN_L       0x00080000  /* DualSense Edge        */
-#define DS45_B_FN_R       0x00100000
-#define DS45_B_PADDLE_L   0x00200000
-#define DS45_B_PADDLE_R   0x00400000
 
 /* ------------------------------------------------------------------------ */
 /* Output (rumble / lightbar / player LEDs)                                   */
@@ -281,16 +233,8 @@ typedef enum {
 	DS45_PSCOMBO_L3_R3,
 } ds45_pscombo_t;
 
-/* Symbolic targets a physical control can be remapped onto. */
-typedef enum {
-	DS45_MAP_NONE = 0,
-	DS45_MAP_CROSS, DS45_MAP_CIRCLE, DS45_MAP_SQUARE, DS45_MAP_TRIANGLE,
-	DS45_MAP_L1, DS45_MAP_R1, DS45_MAP_L2, DS45_MAP_R2,
-	DS45_MAP_L3, DS45_MAP_R3,
-	DS45_MAP_START, DS45_MAP_SELECT, DS45_MAP_PS,
-	DS45_MAP_UP, DS45_MAP_RIGHT, DS45_MAP_DOWN, DS45_MAP_LEFT,
-	DS45_MAP_MAX
-} ds45_map_t;
+/* ds45_map_t, the symbolic targets a physical control can be remapped onto
+ * (DS45_MAP_*), is in ds45_state.h: the kernel shim honours two of the maps. */
 
 typedef struct {
 	/* Master switch. With this off the plugin loads, writes its boot trace
@@ -372,6 +316,45 @@ typedef struct {
 
 	int      diag;             /* write DS45_DIAG_FILE                    */
 	int      notify;           /* show XMB notifications                  */
+	/* ENABLE_SHIM (0/1): install the DS3-route kernel shim (kshim.c) when the
+	 * plugin loads. Off by default. The shim patches live kernel code, and a build
+	 * that gets a patch wrong can hang the console, so a deployed plugin never
+	 * installs it on its own: ds45pad.txt has to say ENABLE_SHIM = 1. That is also
+	 * the way out of a hang - remove the line (or set it to 0) and reboot. */
+	int      enable_shim;
+	/* SHIM_INLINE_PID (0/1, VSH builds only): with the shim installed, also
+	 * edit the kernel's inline product-ID compare (two instruction words) and not
+	 * only its helper. Off by default; the console test decides whether the
+	 * DualSense needs it. */
+	int      shim_inline_pid;
+	/* PROBE_EXEC (0/1, VSH builds only): run the debug-only executability
+	 * pre-flight (design Amendment 2) instead of installing the shim this boot -
+	 * poke a leaf stub into the fixed exec region, call it once and trace what it
+	 * returned, proving the region runs before any hook is wired. Off by default;
+	 * only the debug build acts on it. */
+	int      probe_exec;
+	/* SHIM_INPUT_HOOK (0/1, VSH builds only): gate whether the shim installs its
+	 * per-poll Bluetooth input redirect (0x37CE38). On by default, so a normal
+	 * install is unchanged; set to 0 to install the start-up and enable completion
+	 * hooks WITHOUT the input hook, which isolates the input hook (the only one
+	 * that runs on every poll and shares the Bluetooth transport vtable) when
+	 * finding the DS3 interaction on hardware (design Amendment 3). */
+	int      shim_input_hook;
+	/* SHIM_EVENT_HOOK / SHIM_ENABLE_HOOK (0/1, VSH builds only): gate the start-up
+	 * event (0x37CFF8) and enable (0x37CFB0) completion redirects, like
+	 * SHIM_INPUT_HOOK. Both on by default. Setting all three hook gates to 0 leaves
+	 * only the product-ID word edits installed, which isolates the completion hooks
+	 * from the helper patch while finding the DS3 interaction on hardware. */
+	int      shim_event_hook;
+	int      shim_enable_hook;
+#ifdef DS45_LV2DUMP
+	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
+	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */
+	uint32_t capture_len;      /* CAPTURE_LEN: bytes, multiple of 8, 0 = off   */
+	uint32_t capture_ptr;      /* CAPTURE_PTR: LV2 offset of a pointer qword;
+	                            * nonzero = watch CAPTURE_LV2 bytes into the
+	                            * object it points to, 0 = off                 */
+#endif
 } ds45_config_t;
 
 extern ds45_config_t g_cfg;
@@ -443,7 +426,8 @@ extern ds45_pad_t g_pads[DS45_MAX_PADS];
 /* Module interfaces                                                         */
 /* ------------------------------------------------------------------------ */
 
-/* ds4.c / dualsense.c - HID report translation */
+/* ds4.c / dualsense.c - HID report translation. The DualSense field decoding
+ * itself is ds_body.c (dualsense_parse_bt_body, declared in ds45_state.h). */
 int  ds4_parse(const uint8_t *buf, int len, ds45_link_t link, ds45_state_t *st);
 int  ds4_build_output(uint8_t *buf, int cap, ds45_link_t link,
                       const ds45_output_t *out);
@@ -475,9 +459,25 @@ void usb_shutdown(void);
 void usb_send_output(ds45_pad_t *pad);
 
 /* passthru.c - internal Bluetooth passthrough */
-int  passthru_scan(void);
+int  passthru_scan(void);   /* rescan tick: virtual pads registered by this call */
 void passthru_poll(void);
 void passthru_release(void);
+/* Before the VSH detours are installed: cross-check lock and state. -1 if the
+ * lock could not be created (the cross-check then never sees VSH samples, so
+ * it never passes). passthru_shutdown() after the detours are removed. */
+int  passthru_init(void);
+void passthru_shutdown(void);
+/* From the VSH pad-read detours, before any masking. Never blocks: the sample
+ * is dropped if the plugin thread holds the lock. */
+void passthru_observe_vsh(uint32_t port_no, const CellPadData *data);
+/* Plugin thread only (they take the lock): btcheck_state() as an int,
+ * btcheck_vsh_samples_seen(), and raw samples fed since passthru_init(). */
+int  passthru_btcheck_state(void);
+int  passthru_btcheck_vsh_samples(void);
+int  passthru_raw_samples(void);
+#ifdef DS45_DEBUG
+void passthru_trace_vsh_reads(void);   /* boot trace: what VSH's pad reads look like */
+#endif
 void ds45_process_bt_input(uint32_t port_no, CellPadData *data);
 void ds45_trigger_bt_ps(int pressed);
 
@@ -501,6 +501,57 @@ void  ds45_boot_mark(const char *stage);
 void  ds45_boot_mark_hex(const char *stage, uint32_t value);
 uint32_t ds45_crc32(uint32_t crc, const uint8_t *data, int len);
 int   ds45_read_file(const char *path, char *out, int cap);
+int   ds45_write_file(const char *path, const void *data, int len);  /* create/truncate; 0 ok, -1 fail */
+#ifndef DS45_GAME   /* VSH-only: would add libfs imports to the game build */
+int   ds45_delete_file(const char *path);                            /* 0 ok, -1 fail */
+int   ds45_file_exists(const char *path);                            /* 1 yes, 0 no */
+int   ds45_append_file(const char *path, const void *data, int len); /* create or append; 0 ok, -1 fail */
+#endif
+
+#ifdef DS45_LV2DUMP
+/* lv2dump.c: two dumps of the LV2 window once a Bluetooth pad is connected
+ * (A untouched, B with Cross held and the left stick left). Zero-initialise
+ * the state, then poll every tick; it stops by itself when done. */
+typedef struct {
+	int      phase;
+	int      said_wait;
+	int      checked;          /* existing dumps looked at once */
+	int      opt_down;         /* button mode: Options seen pressed */
+	int      held;             /* button mode: Cross held since due_ms - HOLD */
+	uint32_t due_ms;
+} lv2dump_t;
+void  lv2dump_poll(lv2dump_t *st, uint32_t now_ms);
+/* passthru.c: any generic (Bluetooth) pad connected, bound or not. */
+int   passthru_bt_pad_present(void);
+/* passthru.c: the bound pad's d1/d2 (DS45_CTRL_*) from this tick's raw
+ * report; 0 when there is none (no record, not bound, not connected). */
+int   passthru_source_buttons(uint16_t *d1, uint16_t *d2);
+
+/* lv2capture.c: watch CAPTURE_LEN bytes at LV2 offset CAPTURE_LV2 every
+ * tick and write each change to the boot trace, bounded in total. Zero-
+ * initialise the state, then poll every tick. */
+#define DS45_CAPTURE_MAX_LEN  128
+#define DS45_CAPTURE_MAX_LOGS 400
+typedef struct {
+	int      have;             /* snap holds the last logged bytes */
+	int      stopped;          /* read refused or log limit reached */
+	uint32_t logs;             /* changes written so far */
+	uint64_t ptr;              /* CAPTURE_PTR mode: last pointer value seen */
+	int      ptr_bytes;        /* CAPTURE_PTR mode: snap holds its bytes */
+	uint8_t  snap[DS45_CAPTURE_MAX_LEN];
+} lv2capture_t;
+void  lv2capture_poll(lv2capture_t *st, uint32_t now_ms);
+#endif
+
+/* Debug-build-only boot trace. Compiles to nothing (and the tag strings are
+ * not emitted) unless built with -DDS45_DEBUG. */
+#ifdef DS45_DEBUG
+#define DS45_TRACE(tag)         ds45_boot_mark(tag)
+#define DS45_TRACE_HEX(tag, v)  ds45_boot_mark_hex((tag), (uint32_t)(v))
+#else
+#define DS45_TRACE(tag)         ((void)0)
+#define DS45_TRACE_HEX(tag, v)  ((void)0)
+#endif
 ds45_map_t ds45_parse_map(const char *name);
 void  ds45_apply_map(ds45_map_t m, uint16_t *button);
 
