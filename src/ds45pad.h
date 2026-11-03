@@ -340,6 +340,13 @@ typedef struct {
 	 * that runs on every poll and shares the Bluetooth transport vtable) when
 	 * finding the DS3 interaction on hardware (design Amendment 3). */
 	int      shim_input_hook;
+	/* SHIM_EVENT_HOOK / SHIM_ENABLE_HOOK (0/1, VSH builds only): gate the start-up
+	 * event (0x37CFF8) and enable (0x37CFB0) completion redirects, like
+	 * SHIM_INPUT_HOOK. Both on by default. Setting all three hook gates to 0 leaves
+	 * only the product-ID word edits installed, which isolates the completion hooks
+	 * from the helper patch while finding the DS3 interaction on hardware. */
+	int      shim_event_hook;
+	int      shim_enable_hook;
 #ifdef DS45_LV2DUMP
 	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
 	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */

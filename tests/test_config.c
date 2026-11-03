@@ -199,6 +199,25 @@ static int test_shim_input_hook_key(void)
 	return 0;
 }
 
+static int test_shim_event_enable_hook_keys(void)
+{
+	ds45_config_t c;
+
+	ds45_config_defaults(&c);
+	CHECK(c.shim_event_hook == 1 && c.shim_enable_hook == 1);   /* both default on */
+	c = cfg_from("SHIM_EVENT_HOOK = 0\n");
+	CHECK(c.shim_event_hook == 0 && c.shim_enable_hook == 1);   /* independent */
+	c = cfg_from("SHIM_ENABLE_HOOK = 0\n");
+	CHECK(c.shim_enable_hook == 0 && c.shim_event_hook == 1);
+	c = cfg_from("shim_event_hook = 0\nshim_enable_hook = 0\n");/* case-insensitive */
+	CHECK(c.shim_event_hook == 0 && c.shim_enable_hook == 0);
+	c = cfg_from("SHIM_EVENT_HOOK = abc\n");                    /* junk leaves default */
+	CHECK(c.shim_event_hook == 1);
+	c = cfg_from("SHIM_EVENT_HOOK = 5\n");                      /* any non-zero = on */
+	CHECK(c.shim_event_hook == 1);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int r;
@@ -211,5 +230,6 @@ int run_tests(void)
 	if ((r = test_shim_inline_pid_key()) != 0) return r;
 	if ((r = test_probe_exec_key()) != 0) return r;
 	if ((r = test_shim_input_hook_key()) != 0) return r;
+	if ((r = test_shim_event_enable_hook_keys()) != 0) return r;
 	return 0;
 }

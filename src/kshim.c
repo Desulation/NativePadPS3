@@ -555,10 +555,16 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 		if (final[i].kind == DS45_KPATCH_BRANCH)
 			final[i].value = target;
 	nfinal = npid;
-	put_redirect(&final[nfinal++], k->event_slot, k->event_expect,
-	             base + DS45_SHIM_OFF_EVENT);
-	put_redirect(&final[nfinal++], k->enable_slot, k->enable_expect,
-	             base + DS45_SHIM_OFF_ENABLE);
+	/* The event and enable redirects are each gated like the input one
+	 * (SHIM_EVENT_HOOK / SHIM_ENABLE_HOOK); a gated-off slot is left original and
+	 * omitted from the journal. All three off leaves only the product-ID word
+	 * edits, to isolate the completion hooks from the helper patch on hardware. */
+	if (g_cfg.shim_event_hook)
+		put_redirect(&final[nfinal++], k->event_slot, k->event_expect,
+		             base + DS45_SHIM_OFF_EVENT);
+	if (g_cfg.shim_enable_hook)
+		put_redirect(&final[nfinal++], k->enable_slot, k->enable_expect,
+		             base + DS45_SHIM_OFF_ENABLE);
 	/* The input redirect only when SHIM_INPUT_HOOK is set (design Amendment 3).
 	 * With it off, the start-up and enable completion still install (helper, inline
 	 * words, event and enable), the input slot is left original and omitted from

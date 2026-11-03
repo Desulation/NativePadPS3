@@ -307,6 +307,8 @@ static void setup(void)
 	g_cfg.enable_shim = 1;
 	g_cfg.shim_inline_pid = 0;
 	g_cfg.shim_input_hook = 1;   /* the input redirect installs as today */
+	g_cfg.shim_event_hook = 1;   /* event/enable redirects on by default */
+	g_cfg.shim_enable_hook = 1;
 
 	/* fingerprint */
 	for (i = 0; i < DS45_FP_LEN; i++)
