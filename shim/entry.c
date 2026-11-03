@@ -47,13 +47,24 @@ typedef int (*orig_event_fn)(void *drv, long status, long len);
 typedef int (*orig_input_fn)(void *xport, uint8_t *dst, uint16_t len_in,
                              int flag);
 
+/* Hook naming. The kernel calls the hook through a vtable slot that points at a
+ * { entry, toc, env } descriptor. In the blob build the C bodies below are
+ * named *_impl and the descriptors/trampolines (asm block at the end of this
+ * file) are named shim_event / shim_enable / shim_input; in the host test build
+ * the C function itself is the hook, so tests/test_shim.c can call it. */
+#ifdef DS45_HOST_TEST
+#define SHIM_HOOK(n) n              /* host: the C function IS the hook (tests call it) */
+#else
+#define SHIM_HOOK(n) n##_impl       /* blob: C body is the impl; asm trampoline is the hook */
+#endif
+
 /* Start-up driver event handler (slot 0x37CFF8). A DualSense refuses every DS3
  * start-up request; on its first event, whatever the status, the shim fills the
  * pad's DS3 info block and identity, marks the driver done with status 0 and
  * answers 0, so the framework calls the ready callback with status 0. Anything
  * else - another pad, a driver already done, the shim disabled - goes to the
  * original with the same arguments. */
-int shim_event(void *drv, long status, long len)
+int SHIM_HOOK(shim_event)(void *drv, long status, long len)
 {
 	if (shim_event_complete(&ds45_shim_data, (uint8_t *)drv))
 		return 0;
@@ -64,7 +75,7 @@ int shim_event(void *drv, long status, long len)
  * if this driver completes with status 0. For a DualSense not yet done it
  * stores status 0 and the done flag and answers 0; everything else goes to the
  * original. */
-int shim_enable(void *drv, long status, long len)
+int SHIM_HOOK(shim_enable)(void *drv, long status, long len)
 {
 	if (shim_enable_complete(&ds45_shim_data, (uint8_t *)drv))
 		return 0;
@@ -81,7 +92,7 @@ int shim_enable(void *drv, long status, long len)
  * and is counted in stat_passed by the filter (vid/pid 0 for a non-DualSense),
  * so on the console stat_passed rises with any pad's reads, not just a
  * DualSense's. */
-int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag)
+int SHIM_HOOK(shim_input)(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 {
 	int rc = ((orig_input_fn)(uintptr_t)ds45_shim_data.orig_input)(xport, dst,
 	                                                               len_in, flag);
@@ -102,3 +113,38 @@ int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 	return shim_input_filter(&ds45_shim_data, ds ? 0x054C : 0, ds ? 0x0CE6 : 0,
 	                         dst, &n);
 }
+
+#ifndef DS45_HOST_TEST
+/* The kernel's vtable dispatch (framework 0xCB5C0, input caller 0x2A4E00) loads
+ * the descriptor's env word (opd+0x10) into r11 and the entry (opd+0) but never
+ * r2, assuming the one kernel TOC. Our descriptors put the blob TOC in BOTH toc
+ * and env, so r11 = blob TOC on entry; the trampoline adopts it into r2 before
+ * the C body's TOC-relative data access. It then jumps to the impl's code through
+ * the impl's own function descriptor (a plain "b shim_x_impl" would branch INTO
+ * the .opd descriptor, because on ELFv1 the C symbol names the descriptor, not
+ * the code): r11 = word 0 of that descriptor, read TOC-relative so it stays
+ * position independent. Only r11 and CTR are clobbered; r3..r6 and LR are kept,
+ * so the impl returns straight to the kernel. The packer rebases all three
+ * descriptor words (entry = ADDR64, toc and env = TOC base) to the load base. */
+__asm__(
+"\t.section .opd,\"aw\",@progbits\n"
+"\t.p2align 3\n"
+"\t.globl shim_event\n"  "shim_event:\n"  "\t.quad .Ltr_event, .TOC.@tocbase, .TOC.@tocbase\n"
+"\t.globl shim_enable\n" "shim_enable:\n" "\t.quad .Ltr_enable, .TOC.@tocbase, .TOC.@tocbase\n"
+"\t.globl shim_input\n"  "shim_input:\n"  "\t.quad .Ltr_input, .TOC.@tocbase, .TOC.@tocbase\n"
+"\t.text\n"
+"\t.p2align 2\n"
+".Ltr_event:\n"  "\tmr 2, 11\n"
+"\taddis 11, 2, shim_event_impl@toc@ha\n"
+"\tld 11, shim_event_impl@toc@l(11)\n"
+"\tmtctr 11\n" "\tbctr\n"
+".Ltr_enable:\n" "\tmr 2, 11\n"
+"\taddis 11, 2, shim_enable_impl@toc@ha\n"
+"\tld 11, shim_enable_impl@toc@l(11)\n"
+"\tmtctr 11\n" "\tbctr\n"
+".Ltr_input:\n"  "\tmr 2, 11\n"
+"\taddis 11, 2, shim_input_impl@toc@ha\n"
+"\tld 11, shim_input_impl@toc@l(11)\n"
+"\tmtctr 11\n" "\tbctr\n"
+);
+#endif
