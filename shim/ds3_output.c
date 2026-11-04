@@ -53,6 +53,12 @@
 #define CRC_PREFIX          0xA2  /* DATA | OUTPUT header byte, not sent */
 #define CRC_POLY            0xEDB88320u
 
+/* The power-off feature report: report id, then DS_POWEROFF_PAYLOAD_LEN bytes -
+ * the command, zeros, and the CRC at offset 42. */
+#define POWEROFF_CMD        0x02
+#define POWEROFF_CRC_AT     42    /* the CRC covers payload bytes 0..41 */
+#define POWEROFF_CRC_SEED   0x53  /* a feature report's header byte, not sent */
+
 /* The player table: byte n is the value for port n + 1, so a port is a shift
  * of 8 * n bits. (Packed into words, not an array, to keep the code free of
  * static data.) The colours are chosen, not confirmed on hardware: blue, red,
@@ -80,18 +86,29 @@ static uint8_t pack_byte(uint32_t pack, int port)
 	return (uint8_t)(pack >> (8 * (port - 1)));
 }
 
-/* Reflected CRC-32 of 0xA2 followed by r[0..OUT_CRC), bitwise. */
-static uint32_t crc_output(const uint8_t *r)
+/* Reflected CRC-32 of seed followed by p[0..n), bitwise. */
+uint32_t ds3_crc32_seeded(uint8_t seed, const uint8_t *p, int n)
 {
 	uint32_t crc = 0xFFFFFFFFu;
 	int i, b;
 
-	for (i = -1; i < OUT_CRC; i++) {
-		crc ^= (i < 0) ? (uint32_t)CRC_PREFIX : r[i];
+	for (i = -1; i < n; i++) {
+		crc ^= (i < 0) ? (uint32_t)seed : p[i];
+		/* With a run-time n clang vectorises the bit loop into shift-count
+		 * and polynomial vectors: a constant pool, which is static data. */
+#if defined(__clang__)
+#pragma clang loop vectorize(disable) interleave(disable) unroll(disable)
+#endif
 		for (b = 0; b < 8; b++)
 			crc = (crc >> 1) ^ (CRC_POLY & (uint32_t)(-(int32_t)(crc & 1)));
 	}
 	return ~crc;
+}
+
+/* Reflected CRC-32 of 0xA2 followed by r[0..OUT_CRC), bitwise. */
+static uint32_t crc_output(const uint8_t *r)
+{
+	return ds3_crc32_seeded(CRC_PREFIX, r, OUT_CRC);
 }
 
 /* Build the whole report from the three facts it carries. */
@@ -151,4 +168,32 @@ void ds3_output_probe(uint8_t seq, uint8_t out[DS_OUT_LEN])
 	if (!out)
 		return;
 	build(seq, 0, 0, 0x02, out);
+}
+
+void ds_poweroff_payload(uint8_t out[DS_POWEROFF_PAYLOAD_LEN])
+{
+	uint8_t head[POWEROFF_CRC_AT + 1];   /* the CRC prefix after the seed */
+	uint32_t crc;
+	int i;
+
+	if (!out)
+		return;
+
+	/* Zero first, then the command (on x86 a command byte stored ahead of the
+	 * zero loop is merged into a constant pool, which is static data). */
+	for (i = 0; i < POWEROFF_CRC_AT; i++)
+		out[i] = 0;
+	out[0] = POWEROFF_CMD;
+
+	/* The CRC covers the seed, the report id, then the 42 bytes before it. */
+	for (i = 0; i <= POWEROFF_CRC_AT; i++)
+		head[i] = 0;
+	head[0] = DS_POWEROFF_REPORT_ID;
+	head[1] = POWEROFF_CMD;
+	crc = ds3_crc32_seeded(POWEROFF_CRC_SEED, head, POWEROFF_CRC_AT + 1);
+
+	out[POWEROFF_CRC_AT + 0] = (uint8_t)crc;
+	out[POWEROFF_CRC_AT + 1] = (uint8_t)(crc >> 8);
+	out[POWEROFF_CRC_AT + 2] = (uint8_t)(crc >> 16);
+	out[POWEROFF_CRC_AT + 3] = (uint8_t)(crc >> 24);
 }
