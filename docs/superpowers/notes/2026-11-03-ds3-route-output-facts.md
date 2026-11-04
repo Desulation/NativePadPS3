@@ -41,6 +41,7 @@ length below 77 (F2), so this is the only blocker found.
 | F5 hashes | Output call qword `0x2A2DE8`: `0x2A29E6BB7BA10D5E`. Cap qword `0xF8D70`: `0xBF27C253F5228E13`, original compare word `0x2B9F0040`, new word `0x2B9F004D`, patched qword `0xBF27CD53F522A0C4`. Three independent computations agree. | Rows for the installer. |
 | F6 stub contract | `r3` = pad+0x20 byte, `r4` = 2, `r5` = 1, `r6` = pad+0x22B, `r7` = 0x30, `r2` = kernel TOC, `r28..r31` live, `r3` afterwards is stored as the function's return value. | Contract for the `bl` entry. |
 | F9 receive path (task 11) | **GATE FAILED for a bare limit raise.** The HID receive function copies `read - 1` bytes into the caller's `dst` with no bound by `len_in`; the pad driver's `dst` is a 64-byte stack local (72 bytes in one caller) followed by saved registers, so a 78-byte copy overruns the frame. The ring (134 bytes) holds the 81-byte record and the over-long record is NOT merely left queued: the failed read swallows the length prefix and desynchronises the ring. | The three `li r7,0x41` immediates of the interrupt-in channel can be raised only together with a bounce buffer in the input hook (the original is called with a shim-owned buffer of 80+ bytes, the result copied into `dst` bounded by `len_in`). See F9.7. User decision needed. |
+| F10 other receive callers and the transport read (task 12) | **GATE PASSED, on two device assumptions** (Move report is 49 bytes; a DualSense of stored type other than `0x01` stays in the basic mode). The only other caller of `0xF8FE0` is the generic HID client (`0x100130`, `0x1007B8`; heap staging buffer, 58 bytes of room), which the DS3 and a type-`0x01` DualSense never use. The original read is safe with a bounce `dst` and `len_in` `0x50`; a 0 return is harmless; the limit is used in one compare; the "crawl" of `inds` is most likely the counter skipping error reads. | Recommend bouncing every transport read, not only the DualSense's; the three limit rows need the moved buffer. See F10. |
 
 ## F1 - The shared packet buffer `0x4326C8`
 
@@ -517,11 +518,248 @@ refusals is unchanged.
 
 ### F9.9 Open
 
-- The generic read callers `0x100130` and `0x1007B8`: buffer sizes not enumerated (F9.5).
+- The generic read callers `0x100130` and `0x1007B8`: answered in F10.2 (heap staging buffer, 58 bytes of room).
 - Whether the `0xF840C` callback copies unbounded as well (irrelevant while its limit stays `0x41`).
-- The low hook entry rate after the stall (F9.2).
+- The low hook entry rate after the stall (F9.2): explained in F10.6 (the counter skips error reads).
 - The negotiated L2CAP MTU and the dongle's ACL size for 79-byte frames: not statically verifiable (as F2); the
   console probe proves the pad's output path, the input side is unproven until a console run.
+
+## F10 - Other receive callers and the transport read contract (read-only, plan task 12)
+
+Static analysis of `ds45pad_lv2.bin` (code identical to the pristine image at every site named here) plus heap objects
+read from the connected-pad dumps. Nothing was sent to a console. The decision checked: the interrupt-in (channel 1)
+read limit goes from `0x41` to `0x50` (sites `0xF9094`, `0xF9134`, `0xF91F4`) and the input hook calls the original
+transport read with a shim-owned 96-byte bounce buffer and `len_in` = `0x50`, for DualSense pads only.
+
+### GATE: PASSED, resting on two assumptions that the kernel image cannot settle
+
+No caller other than the pad driver family can be handed a 66-80 byte record by a device that is in use here, **as
+long as** assumption A1 and A2 hold. Both are statements about the devices, not about the code, so they are marked
+**[assumed]** and must be said to the user:
+
+- **A1 [assumed]** A PlayStation Move motion controller's Bluetooth input report is 49 bytes (a 50-byte record), as
+  the DS3's. A Move is the one in-use device that reaches a caller with a destination under 79 bytes: the generic
+  HID client path (F10.2), whose destination is a heap staging buffer with 58 bytes of room (`len_in` `0x3A`). 50 is
+  below the old limit, so for it nothing changes. If a Move ever sent a record of 66-80 bytes the raised limit would
+  overrun that buffer by up to 20 bytes (the old limit already allowed an overrun for records of 60-65 bytes).
+- **A2 [assumed]** A DualSense is not on the generic path while in the `0x31` mode. It reaches the generic path
+  whenever its stored device type is not `0x01` (a stock-paired DualSense has type `0x08`; the type `0x01` that the
+  DS3 route needs is a manual flip, F10.2); such a DualSense is no pad object, the shim never rewrites an output
+  report for it, and it stays in the basic mode (11-byte records), which fits. The kernel itself never sends a
+  DualSense a report that switches it (F9.8), and the pad mode is reset by a reconnect.
+
+**Residual risks, not gates** (devices not in use here): a DualShock 4 or any other long-report device on the generic
+path (the kernel never sends GET_REPORT, so a DS4 should stay on its short report, F9.8, **[assumed]**); keyboards and
+mice (reports of a few bytes); the PS3 Blu-ray remote (12-byte class, F10.1). The remote's driver reads through the
+same transport method as the pad driver into a 64-byte stack local, so a long record from it would overflow like the
+pad driver's. **Hardening recommended, not required:** let the hook bounce *every* transport read (not only a
+DualSense's) and clamp the copy to `len_in`. The transport read method `0xC9D60` is the single choke point of both
+driver classes, so that closes the stack-local risk for all of them at the cost of one 96-byte copy per read; the
+generic path has no such choke point and keeps the A1/A2 dependency.
+
+Other results: returning 0 is harmless (F10.4); the original is safe to call with a different `dst` and
+`len_in` = `0x50` (F10.5); the shared buffer must be the moved 96-byte one before the limit is raised (F10.7).
+
+| Question | Answer |
+|---|---|
+| Who reaches the channel-1 receive function `0xF8FE0`? | Three direct callers: `0x101E9C` (pad transport, the only one that matters for pads), `0x1007B8` and `0x100130` (the generic HID client). `0xF9060` is not a function of its own, only the second half of `0xF8FE0`. |
+| Which destinations are small? | Pad driver 64-72 byte stack locals; second driver class 64-72 byte stack locals; generic client a heap staging buffer, 58 bytes of room. All smaller than 79. |
+| Does returning 0 or an error cost anything? | No state change, counter or disconnect (F10.4). |
+| Safe to call the original with the bounce arguments? | Yes (F10.5). |
+| Why did the poll crawl in the probe run? | Probably it did not: the shim's counter skips error reads, which are now the majority (F10.6). |
+| Side effects of the three word edits? | None found on the DS3 or the basic-mode DualSense; the limit is used in exactly one compare (F10.7). |
+
+### F10.1 Every caller of `0xF8FE0`, `0x101E20`, `0xF91C0` [code]
+
+Searched over the first 4 MiB: every `b`, `bl` and conditional branch with the function as target, every qword
+holding the function's descriptor (OPD) or the OPD's address, the TOC slots.
+
+| Function | Callers | Notes |
+|---|---|---|
+| `0xF8FE0` (OPD `0x33F6B0`, nothing references the OPD) | `bl` at `0x101E9C` (inside `0x101E20`), `bl` at `0x100130` (inside `0x1000E0`), `bl` at `0x1007B8` (inside `0x10069C`) | Always channel 1: it does not take a channel; `0xF9060` is its `bne` target at `0xF9020`, the only reference. |
+| `0x101E20` (OPD `0x3407A8`, no reference) | `bl` at `0xC9D7C`, inside the transport read method `0xC9D60` | Reached only through vtable `0x37CE18` slot `+0x20` (OPD `0x33A010`, referenced once, at `0x37CE38`). |
+| `0xF91C0` (drain, OPD `0x33F6C8`, no reference) | `bl` at `0x101DF0`, inside the wrapper `0x101D98` | The wrapper is entered by the `b` at `0xC9D5C` from `0xC9D58`, the transport method at slot `+0x28` (OPD `0x339FF8`, referenced once, at `0x37CE40`). |
+
+**Who calls transport slot `+0x20` (read) and `+0x28` (drain).** The transport object is built by `0xC9EF4`, called
+at two places only: `0x2A4078` (the pad driver class, vtable `0x38CDC8`, the transport kept at pad `+0x4F0`) and
+`0x2AB184` (a second driver class, vtable `0x38CF48`, constructor `0x2AB120`, the transport at object `+0xE8`). The
+only read calls are `0x2A4E5C` (pad class, inside `0x2A4E00`) and `0x2AB448` (second class, inside `0x2AB250`).
+The other loads of the transport (`+0x10`, `+0x18`, `+0x28` at `0x2A256C`, `0x2A25AC`, `0x2A3E98`, `0x2A41AC`,
+`0x2A4350` ...) use other slots. [code]
+
+| Reader | Called from | `dst` | `len_in` | Device |
+|---|---|---|---|---|
+| `0x2A4E00` (pad class) | `0x2A50FC` (call `0x2A51E8`, frame `0xE0`) and `0x2A521C` (call `0x2A528C`, frame `0xD0`) | stack local `r1+0x70`: 72 bytes before a saved register in the first, exactly 64 in the second (F9.4) | `0x40` | DS3, Move navigation (PID `0x042F`, no longer if the PID patch removes it) and the DualSense of type `0x01`: every device the factory `0x2A128C` builds as the `0x520`-byte pad object |
+| `0x2AB250` (second class) | `0x2AB60C`, `0x2AB6E8` (frame `0xE0`, `dst` `r1+0x70`, saved `r27` at `+0xB8` = 72 bytes) and `0x2AB7C4` (frame `0xD0`, saved `r28` at `+0xB0` = 64 bytes) | stack local `r1+0x70` | `0x40`, call at `0x2AB438` with the flag argument 1 (so the original reads once, not twice) | The factory's type-4 object (`0xF0` bytes, `0x2AB120`, dispatch at `0x2A13CC`), which copies 12-byte reports to its cache at `+0x22`. **[assumed]** the PS3 Blu-ray remote (the HID layer registers a PID `0x0306` device for type 2, F10.2). Not in use here. |
+
+Both manager entries that reach the pad read methods (`0x29EDBC`, calls at `0x29EEB0` and `0x29EF2C`; `0x29F2D0`,
+call at `0x29F3EC`) hold the pad manager lock (`mgr+0x40`) across the call, so two pads are never inside the read
+method at once. [code] (Other call sites of vtable slots `0x40`/`0x48` in `0x29xxxx` take small integers, not a
+buffer; they are other classes.)
+
+**The drain** `0xF91C0` (the read at `0xF91F4`) is reached from the pad class's and the second class's "clear input"
+method (vtable `+0x60`: `0x2A3E60` and `0x2AB1E4`, which guard on the object state being 1 and tail into transport
+slot `+0x28`). Their callers are the pad manager's loop over its 16 pad entries (call at `0x29FD40`) and the pad
+command dispatcher (call at `0x2A37B8`); the return value is ignored by the loop. The drain reads two records into the
+shared packet buffer and discards them; nothing consumes them. With the limit raised a pending 79-byte record is
+simply discarded whole (unraised it is swallowed with its length prefix, F9.2). It writes no `dst`. [code]
+
+### F10.2 The generic HID client path: `0x100130` and `0x1007B8` [code][dump]
+
+What they are. Every Bluetooth connection gets a HID client object (vtable `0x37DFA0`, built by `0xF9284`, which opens
+the four channels). The paired device's stored type word (`0x115F70` reads it from the remembered-device table at
+`0x434910`: 32-byte entries, bd address first, type word at `+8`; it is the link-key type byte of the DS3-route spec,
+`0x01` Sony, `0x08` generic) selects what else is made: bit 0 set (type 1) means a DS3-class device (registered with
+PID `0x268`), bit 1 set (type 2) the BD remote (PID `0x306`), neither means the **generic client**: a 0x70-byte
+object (constructor `0x1002C0`, factory `0x1003BC`, vtable `0x37E1A8`, client `+0x28` = the constant `0x3A`,
+`+0x30` = `0x32`) registered in the singleton owner at `0x432800` (object `0x512F80`, client table at owner `+0x18`,
+seven slots). **[code]** decision at `0xF76B0..0xF77FC` (vendor `0x054C` with a PID other than `0x306` counts as "not the
+remote"), factory call at `0xF95E4`.
+
+Its two readers:
+- `0x10069C` (vtable slot `+0x50` of `0x37E1A8`, OPD `0x3404D8`, referenced once at `0x37E1F8`): "read request" with
+  `dst`, a 16-bit length and a callback. If the data-ready flag at client `+0x68` is set it reads at once with
+  `0xF8FE0(client, dst, &len, 1)` (the call at `0x1007B8`) and calls the callback; otherwise it stores `dst`
+  (`+0x58`), the length (`+0x60`) and the callback (`+0x50`) as a pending request.
+- `0x1000E0` (OPD `0x3403D0`, no reference): completes a pending request with the stored `dst` and length and flag 1
+  (the call at `0x100130`). It is entered only by the `b` at `0x100230` from `0x1001AC`, which is called only by the HID
+  layer's interrupt-in notification at `0xFA100` (under the Bluetooth lock, `0xFA040..0xFA0C4`).
+
+The one caller of the client's read method (`0xD00C8` inside `0xCFF04`, and `0xD0144` inside `0xD012C`; receiver =
+the stream object's `+0x40` field = the client) is the USB-like device framework (class vtable `0x37D288`, submit
+routine `0xCE774`). It passes `len_in` = client `+0x28` = `0x3A` (58) and a `dst` taken from a staging buffer built
+at `0xCFBA4`: a heap block of `0x3A + R` bytes with `dst` at offset `R`, where `R` is the largest transfer size among
+the registered pipe objects. **[dump]** `ds45pad_lv2.bin`: staging block `0x660C00`, `R` = `0x4E` (78), `dst`
+`0x660C4E`, length `0x3A`, so the block is 136 bytes and `dst` has 58 bytes of room (the stream request at `0x67BCA0`
+and the client at `0x64D400` hold exactly these values). A 78-byte copy there would write 20
+bytes past the block. **[assumed]** the heap does not round the block up enough to hide that. Only this framework
+was found calling the client's read slot; the 92 `+0x50`/`+0x88` virtual-call sites in the whole image were not
+all classified (the client is reachable only through the owner table, read only by `0x1001AC`, and the stream
+object).
+
+Which devices. **[dump]** In `ds45pad_lv2.bin` and `twopads/ds45pad_lv2.bin` (a stock-paired DualSense, no DS3 route)
+the owner holds exactly one such client, with vendor `0x054C` and product `0x0CE6`. In `ds3route/navpid_connected.bin`
+and `type01_connected.bin` (the DualSense with type `0x01`, a pad object exists) **no** object with vtable `0x37E1A8`
+exists. So the DS3 and a DualSense of type `0x01` never use it; a Move controller (PID `0x03D5`), a keyboard, a mouse,
+a DualShock 4 and a DualSense of type `0x08` do. **[assumed]** the Move is on it (its type word is not 1 or 2); no dump
+holds a Move.
+
+### F10.3 The transport read method `0xC9D60`, behind slot `0x37CE38` [code]
+
+`0xC9D60(transport, dst, len_in, flag)`: stores `len_in` in a local halfword (`0x70(r1)`), loads the handle byte at
+transport `+8`, and calls `0x101E20(handle, dst, &len, flag XOR 1)`. If that returns 0 it returns the halfword
+(zero-extended), else it returns the error code. `0x101E20` takes the Bluetooth lock `0x4325D0`, looks the client up
+(`0x1010B8`: `0x80010005` if the handle has none), calls `0xF8FE0(client, dst, &len, flag & 0xFF)` and unlocks.
+
+`len_in` is used in exactly two ways: truncated to 16 bits and stored, and tested for non-zero inside `0xF9060`
+(zero gives `0x80010002`). It is **never** compared against the record length, the read limit or the copy size.
+`dst` is tested for null (`0x80010002`) and is the memcpy destination, nothing else. `flag` becomes `flag XOR 1`: the
+pad class passes 0 (so the original reads twice and the second record wins if both exist), the second class passes 1
+(single read).
+
+| Situation | Ring state | `0xF9060` | `0xC9D60` returns |
+|---|---|---|---|
+| nothing available | at most 1 byte used (`0x1169E4` returns 0) | `*len` = 0, result 0 | **0** |
+| a record that holds only the header byte | record length 1 | treated as nothing | **0** |
+| a basic DualSense report | 11-byte record | copies 10 bytes from `buffer+1`, `*len` = 10 | **10** |
+| a DS3 report | 50-byte record | copies 49 | **49** |
+| a `0x31` report | 79-byte record | limit `0x41`: error `0x80010028` (prefix swallowed, F9.2); limit `0x50`: copies 78 | **negative today, 78 after the raise** |
+| an error | closed connection, null `dst`, zero `*len`, unknown handle, record over the limit, ring copy failure | `*len` = 0 (set at `0xF91B8`), the error passed up | **negative** (`0x80010002`, `0x80010005`, `0x80010028`, `0x8001000D` seen) |
+
+With the double read, a first read that errors returns at once (the second is skipped); a second read that errors
+leaves the first record in place; the second record wins when both exist. [code]
+
+### F10.4 What the pad driver does with 0, a negative and a positive count [code]
+
+`0x2A4E00(pad, dst, len_in, flag)` returns 0x80010002 for a null `dst`, otherwise:
+
+- **Negative** (`blt` at `0x2A4E78`): returns the code at once. No store to the pad object, no counter. Both outer
+  callers pass it up (`0x2A5144`, `0x2A5258`); the manager wrappers return it to their caller unchanged.
+- **Zero** ("no new report"): the shared steps run (the config byte `0x29E240`, the helper `0x2A6AB0` called with `dst`
+  and the pad index, which takes a lock and was not analysed further, the state word at `0x4A1CD4`; all run for every
+  non-negative count, so they are the same for a zero as for a real report). Then the cached-report logic runs:
+  the pad object keeps its last report (a copy of up to 64 bytes at `+0x22`, length at `+0x64`, written by
+  `0xC9AF0`, which clamps to `0x40`) and two flags, `+0x142` ("report seen, not yet repeated") and `+0x141` (one-shot
+  set at `0x2A2490`/`0x2A3F80`). With the flag argument 0 and `+0x142` set, the cached report is copied to `dst`
+  and returned once, then `+0x142` is cleared; otherwise the result is 0. The only stores are to those two cache
+  flags. No disconnect, no error counter, no timer, no state change of the pad (`+8`), nothing that is not already
+  done for every poll that finds the ring empty. A refused or dropped report is therefore indistinguishable from "no
+  packet this poll", and the next poll reads the next record. **Dropping is harmless.** F8 corroborates it: the
+  DualSense stayed connected through 100 s of errors and zeros. [code][console]
+- **Positive**: if `dst[0]` is 1 and `dst[1]` is not `0xFF`, `0x2A26A8` (a button predicate that only compares the
+  count with 47) and then the cache copy (clamped to 64) and the converter `0x2A4678` run on the count. A count above
+  `len_in` is therefore never to be returned to this caller; the hook must return `min(count, len_in)` or 0.
+
+### F10.5 Calling the original with a bounce buffer and `len_in` = `0x50` [code]
+
+Safe. The original: stores `len_in` in its own frame and passes the halfword by address; tests it only for zero;
+writes `dst` only with the `read - 1` byte memcpy (the call at `0xF91A8`) and `*len`; stores no pointer to `dst`
+anywhere (the synchronous path keeps it in registers; only the generic client's pending request stores a `dst`, F10.2,
+which is another path); has no error for a small or a large `len_in` other than 0. The pad driver cannot rely on
+`dst` identity: it passes a stack local, uses the buffer only after the call returns, and the returned count is the
+only link. The one requirement is the one F9.7 already states: the hook writes the translated report (49 bytes,
+`dst[0]` = 1) or the passed-through bytes (at most `len_in`) into the caller's `dst`. The 96-byte bounce buffer
+holds the 80-byte maximum. Concurrency: pad reads are serialised by the manager lock (F10.1), so one static bounce
+buffer in the data block is not shared by two reads. **[code]** for the two manager wrappers found; the second
+driver class goes through the same wrappers.
+
+### F10.6 The poll rate in the probe run, and the DS3 [code][assumed]
+
+**The kernel code has no back-off.** The pad read methods are driven by the pad manager wrappers (the
+application's pad calls); the read path of the pad class (`0x2A4E00`, `0xC9D60`, `0x101E20`, `0xF9060`) contains no
+sleep, timer or counter keyed to an error or a zero, and the manager passes the result up unchanged (`0x29EEEC`,
+`0x29F418`). The only retry-with-sleep loops found nearby (`0xCE3D4`, `0xCFE24`) belong to the USB-like framework.
+
+**The counter, not the poll, probably collapsed.** `inds` is `dbg_input_ds`, counted in `shim_input_note`, which
+`shim_input` (`shim/entry.c`) calls only after its early return for `rc < 0`, `rc > 0x41`, a null pointer or a short
+`len_in`. An error read (`0x80010028`) is therefore **not counted**. After the switch to the `0x31` report the pattern
+in the ring is (F9.2): a fresh in-frame 79-byte record yields exactly one error read, then zero reads until the next
+record; and a record arriving over an unread one resets the ring and leaves the newest record in frame. If the
+DualSense's report rate is several times the application's poll rate (**[assumed]**: the `0x31` report is sent
+continuously, the pad is polled tens of times a second), nearly every poll finds a fresh record and errors, and only the
+rare poll that finds no new record (a zero read) is counted. A rate of about 1-2 counted reads a second is what that
+model gives for a report rate three to four times the poll rate. So the "crawl" is probably the counter missing the
+errors, and the polls kept running. A counter before the guard (or a separate error counter) in the next console run
+would confirm it.
+
+**The DS3 cannot be stalled by the DualSense's ring.** Each connection has its own record in the connection table
+(seven entries of `0x14E8` bytes, rings at `+0x12C8 + channel*0x48`) and its own HID client object with its own ring
+buffers (channel 1 at client `+0x9E`). **[dump]** `twopads/ds45pad_lv2.bin`: two table entries with two distinct
+clients (`0x67FA00` and `0x67FE00`). What they share is the Bluetooth lock `0x4325D0` (held for the duration of one
+read and of the notification), the shared packet buffer and the HCI transmit ring; an error read or a zero read
+returns at once, so the lock is held no longer than for a normal read. The DS3's pad reads go through the same manager
+lock as the DualSense's, one at a time. F8 saw the DS3 unaffected. [code][dump][console] Note: in
+`ds3route/navpid_connected.bin` there is one connection and both pad objects show handle byte 0, so that dump does not
+show two connections.
+
+### F10.7 The three word edits and the DS3 and the basic-mode DualSense [code]
+
+The immediate `0x41` is loaded into `r7` and handed down as the maximum length: `0x116EF0` (mode 2) -> `0x1170F0` ->
+`0x1169E4` as its fourth argument. There it is used in **one** place: the signed compare against the record length at
+`0x116D2C` (`bge` accepts, else `0x80010028`). The copy and the returned count use the record length, the ring free-space
+and the used count are not compared against it (those compares belong to the send branch, F2), and nothing keeps the
+value afterwards (`r7` is overwritten by the next argument setup). A 50-byte DS3 record and an 11-byte basic record are
+below both `0x41` and `0x50`: same compare result, same copy, same counts (49 and 10). The clears of 65 bytes
+(`li r5,0x41` before the memset at `0xF9074` and `0xF9270`) are separate immediates and stay.
+
+Of all calls to `0x116EF0` only four are mode-2 reads with the immediate `0x41`: `0xF84D8` (channel 3, unchanged),
+`0xF90E8`, `0xF918C` and `0xF924C` (channel 1: the sites to be edited). The other mode-2 calls (channel 2, at
+`0xF8D04` inside the sender `0xF8BD8`, and at `0xF8FB0`) are sends; the remaining calls pass other modes (open, close, control).
+
+**Dependency.** A read of up to 80 bytes into the shared packet buffer, plus the `buffer+1` view, needs the moved 96-byte
+buffer of Amendment 1. Against the original 72-byte buffer at `0x4326C8` an 80-byte read would overwrite the first
+qword of the HID client state at `0x432710` (F1.3). The three word rows must therefore never be installed without the
+two buffer-slot rows.
+
+### F10.8 Open
+
+- A1 and A2 (above) are device facts; the Move's and the DualSense's report sizes are not in the kernel image.
+- The heap rounding of the generic staging block (`0xCFC20`, allocator `0x681F4`): not traced.
+- The 92 `+0x50`/`+0x88` virtual-call sites of the image were not all classified; only the framework at `0xD00C8` and
+  `0xD0144` was shown to call the generic client's read slot.
+- Which devices the second driver class serves (the BD remote is inferred from the 12-byte report and the type-4
+  dispatch at `0x2A13CC`; the mapping from the stored type word to the factory's device type was not traced).
+- Whether the application's poll rate is the one that the probe run counted (needs the extra counter, F10.6).
 
 ## Method (commands)
 
@@ -539,3 +777,11 @@ mode and size each caller passes) and the hash script for the four immediates; d
 `0xF8FE0..0xF9280`, `0xC9D60`, `0x101E20`, `0x1169E4..0x116EF0`, `0x1170F0`, `0x11E440`, `0x11E640`, `0x11DC5C`,
 `0x114DC0`, `0x10BDC4..0x10BEF8`, `0xF9284..0xF9560`, `0x2A4E00`, `0x2A50FC..0x2A5330`; `callers.py` for `0x2A4E00`,
 `0xF8FE0`, `0xF91C0`, `0x101E20`.
+
+F10 (task 12) added three small scratchpad scripts: a reference scanner (all branch forms, qwords holding a function
+or its descriptor), a virtual-call scanner (a load of a given vtable slot followed within five instructions by the
+`+0x10` environment load and the indirect call) and a heap-object reader for the generic client and the connection
+and client tables of the connected-pad dumps; disassembly with `lst.py` over `0xF8FE0..0xF9284`, `0x100030..0x100950`,
+`0xC9D1C..0xC9F30`, `0xCFBA4..0xD0330`, `0x101D98..0x101EDC`, `0x1169E4..0x116DA0`, `0x1170F0`, `0x115E80..0x115F70`,
+`0x2A4D38..0x2A5330`, `0x2AB1E4..0x2AB900`, `0x2A1280..0x2A1620`, `0x29EE30..0x29F020`, `0x29F2D0..0x29F440`,
+`0x2A3E60`, `0xC9AF0`, `0x2A26A8`; a scan of all `bl 0x116EF0` sites for their immediate channel, mode and size.
