@@ -24,6 +24,7 @@
 
 #include "shim.h"
 #include "ds3_report.h"
+#include "ds3_output.h"
 
 /* Sony USB identity. */
 #define VID_SONY        0x054C
@@ -34,6 +35,10 @@
 /* DualSense Bluetooth full report id (the same value as DS_IN_BT; redefined
  * here because the freestanding shim must not pull in ds45_state.h). */
 #define DS_BT_INPUT_ID  0x31
+
+/* The DualSense Bluetooth output report id the rewritten call carries (the id
+ * byte of the report ds3_output.c builds, which the sender takes separately). */
+#define DS_BT_OUTPUT_ID 0x31
 
 /* The fixed identity bytes after the counter: info+0x0C..+0x0F. 0xD5 keeps the
  * check's alternate branch (+0x8C == 0x18 with +0x8E == 0x000D) out of reach,
@@ -287,4 +292,133 @@ int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
 	if (d)
 		d->stat_passed++;
 	return len ? (int)*len : 0;
+}
+
+int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
+                      uint16_t len_in, int rc)
+{
+	uint16_t n, i;
+	int ds;
+
+	if (!d || !dst)
+		return rc < 0 ? rc : 0;
+	d->dbg_in_bounce++;
+	if (rc < 0) {
+		d->dbg_in_err++;
+		return rc;
+	}
+	shim_input_note(d, pad);
+	if (rc == 0)
+		return 0;
+	if (rc > SHIM_IN_BOUNCE_MAX) {
+		d->dbg_in_drop++;
+		return 0;
+	}
+	if (rc > 0x41)
+		d->dbg_in_big++;
+
+	/* Translate in place in the bounce buffer: both translators read the whole
+	 * report before writing, and on a refusal write nothing, leaving n = rc. */
+	n = (uint16_t)rc;
+	ds = shim_pad_is_dualsense(d, pad);
+
+	/* Raw capture (debug only): a DualSense's report as the pad sent it, copied
+	 * BEFORE the translation below rewrites inbuf. rc is 1..0x4F here; at most the
+	 * first 64 bytes are kept. */
+	if (ds) {
+		uint16_t m = n < (uint16_t)sizeof(d->dbg_in_raw) ? n : (uint16_t)sizeof(d->dbg_in_raw);
+
+		for (i = 0; i < m; i++)
+			d->dbg_in_raw[i] = d->inbuf[i];
+		d->dbg_in_raw_len = m;
+		d->dbg_in_raw_seq++;
+	}
+	shim_input_filter(d, ds ? 0x054C : 0, ds ? 0x0CE6 : 0, d->inbuf, &n);
+
+	/* n is at most 0x4F here (the buffer holds 96), and only n <= len_in bytes
+	 * ever reach the caller. */
+	if (n > len_in) {
+		d->dbg_in_drop++;
+		return 0;
+	}
+	for (i = 0; i < n; i++)
+		dst[i] = d->inbuf[i];
+	return n;
+}
+
+int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
+                       uint8_t *rid, const uint8_t **out_buf, uint16_t *out_len)
+{
+	uint16_t n, i;
+	int is_ds;
+
+	if (!d)
+		return 0;
+	d->dbg_out_calls++;
+	if (!d->enabled || !buf || len == 0 || len > SHIM_OUT_MAX_LEN)
+		return 0;
+
+	/* What the console really sends, for any pad (a DS3's included): the length
+	 * and the payload itself, the last call's only. len is at most 64 here, so
+	 * the clamp to the capture buffer is belt and braces. */
+	d->dbg_out_last_len = len;
+	n = len < (uint16_t)sizeof(d->dbg_out_cap) ? len : (uint16_t)sizeof(d->dbg_out_cap);
+	for (i = 0; i < n; i++)
+		d->dbg_out_cap[i] = buf[i];
+	d->dbg_out_cap_len = n;
+
+	/* Rumble-aware capture (debug only): the last motor-on payload from any pad,
+	 * and the first zero-motor payload from that same pad after it. Payload byte 2
+	 * is the small motor, byte 4 the large motor; shorter payloads hold neither. */
+	if (len > 4) {
+		uint64_t pad = (uint64_t)(uintptr_t)(buf - SHIM_PAD_OUT_BUF_OFF);
+
+		if (buf[2] != 0 || buf[4] != 0) {
+			d->dbg_out_on_count++;
+			for (i = 0; i < n; i++)
+				d->dbg_out_on_cap[i] = buf[i];
+			d->dbg_out_on_len = n;
+			d->dbg_out_on_pad = pad;
+			d->dbg_out_off_armed = 1;
+		} else if (d->dbg_out_off_armed && pad == d->dbg_out_on_pad) {
+			d->dbg_out_off_count++;
+			for (i = 0; i < n; i++)
+				d->dbg_out_off_cap[i] = buf[i];
+			d->dbg_out_off_len = n;
+			d->dbg_out_off_armed = 0;
+		}
+	}
+
+	/* The call's pad object sits SHIM_PAD_OUT_BUF_OFF below its payload. */
+	is_ds = shim_pad_is_dualsense(d, buf - SHIM_PAD_OUT_BUF_OFF);
+	if (is_ds)
+		d->dbg_out_ds++;
+
+	/* Rewrite, for a DualSense only, in mode 1 (probe: the fixed probe report) or
+	 * mode 2 (full: the translation of this payload). The report is built whole in
+	 * d->out_buf (78 bytes, id first); the kernel sender takes the id separately,
+	 * so the call carries d->out_buf + 1 and 77 bytes. A payload the translator
+	 * refuses (wrong length or shape) is passed through, out_seq not advanced. */
+	if (is_ds && rid && out_buf && out_len &&
+	    (d->out_mode == 1 || d->out_mode == 2)) {
+		uint8_t seq = (uint8_t)(d->out_seq & 0x0F);
+		int ok;
+
+		if (d->out_mode == 1) {
+			ds3_output_probe(seq, d->out_buf);
+			ok = 1;
+		} else {
+			ok = ds3_output_to_dualsense(buf, len, seq, d->out_buf) == 0;
+		}
+		if (ok) {
+			d->out_seq = (d->out_seq + 1) & 0x0F;
+			*rid = DS_BT_OUTPUT_ID;
+			*out_buf = d->out_buf + 1;
+			*out_len = DS_OUT_LEN - 1;
+			d->dbg_out_translated++;
+			return 1;
+		}
+	}
+	d->dbg_out_passed++;
+	return 0;
 }

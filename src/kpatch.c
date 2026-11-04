@@ -10,7 +10,9 @@
 #define BRANCH_MIN (-0x2000000LL)   /* -32 MiB */
 #define BRANCH_MAX ( 0x1FFFFFCLL)   /* +32 MiB - 4 */
 
-int kpatch_branch_word(uint64_t from, uint64_t to, uint32_t *word)
+/* `b` and `bl` differ only in the LK bit (bit 0), so the range and alignment
+ * rules live here once and both public encoders go through it. */
+static int encode_branch(uint64_t from, uint64_t to, uint32_t lk, uint32_t *word)
 {
 	int64_t disp;
 
@@ -22,8 +24,18 @@ int kpatch_branch_word(uint64_t from, uint64_t to, uint32_t *word)
 	if ((disp & 3) || disp < BRANCH_MIN || disp > BRANCH_MAX)
 		return -1;
 
-	*word = 0x48000000u | ((uint32_t)disp & 0x03FFFFFCu);
+	*word = 0x48000000u | ((uint32_t)disp & 0x03FFFFFCu) | lk;
 	return 0;
+}
+
+int kpatch_branch_word(uint64_t from, uint64_t to, uint32_t *word)
+{
+	return encode_branch(from, to, 0, word);
+}
+
+int kpatch_branchl_word(uint64_t from, uint64_t to, uint32_t *word)
+{
+	return encode_branch(from, to, 1, word);
 }
 
 /* FNV-1a 64 over one qword, bytes in memory order (as ds45_lv2_read_bytes). */
@@ -38,7 +50,7 @@ static uint64_t qword_hash(uint64_t q)
 	return ds45_fnv1a64(b, 8);
 }
 
-/* The 32-bit instruction a WORD or BRANCH patch installs. */
+/* The 32-bit instruction a WORD, BRANCH or BRANCHL patch installs. */
 static int patch_word(const ds45_kpatch_t *p, uint32_t *w)
 {
 	if (p->kind == DS45_KPATCH_WORD) {
@@ -47,6 +59,9 @@ static int patch_word(const ds45_kpatch_t *p, uint32_t *w)
 		*w = (uint32_t)p->value;
 		return 0;
 	}
+
+	if (p->kind == DS45_KPATCH_BRANCHL)
+		return kpatch_branchl_word(p->addr, p->value, w);
 
 	return kpatch_branch_word(p->addr, p->value, w);
 }
@@ -86,6 +101,7 @@ static int check_patch(const ds45_kpatch_t *p)
 
 	case DS45_KPATCH_WORD:
 	case DS45_KPATCH_BRANCH:
+	case DS45_KPATCH_BRANCHL:
 		if (p->addr & 3)
 			return -1;
 		if (ds45_lv2_read(p->addr & ~7ULL, &cur))

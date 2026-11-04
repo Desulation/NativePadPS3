@@ -24,14 +24,30 @@
  * an earlier load only if its version matches, since the plugin reaches into the
  * data block by these offsets - so any change to this struct bumps the number.
  * 7: the helper product-ID row became a branch to shim_pid_ok (same layout), so a
- * build that applied the old word edit is not adopted. */
-#define DS45_SHIM_VERSION 7
+ * build that applied the old word edit is not adopted.
+ * 8: the DS3-route output state (rumble, player LEDs, light bar) appended, and
+ * pid_orig grown from 3 to 7 sites, which moves every field after it by 24 bytes:
+ * 272 -> 584.
+ * 9: the rumble-aware output capture (debug only) appended after pktbuf:
+ * 584 -> 744.
+ * 10: the receive-limit words (sites 7-9) grow pid_orig from 7 to 10 sites, which
+ * moves every field after it by 24 bytes (744 -> 768), and the input bounce buffer
+ * (inbuf, 96 bytes) and its four debug counters are appended last: 768 -> 880.
+ * 11: the raw DualSense report capture (debug only) appended after the bounce
+ * counters: 880 -> 952. */
+#define DS45_SHIM_VERSION 11
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56
-/* Product-ID sites a row can edit: the helper word and the two inline words
- * (src/kshim.h: DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES, checked there). */
-#define DS45_SHIM_PID_SITES 3
+/* Product-ID sites a row can edit, in data-block order: 0 the helper branch, 1-2
+ * the inline words, then the output sites - 3 the output call site, 4 the sender's
+ * payload-cap word, 5 the TOC slot holding the packet buffer's address, 6 the TOC
+ * slot holding that address plus one, then the receive-limit words - 7, 8 and 9,
+ * the three `li r7,0x41` immediates (the kernel's read limit, 0x41 bytes) that
+ * become `li r7,0x50`, so the DualSense's 79-byte full report fits (src/kshim.h:
+ * DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES +
+ * DS45_SHIM_RECV_PATCHES, checked there). */
+#define DS45_SHIM_PID_SITES 10
 
 typedef struct {
 	uint8_t deadzone;              /* STICK_DEADZONE, percent of half travel */
@@ -92,6 +108,55 @@ typedef struct {
 	uint64_t conn_tbl;
 	uint32_t stable_id;
 	uint32_t dbg_id_bd, dbg_id_fallback, dbg_last_handle;
+	/* DS3-route output (rumble, player LEDs, light bar). orig_output is the code
+	 * address of the kernel's Bluetooth output sender (0x10283C on DEX 4.92), which
+	 * the output hook tail-calls; written by the plugin from the firmware row, 0 =
+	 * none. out_mode (the SHIM_OUTPUT_MODE config key, 0..2: observe, probe, full)
+	 * is written by the plugin. out_seq is the DualSense report sequence counter,
+	 * written by the blob. The dbg_out_* counters are written by the blob, debug
+	 * only: how often the hook was entered, how many calls were for a DualSense,
+	 * how many it rewrote, how many it passed through unchanged, the length of the
+	 * last call and the length of the payload captured into dbg_out_cap. out_buf is
+	 * the 78-byte DualSense report the hook builds and pktbuf the moved Bluetooth
+	 * packet buffer (8-aligned; zero at install); neither is read by the plugin.
+	 * The size is kept a multiple of 8. */
+	uint64_t orig_output;
+	uint32_t out_mode, out_seq;
+	uint32_t dbg_out_calls, dbg_out_ds, dbg_out_translated, dbg_out_passed;
+	uint32_t dbg_out_last_len, dbg_out_cap_len;
+	uint8_t  dbg_out_cap[64];
+	uint8_t  out_buf[80];
+	uint8_t  pktbuf[96];
+	/* Rumble-aware capture, written by the blob, debug only (version 9). A payload
+	 * is "motor on" when it is longer than 4 bytes and payload byte 2 (small motor)
+	 * or byte 4 (large motor) is non-zero. dbg_out_on_* hold the last motor-on
+	 * payload from any pad (count, length, bytes, and that pad's address, the
+	 * payload address minus 0x22B). dbg_out_off_* hold the first zero-motor payload
+	 * (longer than 4 bytes, bytes 2 and 4 zero) from that same pad after it;
+	 * dbg_out_off_armed is 1 from a motor-on payload until that capture is taken.
+	 * dbg_out_rsvd9 keeps the size a multiple of 8. */
+	uint64_t dbg_out_on_pad;
+	uint32_t dbg_out_on_count, dbg_out_on_len, dbg_out_off_count, dbg_out_off_len;
+	uint32_t dbg_out_off_armed, dbg_out_rsvd9;
+	uint8_t  dbg_out_on_cap[64];
+	uint8_t  dbg_out_off_cap[64];
+	/* The input bounce buffer (version 10): with the receive-limit words raised, a
+	 * DualSense sends 79-byte full reports, which the input hook reads into inbuf
+	 * (8-aligned; zero at install) and translates for the caller. The dbg_in_*
+	 * counters are written by shim_input_bounce, debug only: every bounce read (any
+	 * pad: in the output modes 1 and 2 every read of the input hook is bounced, not
+	 * just a DualSense's), reads of 66-79 bytes, results dropped for not fitting
+	 * the caller's buffer, and errors. The installer leaves them zero. The size is
+	 * kept a multiple of 8. */
+	uint8_t  inbuf[96];
+	uint32_t dbg_in_bounce, dbg_in_big, dbg_in_drop, dbg_in_err;
+	/* The raw DualSense report capture (version 11), written by the blob, debug
+	 * only: the first dbg_in_raw_len (at most 64) bytes of the last DualSense read
+	 * of 1..0x4F bytes, copied BEFORE the in-place translation, and dbg_in_raw_seq,
+	 * which counts those captures. The plugin's trace prints them when the sequence
+	 * changed, to show what the pad really sends. The size is kept a multiple of 8. */
+	uint32_t dbg_in_raw_len, dbg_in_raw_seq;
+	uint8_t  dbg_in_raw[64];
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */

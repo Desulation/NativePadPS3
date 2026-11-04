@@ -55,6 +55,9 @@
 #define PAD_VTABLE   0x800000000038CDC8ULL
 #define PAD_MGR      0x80000000004A1CB8ULL
 #define CONN_TBL     0x8000000000432690ULL
+/* The code address of the kernel's Bluetooth output sender (0x10283C on DEX
+ * 4.92), which the output hook will tail-call; here only carried into the block. */
+#define OUTPUT_ORIG  0x800000000010283CULL
 
 /* The product-ID WORD rows, shaped like the DEX 4.92 row: the patched
  * instruction is the LOW half of its qword (addr & 4 set) and the high half is a
@@ -73,6 +76,37 @@
 #define PID1_Q       0x3C3C3C3C4D4D4D4DULL
 #define PID1_WORD    0x4BFFFC48u
 #define HI32         0xFFFFFFFF00000000ULL
+
+/* Product-ID sites 3-6 (the output call site, the cap word and the two TOC
+ * slots) are the row's output_patches[0..3]. The fixture row leaves them empty;
+ * plant_output_rows() fills them, shaped like the DEX 4.92 row: [0] a BRANCHL at
+ * the HIGH half of its qword, [1] the cap WORD at the LOW half, [2] and [3] PTR
+ * rows on two TOC slots holding the old packet buffer address and that plus one.
+ * The qwords are made-up patterns; every row has a distinct address so a site
+ * index that reached the wrong row would patch the wrong qword. */
+#define OUT_PATCHES_N 4
+#define OUT_QA(i)    (B + 0x7100 + 8 * (i))
+#define OUT_SITE(i)  (OUT_QA(i) + 4)
+#define OUT_Q(i)     (0x7171717100000000ULL + (uint64_t)(i) * 0x0101010101ULL)
+#define OUT_WORD(i)  (0x60000000u + (uint32_t)(i))
+#define OUT_CALL_QA  OUT_QA(0)         /* bl: the high half (addr & 4 == 0) */
+#define OUT_CAP_QA   OUT_QA(1)         /* the cap compare: the low half */
+#define OUT_CAP_SITE (OUT_CAP_QA + 4)
+#define OUT_SLOT5    (B + 0x7200)      /* TOC slot holding the old buffer address */
+#define OUT_SLOT6    (B + 0x7208)      /* ... and that plus one */
+#define OLD_BUF      0x80000000004326C8ULL
+#define CAP_WORD     0x2B9F004Du       /* cmplwi cr7,r31,0x4D */
+
+/* Product-ID sites 7-9 (the three receive-limit words, Task 13) are the row's
+ * recv_patches[0..2]: WORD rows shaped like the DEX 4.92 ones (the instruction is
+ * the LOW half of its qword, the high half a neighbour that must survive), each at
+ * its own address. plant_recv_rows() fills them; plant_output_rows() calls it, so a
+ * fixture with the output rows also carries the receive rows the hook needs. */
+#define RECV_PATCHES_N 3
+#define RECV_QA(i)    (B + 0x7300 + 8 * (i))
+#define RECV_SITE(i)  (RECV_QA(i) + 4)
+#define RECV_Q(i)     (0x7373737300000000ULL + (uint64_t)(i) * 0x0101010101ULL + 0x38E00008u)
+#define RECV_WORD     0x38E00050u      /* li r7,0x50 */
 
 /* The fixed executable base the blob is placed at (design Amendment 2): an
  * in-window address clear of every table-entry address above, standing in for
@@ -171,12 +205,18 @@ ds45_config_t g_cfg;
  * product-ID mask. */
 static int      g_tr_applied_n;
 static uint32_t g_tr_applied;
+static uint32_t g_tr_skipped;      /* the sites kshim_adopt_pid_skipped named, as a mask */
+static uint32_t g_tr_refused;      /* the mask kshim_adopt_refused carried (0: not emitted) */
 
 void ds45_boot_mark_hex(const char *stage, uint32_t value)
 {
 	if (strcmp(stage, "kshim_adopt_applied") == 0) {
 		g_tr_applied_n++;
 		g_tr_applied = value;
+	} else if (strcmp(stage, "kshim_adopt_pid_skipped") == 0 && value < 32) {
+		g_tr_skipped |= 1u << value;
+	} else if (strcmp(stage, "kshim_adopt_refused") == 0) {
+		g_tr_refused = value;
 	}
 }
 
@@ -361,6 +401,7 @@ static void setup(void)
 	g_ent.pad_vtable = PAD_VTABLE;
 	g_ent.pad_mgr = PAD_MGR;
 	g_ent.conn_tbl = CONN_TBL;
+	g_ent.orig_output = OUTPUT_ORIG;
 	g_ent.info_tmpl = g_tmpl;
 	g_ent.pid_patches[0].kind = DS45_KPATCH_WORD;
 	g_ent.pid_patches[0].addr = HELPER_SITE;
@@ -376,13 +417,80 @@ static void setup(void)
 	g_ent.inline_patches[1].value = PID1_WORD;
 }
 
-/* Snapshot of everything the installer is responsible for leaving untouched on
- * failure (the fixed blob region is scratch and excluded). */
+/* Snapshot of the 17 named kernel qwords the installer is responsible for leaving
+ * untouched on failure: the redirect and spare slots, the product-ID, output and
+ * receive sites (the fixed blob region is scratch and excluded). It is NOT the whole
+ * image; where "nothing was written at all" matters, the test also asserts that
+ * fake_lv2_poke_count did not move. */
 struct snap { uint64_t event, enable, startup, input, spare, helper, pid0, pid1,
-                       ecode, ncode; };
+                       ecode, ncode, call, cap, slot5, slot6, recv0, recv1, recv2; };
+
+/* Fill the row's three receive-limit patches (data-block sites 7-9) and plant the
+ * qwords they were researched against. */
+static void plant_recv_rows(void)
+{
+	int i;
+
+	for (i = 0; i < RECV_PATCHES_N; i++) {
+		g_ent.recv_patches[i].kind = DS45_KPATCH_WORD;
+		g_ent.recv_patches[i].addr = RECV_SITE(i);
+		g_ent.recv_patches[i].expect = qhash(RECV_Q(i));
+		g_ent.recv_patches[i].value = RECV_WORD;
+		put_q(RECV_QA(i), RECV_Q(i));
+	}
+}
+
+/* Fill the row's four output patches (data-block sites 3-6) and the three receive
+ * patches (7-9), and plant the qwords they were researched against. A test that
+ * wants the output sites applied sets g_cfg.shim_output_hook (and
+ * shim_output_mode) after this. */
+static void plant_output_rows(void)
+{
+	g_ent.output_patches[0].kind = DS45_KPATCH_BRANCHL;
+	g_ent.output_patches[0].addr = OUT_CALL_QA;
+	g_ent.output_patches[0].expect = qhash(OUT_Q(0));
+	g_ent.output_patches[0].value = 0;                 /* filled in at install */
+	g_ent.output_patches[1].kind = DS45_KPATCH_WORD;
+	g_ent.output_patches[1].addr = OUT_CAP_SITE;
+	g_ent.output_patches[1].expect = qhash(OUT_Q(1));
+	g_ent.output_patches[1].value = CAP_WORD;
+	g_ent.output_patches[2].kind = DS45_KPATCH_PTR;
+	g_ent.output_patches[2].addr = OUT_SLOT5;
+	g_ent.output_patches[2].expect = OLD_BUF;          /* PTR rows compare the value */
+	g_ent.output_patches[2].value = 0;
+	g_ent.output_patches[3].kind = DS45_KPATCH_PTR;
+	g_ent.output_patches[3].addr = OUT_SLOT6;
+	g_ent.output_patches[3].expect = OLD_BUF + 1;
+	g_ent.output_patches[3].value = 0;
+	put_q(OUT_CALL_QA, OUT_Q(0));
+	put_q(OUT_CAP_QA, OUT_Q(1));
+	put_q(OUT_SLOT5, OLD_BUF);
+	put_q(OUT_SLOT6, OLD_BUF + 1);
+	plant_recv_rows();
+}
+
+/* The packet buffer in a blob loaded at base. */
+static uint64_t pktbuf_at(uint64_t base)
+{
+	return base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pktbuf);
+}
+
+/* "bl target" as PowerPC encodes it (AA = 0, LK = 1), worked out here
+ * independently of kpatch_branchl_word. */
+static uint32_t ppc_bl(uint64_t from, uint64_t to)
+{
+	return 0x48000001u | (uint32_t)((to - from) & 0x03FFFFFCu);
+}
 
 static void take_snap(struct snap *s)
 {
+	s->call    = rd(OUT_CALL_QA);
+	s->cap     = rd(OUT_CAP_QA);
+	s->slot5   = rd(OUT_SLOT5);
+	s->slot6   = rd(OUT_SLOT6);
+	s->recv0   = rd(RECV_QA(0));
+	s->recv1   = rd(RECV_QA(1));
+	s->recv2   = rd(RECV_QA(2));
 	s->event   = rd(EVENT_SLOT);
 	s->enable  = rd(ENABLE_SLOT);
 	s->startup = rd(STARTUP_SLOT);
@@ -398,6 +506,61 @@ static void take_snap(struct snap *s)
 static int snap_eq(const struct snap *a, const struct snap *b)
 {
 	return memcmp(a, b, sizeof(*a)) == 0;
+}
+
+/* The overrun hazard (review C1/R19): the input slot back on the original transport
+ * read (no bounce) while a receive-limit word is still raised to 0x50. Sampled at
+ * every kernel read while installed as fake_lv2_on_peek, so it sees the state after
+ * each write; g_haz_bad counts the samples that showed the hazard. */
+static int g_haz_in_cb, g_haz_bad, g_haz_checks, g_haz_chain;
+static void haz_on_peek(uint64_t addr)
+{
+	int i, raised = 0;
+
+	if (g_haz_in_cb)
+		return;
+	if (g_haz_chain)                 /* also keep the write log (wlog_start was called) */
+		wlog_on_peek(addr);
+	g_haz_in_cb = 1;
+	g_haz_checks++;
+	for (i = 0; i < RECV_PATCHES_N; i++)
+		if ((uint32_t)rd(RECV_QA(i)) == RECV_WORD)
+			raised = 1;
+	if (raised && rd(INPUT_SLOT) == INPUT_ORIG)
+		g_haz_bad++;
+	g_haz_in_cb = 0;
+}
+
+/* An adoption that must be REFUSED as a whole (a receive word recorded as applied
+ * is not ours): the call fails, no poke and no spare-slot borrow, the refusal is
+ * traced with the offending receive sites' mask (bits 7-9), and the snapshotted
+ * qwords (struct snap: the redirects, the buffer slots and every word, hence the
+ * input bounce and the raised limits still consistent) are equal. The guarantee
+ * that NOTHING at all changed is the poke count: it does not move across the
+ * refused install, nor across a later unhook and scrub (which find nothing to
+ * undo: no journal, no armed scrub). Returns 0 or a line number. */
+static int adopt_refused_check(uint32_t want_mask)
+{
+	struct snap before, after;
+	int pokes;
+
+	take_snap(&before);
+	pokes = fake_lv2_poke_count;
+	g_spare_calls = 0;
+	g_tr_refused = 0;
+	g_haz_checks = g_haz_bad = g_haz_in_cb = 0;
+	fake_lv2_on_peek = haz_on_peek;
+	CHECK_SUB(kshim_install_from(&g_ent, 1) == KSHIM_FAILED ? 0 : __LINE__);
+	fake_lv2_on_peek = NULL;
+	CHECK_SUB(fake_lv2_poke_count == pokes && g_spare_calls == 0 ? 0 : __LINE__);
+	CHECK_SUB(g_tr_refused == want_mask ? 0 : __LINE__);
+	CHECK_SUB(g_haz_bad == 0 ? 0 : __LINE__);
+	kshim_unhook();
+	kshim_scrub();
+	CHECK_SUB(fake_lv2_poke_count == pokes ? 0 : __LINE__);
+	take_snap(&after);
+	CHECK_SUB(snap_eq(&before, &after) ? 0 : __LINE__);
+	return 0;
 }
 
 /* A refusal before anything is written, borrowed or allocated (defined below,
@@ -472,7 +635,7 @@ static int check_blob_image(void)
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 7 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 11 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
 	          EVENT_ORIG ? 0 : __LINE__);
@@ -490,6 +653,42 @@ static int check_blob_image(void)
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_id_bd)) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_id_fallback)) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_last_handle)) == 0 ? 0 : __LINE__);
+	/* the DS3-route output fields: the sender's address from the row, the mode
+	 * from the config (setup leaves it 0), everything else cleared */
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_output)) ==
+	          OUTPUT_ORIG ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, out_mode)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, out_seq)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_calls)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_cap_len)) == 0 ? 0 : __LINE__);
+	for (i = 0; i < 64; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_out_cap) + i] == 0 ? 0 : __LINE__);
+	for (i = 0; i < 80; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, out_buf) + i] == 0 ? 0 : __LINE__);
+	for (i = 0; i < 96; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, pktbuf) + i] == 0 ? 0 : __LINE__);
+	/* the rumble-aware capture (debug only) starts cleared */
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, dbg_out_on_pad)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_on_count)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_off_count)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_off_armed)) == 0 ? 0 : __LINE__);
+	for (i = 0; i < 64; i++) {
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_out_on_cap) + i] == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_out_off_cap) + i] == 0 ? 0 : __LINE__);
+	}
+	/* version 10: the input bounce buffer and its four counters start cleared (the
+	 * blob writes them from Task 14; the installer must not seed them) */
+	for (i = 0; i < 96; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, inbuf) + i] == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_bounce)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_big)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_drop)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_err)) == 0 ? 0 : __LINE__);
+	/* version 11: the raw report capture starts cleared too */
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_raw_len)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_raw_seq)) == 0 ? 0 : __LINE__);
+	for (i = 0; i < 64; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_in_raw) + i] == 0 ? 0 : __LINE__);
 
 	cfg = db + offsetof(ds45_shim_data_t, cfg);
 	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, deadzone)] == 12 ? 0 : __LINE__);
@@ -523,6 +722,8 @@ static int check_blob_image(void)
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig)) == HELPER_Q ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 8) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 16) == 0 ? 0 : __LINE__);
+	for (i = 3; i < DS45_SHIM_PID_SITES; i++)       /* the output sites: not enabled */
+		CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * i) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, pid_applied)) == 1 ? 0 : __LINE__);
 
 	/* flush OPD placed just past the blob: { entry, kernel TOC } */
@@ -975,6 +1176,97 @@ static int test_stable_id_switch(void)
 	return 0;
 }
 
+/* SHIM_OUTPUT_MODE reaches the blob as out_mode, only for 0..2 (the parser
+ * clamps; the block builder must not trust it), and the sender's address comes
+ * from the firmware row. */
+static int test_output_fields(void)
+{
+	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	static const int modes[] = { 0, 1, 2, 3, -1, 99 };
+	static const uint32_t want[] = { 0, 1, 2, 0, 0, 0 };
+	size_t m;
+
+	for (m = 0; m < sizeof modes / sizeof modes[0]; m++) {
+		setup();
+		g_cfg.shim_output_mode = modes[m];
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		CHECK((rd(db + offsetof(ds45_shim_data_t, out_mode)) >> 32) == want[m]);
+		CHECK(rd(db + offsetof(ds45_shim_data_t, orig_output)) == OUTPUT_ORIG);
+		kshim_remove();
+	}
+
+	/* a row without the output sender (the built-in row until it is filled)
+	 * writes a zero there */
+	setup();
+	g_ent.orig_output = 0;
+	g_cfg.shim_output_mode = 2;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(rd(db + offsetof(ds45_shim_data_t, orig_output)) == 0);
+	CHECK((rd(db + offsetof(ds45_shim_data_t, out_mode)) >> 32) == 2);
+	kshim_remove();
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* With SHIM_OUTPUT_HOOK off the output sites (3-9) are never selected: a row full
+ * of output patches installs exactly like one without - the same number of
+ * writes, the same pid_applied bits (version 7's), zero pid_orig past site 2, the
+ * output qwords never written - in both SHIM_INLINE_PID settings, and whatever
+ * the output mode. (This test used to also forge an applied bit for site 3 and
+ * expect adoption to ignore it; adoption now restores what the install recorded
+ * whatever the config says, so that case lives in test_output_adopt_v8.) */
+static int test_output_sites_hook_off(void)
+{
+	const uint64_t orig_at = BLOB_BASE + DS45_SHIM_OFF_DATA +
+	                         offsetof(ds45_shim_data_t, pid_orig);
+	const uint64_t applied_at = BLOB_BASE + DS45_SHIM_OFF_DATA +
+	                            offsetof(ds45_shim_data_t, pid_applied);
+	int g, i, mode, pokes, bare_pokes;
+
+	for (g = 0; g < 2; g++) {
+		/* the baseline: the same install with no output rows at all */
+		setup();
+		g_cfg.shim_inline_pid = g;
+		pokes = fake_lv2_poke_count;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		bare_pokes = fake_lv2_poke_count - pokes;
+		kshim_remove();
+
+		for (mode = 0; mode < 3; mode++) {
+			setup();
+			plant_output_rows();
+			g_cfg.shim_inline_pid = g;
+			g_cfg.shim_output_hook = 0;
+			g_cfg.shim_output_mode = mode;
+			wlog_start();
+			pokes = fake_lv2_poke_count;
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			fake_lv2_on_peek = NULL;
+			CHECK(fake_lv2_poke_count - pokes == bare_pokes);
+			CHECK(rd(OUT_CALL_QA) == OUT_Q(0) && rd(OUT_CAP_QA) == OUT_Q(1));
+			CHECK(rd(OUT_SLOT5) == OLD_BUF && rd(OUT_SLOT6) == OLD_BUF + 1);
+			for (i = 0; i < OUT_PATCHES_N; i++) {
+				CHECK(!wlog_has(OUT_QA(i)));
+				CHECK(rd(orig_at + 8 * (3 + i)) == 0);
+			}
+			CHECK(!wlog_has(OUT_SLOT5) && !wlog_has(OUT_SLOT6));
+			/* nor the receive-limit words (sites 7-9) */
+			for (i = 0; i < RECV_PATCHES_N; i++) {
+				CHECK(rd(RECV_QA(i)) == RECV_Q(i));
+				CHECK(!wlog_has(RECV_QA(i)));
+				CHECK(rd(orig_at + 8 * (7 + i)) == 0);
+			}
+			CHECK((rd(applied_at) >> 32) == (g ? 7u : 1u));
+			/* the output sender's address and the mode still reach the block */
+			CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
+			         offsetof(ds45_shim_data_t, orig_output)) == OUTPUT_ORIG);
+			kshim_remove();
+			CHECK(fake_lv2_out_of_bounds == 0);
+		}
+	}
+	return 0;
+}
+
 static int test_event_code_hash_mismatch(void)
 {
 	struct snap before;
@@ -1307,11 +1599,13 @@ static int test_adopt_skips_corrupt_orig(void)
 	CHECK(rd(PID1_QA) == pid1_changed);                      /* left as found */
 
 	/* a bit for a site the install did not apply, with garbage behind it, is
-	 * not trusted either: nothing beyond the redirects is restored */
+	 * not trusted either: nothing beyond the redirects is restored. (Bits 7-9, the
+	 * receive limits, are left out here: a forged receive bit refuses the whole
+	 * adoption, see test_recv_adopt_v10.) */
 	setup();
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED); /* helper only */
 	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_applied),
-	      (uint64_t)0xFFFFFFFFu << 32);
+	      (uint64_t)0xFFFFFC7Fu << 32);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_remove();
 	CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
@@ -1477,6 +1771,1253 @@ static int test_helper_branch_row(void)
 	return 0;
 }
 
+/* ----- the DS3-route output sites (data-block sites 3-6) ------------------ */
+
+/* The four output sites as they stand after an install at base: the call site a
+ * bl to the blob's output entry (the high half of its qword; the low half kept)
+ * or untouched, the cap word the low half of its qword or untouched, and both TOC
+ * slots on the blob's packet buffer (and that plus one) or untouched; and, as
+ * sites 7-9, the three receive-limit words (the low half of their qwords, the high
+ * half kept) or untouched. */
+static int check_out_sites(uint64_t base, int call, int cap, int buf, int recv)
+{
+	int i;
+
+	const uint64_t bl = ((uint64_t)ppc_bl(OUT_CALL_QA, base + DS45_SHIM_OFF_OUTPUT) << 32) |
+	                    (OUT_Q(0) & 0xFFFFFFFFULL);
+
+	CHECK_SUB(rd(OUT_CALL_QA) == (call ? bl : OUT_Q(0)) ? 0 : __LINE__);
+	CHECK_SUB(rd(OUT_CAP_QA) == (cap ? ((OUT_Q(1) & HI32) | CAP_WORD) : OUT_Q(1))
+	          ? 0 : __LINE__);
+	CHECK_SUB(rd(OUT_SLOT5) == (buf ? pktbuf_at(base) : OLD_BUF) ? 0 : __LINE__);
+	CHECK_SUB(rd(OUT_SLOT6) == (buf ? pktbuf_at(base) + 1 : OLD_BUF + 1) ? 0 : __LINE__);
+	for (i = 0; i < RECV_PATCHES_N; i++)
+		CHECK_SUB(rd(RECV_QA(i)) == (recv ? ((RECV_Q(i) & HI32) | RECV_WORD) : RECV_Q(i))
+		          ? 0 : __LINE__);
+	return 0;
+}
+
+static uint64_t pid_orig_at(uint64_t base, int site)
+{
+	return rd(base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_orig) +
+	          8 * (uint64_t)site);
+}
+
+static uint32_t pid_applied_at(uint64_t base)
+{
+	return (uint32_t)(rd(base + DS45_SHIM_OFF_DATA +
+	                     offsetof(ds45_shim_data_t, pid_applied)) >> 32);
+}
+
+/* Make the memory behind output row k (0..3) differ from what the row expects. */
+static void tamper_out(int k)
+{
+	switch (k) {
+	case 0: put_q(OUT_CALL_QA, OUT_Q(0) ^ 1); break;
+	case 1: put_q(OUT_CAP_QA, OUT_Q(1) ^ 1); break;
+	case 2: put_q(OUT_SLOT5, OLD_BUF + 0x10); break;
+	default: put_q(OUT_SLOT6, OLD_BUF + 0x11); break;
+	}
+}
+
+/* Which output sites a configuration selects (SHIM_OUTPUT_HOOK / _MODE, and the
+ * row's orig_output, since the stub tail-branches to it): sites 3, 5 and 6 with
+ * the hook on in any mode, site 4 (the cap word) and sites 7-9 (the receive-limit
+ * words, which exist for the same full-length reports the cap word lets out) only
+ * in probe and full mode, and none at all when the row has no sender address. An
+ * out-of-range mode is observe, exactly as the block's out_mode treats it. With
+ * SHIM_INPUT_HOOK off (in_off) the rewriting stages cannot be installed - the
+ * bounce hook that makes room for the 79-byte report is not there - so site 4 and
+ * sites 7-9 are not selected and out_mode is written 0 whatever the mode; the
+ * output hook stays an observer (call site and buffer slots still apply, as in
+ * observe mode). For each case the install must leave exactly those sites patched,
+ * record exactly their bits and originals, journal exactly those writes, and
+ * unload must restore the image. (The dedicated receive-row cases are the
+ * test_recv_* tests.) */
+static int test_output_sites_gated(void)
+{
+	static const struct {
+		int hook, mode;
+		uint64_t orig_output;
+		int call, cap, buf;
+		int in_off;                 /* SHIM_INPUT_HOOK = 0 */
+	} c[] = {
+		/* hook off: nothing beyond version 7, whatever the mode */
+		{ 0, 0, OUTPUT_ORIG, 0, 0, 0, 0 },
+		{ 0, 1, OUTPUT_ORIG, 0, 0, 0, 0 },
+		{ 0, 2, OUTPUT_ORIG, 0, 0, 0, 0 },
+		/* hook on: observe takes the call site and the buffer slots ... */
+		{ 1, 0, OUTPUT_ORIG, 1, 0, 1, 0 },
+		/* ... probe and full add the cap word */
+		{ 1, 1, OUTPUT_ORIG, 1, 1, 1, 0 },
+		{ 1, 2, OUTPUT_ORIG, 1, 1, 1, 0 },
+		/* ... but not without the input hook (the bounce): observe only, no cap word */
+		{ 1, 0, OUTPUT_ORIG, 1, 0, 1, 1 },
+		{ 1, 1, OUTPUT_ORIG, 1, 0, 1, 1 },
+		{ 1, 2, OUTPUT_ORIG, 1, 0, 1, 1 },
+		/* out-of-range modes are observe */
+		{ 1, 3, OUTPUT_ORIG, 1, 0, 1, 0 },
+		{ 1, -1, OUTPUT_ORIG, 1, 0, 1, 0 },
+		{ 1, 99, OUTPUT_ORIG, 1, 0, 1, 0 },
+		/* no sender address in the row: the stub would branch to 0, so no output
+		 * site is touched, whatever the config */
+		{ 1, 0, 0, 0, 0, 0, 0 },
+		{ 1, 1, 0, 0, 0, 0, 0 },
+		{ 1, 2, 0, 0, 0, 0, 0 },
+		{ 0, 1, 0, 0, 0, 0, 0 },
+	};
+	struct snap before, after;
+	uint32_t want_mask;
+	size_t t;
+	int g, i, pokes, n;
+
+	for (t = 0; t < sizeof c / sizeof c[0]; t++)
+		for (g = 0; g < 2; g++) {
+			setup();
+			plant_output_rows();
+			g_ent.orig_output = c[t].orig_output;
+			g_cfg.shim_inline_pid = g;
+			g_cfg.shim_output_hook = c[t].hook;
+			g_cfg.shim_output_mode = c[t].mode;
+			g_cfg.shim_input_hook = !c[t].in_off;
+			take_snap(&before);
+
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			CHECK(check_out_sites(BLOB_BASE, c[t].call, c[t].cap, c[t].buf, c[t].cap) == 0);
+			/* the stage the blob runs: the mode, but 0 without the input hook */
+			CHECK((rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
+			          offsetof(ds45_shim_data_t, out_mode)) >> 32) ==
+			      (uint32_t)((c[t].in_off || c[t].mode < 0 || c[t].mode > 2) ? 0 : c[t].mode));
+			CHECK(rd(INPUT_SLOT) == (c[t].in_off ? INPUT_ORIG : BLOB_BASE + DS45_SHIM_OFF_INPUT));
+			want_mask = 1u | (g ? 6u : 0u) | (c[t].call ? 8u : 0u) |
+			            (c[t].cap ? 16u : 0u) | (c[t].buf ? 96u : 0u) |
+			            (c[t].cap ? 0x380u : 0u);   /* the receive words follow the cap word */
+			CHECK(pid_applied_at(BLOB_BASE) == want_mask);
+			CHECK(pid_orig_at(BLOB_BASE, 3) == (c[t].call ? OUT_Q(0) : 0));
+			CHECK(pid_orig_at(BLOB_BASE, 4) == (c[t].cap ? OUT_Q(1) : 0));
+			CHECK(pid_orig_at(BLOB_BASE, 5) == (c[t].buf ? OLD_BUF : 0));
+			CHECK(pid_orig_at(BLOB_BASE, 6) == (c[t].buf ? OLD_BUF + 1 : 0));
+			for (i = 0; i < RECV_PATCHES_N; i++)
+				CHECK(pid_orig_at(BLOB_BASE, 7 + i) == (c[t].cap ? RECV_Q(i) : 0));
+
+			/* the journal: helper, [2 inline,] the output sites (the receive words
+			 * with the cap word), the redirects (2 without the input hook) - one qword
+			 * write each on unload */
+			n = 1 + (g ? 2 : 0) + c[t].call + c[t].cap + 2 * c[t].buf +
+			    (c[t].in_off ? 2 : 3) + 3 * c[t].cap;
+			pokes = fake_lv2_poke_count;
+			kshim_unhook();
+			CHECK(fake_lv2_poke_count - pokes == n);
+			kshim_scrub();
+			take_snap(&after);
+			CHECK(snap_eq(&before, &after));
+			CHECK(fake_lv2_out_of_bounds == 0);
+		}
+	return 0;
+}
+
+/* Site index -> row: sites 3, 4, 5, 6 are the row's output_patches[0..3] and 7, 8, 9
+ * its recv_patches[0..2], each with its own address, so a site that reached the
+ * wrong row would read, verify or patch the wrong qword. With all selected, each
+ * row's own qword changes to its own value and its own original is recorded at its
+ * own index; tampering with row k's memory (and only that) refuses the install, and
+ * with the cap and receive rows unselected (observe mode) tampering with them is
+ * never noticed. */
+static int test_output_site_index_mapping(void)
+{
+	int k;
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_inline_pid = 1;
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);
+	CHECK(pid_applied_at(BLOB_BASE) == 0x3FFu);
+	CHECK(pid_orig_at(BLOB_BASE, 0) == HELPER_Q);
+	CHECK(pid_orig_at(BLOB_BASE, 1) == PID0_Q && pid_orig_at(BLOB_BASE, 2) == PID1_Q);
+	CHECK(pid_orig_at(BLOB_BASE, 3) == OUT_Q(0));      /* output_patches[0] */
+	CHECK(pid_orig_at(BLOB_BASE, 4) == OUT_Q(1));      /* [1] */
+	CHECK(pid_orig_at(BLOB_BASE, 5) == OLD_BUF);       /* [2] */
+	CHECK(pid_orig_at(BLOB_BASE, 6) == OLD_BUF + 1);   /* [3] */
+	CHECK(pid_orig_at(BLOB_BASE, 7) == RECV_Q(0));     /* recv_patches[0..2] */
+	CHECK(pid_orig_at(BLOB_BASE, 8) == RECV_Q(1));
+	CHECK(pid_orig_at(BLOB_BASE, 9) == RECV_Q(2));
+	kshim_remove();
+
+	for (k = 0; k < OUT_PATCHES_N; k++) {
+		struct snap before;
+
+		setup();
+		plant_output_rows();
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = 1;
+		tamper_out(k);
+		take_snap(&before);
+		CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+	}
+
+	/* observe mode: only the cap row is out of the picture */
+	for (k = 0; k < OUT_PATCHES_N; k++) {
+		setup();
+		plant_output_rows();
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = 0;
+		tamper_out(k);
+		if (k == 1) {
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			CHECK(rd(OUT_CAP_QA) == (OUT_Q(1) ^ 1));       /* never looked at */
+			CHECK(pid_orig_at(BLOB_BASE, 4) == 0);
+			kshim_remove();
+			CHECK(rd(OUT_CAP_QA) == (OUT_Q(1) ^ 1));
+		} else {
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+		}
+	}
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* The call site is a bl to the blob's output entry, so it follows the load base
+ * (a WORD row does not): same site, two bases, two encodings - each worked out
+ * independently here - and an adopted install at the second base restores it. */
+static int test_output_branchl_follows_load_base(void)
+{
+	static const uint64_t base[2] = { BLOB_BASE, BLOB_BASE + 0x40000 };
+	struct snap pristine, after;
+	uint64_t h[2];
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		setup();
+		plant_output_rows();
+		g_ent.exec_base = base[i];
+		g_ent.exec_bound = base[i] + 0x4000;
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = 1;
+		take_snap(&pristine);
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+
+		h[i] = rd(OUT_CALL_QA);
+		CHECK((uint32_t)(h[i] >> 32) ==
+		      ppc_bl(OUT_CALL_QA, base[i] + DS45_SHIM_OFF_OUTPUT));
+		CHECK((h[i] & 0xFFFFFFFFULL) == (OUT_Q(0) & 0xFFFFFFFFULL));   /* low half kept */
+		CHECK(check_out_sites(base[i], 1, 1, 1, 1) == 0);
+		CHECK(pid_orig_at(base[i], 3) == OUT_Q(0));
+
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);     /* adopted */
+		CHECK(rd(OUT_CALL_QA) == h[i]);
+		kshim_remove();
+		take_snap(&after);
+		CHECK(snap_eq(&pristine, &after));
+		CHECK(rd(OUT_CALL_QA) == OUT_Q(0));
+	}
+	CHECK(h[0] != h[1]);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* The two TOC slots are redirected into the blob's own packet buffer: one holds
+ * its address, the other that plus one, at any load base and in observe as well
+ * as probe mode; the buffer lies inside the installed data block, 8-aligned with
+ * room for its 96 bytes; unload puts the old values back. */
+static int test_buffer_slots_point_into_blob(void)
+{
+	static const uint64_t base[2] = { BLOB_BASE, BLOB_BASE + 0x40000 };
+	uint64_t pb[2], off;
+	int i, mode;
+
+	for (i = 0; i < 2; i++)
+		for (mode = 0; mode < 2; mode++) {
+			setup();
+			plant_output_rows();
+			g_ent.exec_base = base[i];
+			g_ent.exec_bound = base[i] + 0x4000;
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+
+			pb[i] = pktbuf_at(base[i]);
+			CHECK(rd(OUT_SLOT5) == pb[i]);
+			CHECK(rd(OUT_SLOT6) == pb[i] + 1);
+			CHECK((pb[i] & 7) == 0);
+			CHECK(pb[i] >= base[i] + DS45_SHIM_OFF_DATA);
+			CHECK(pb[i] + sizeof(((ds45_shim_data_t *)0)->pktbuf) <=
+			      base[i] + DS45_SHIM_BLOB_LEN);
+
+			kshim_remove();
+			CHECK(rd(OUT_SLOT5) == OLD_BUF);
+			CHECK(rd(OUT_SLOT6) == OLD_BUF + 1);
+			for (off = 0; off < (uint64_t)DS45_SHIM_BLOB_LEN + 16; off += 8)
+				CHECK(rd(base[i] + off) == 0);
+		}
+	CHECK(pb[0] != pb[1]);                    /* the slots follow the load base */
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* Any one output site not holding what it was researched against fails the whole
+ * install, before anything is written: the call site and the cap word by hash,
+ * the two TOC slots by exact value. Statically (zero pokes, nothing borrowed) and
+ * as a change between the verify and the apply (nothing lasting written: every
+ * kernel qword is as found once the change is undone). */
+static uint64_t g_toctou_addr, g_toctou_val;
+static void toctou_out_on_peek(uint64_t addr)
+{
+	if (addr == g_toctou_addr)
+		put_q(addr, g_toctou_val);
+}
+
+static int test_output_site_mismatch_fails_clean(void)
+{
+	static const uint64_t addr[OUT_PATCHES_N] =
+		{ OUT_CALL_QA, OUT_CAP_QA, OUT_SLOT5, OUT_SLOT6 };
+	static const uint64_t found[OUT_PATCHES_N] =
+		{ OUT_Q(0), OUT_Q(1), OLD_BUF, OLD_BUF + 1 };
+	struct snap before, after;
+	int k, mode;
+
+	for (mode = 1; mode < 3; mode++)
+		for (k = 0; k < OUT_PATCHES_N; k++) {
+			/* static mismatch */
+			setup();
+			plant_output_rows();
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			tamper_out(k);
+			take_snap(&before);
+			CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+			CHECK(fake_lv2_out_of_bounds == 0);
+
+			/* the site changes after it was verified, before the apply */
+			setup();
+			plant_output_rows();
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			take_snap(&before);
+			g_toctou_addr = addr[k];
+			g_toctou_val = found[k] ^ 0x10;
+			fake_lv2_on_peek = toctou_out_on_peek;
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+			fake_lv2_on_peek = NULL;
+			CHECK(rd(addr[k]) == g_toctou_val);          /* not clobbered */
+			put_q(addr[k], found[k]);                    /* undo the test's artefact */
+			take_snap(&after);
+			CHECK(snap_eq(&before, &after));
+			CHECK(rd(SPARE_SLOT) == SPARE_STUB);
+			CHECK(fake_lv2_out_of_bounds == 0);
+		}
+	return 0;
+}
+
+/* The call site's bl must reach the blob's output entry (a 26-bit displacement,
+ * +-32 MiB) or the install is refused before the blob is even written. Within
+ * the 8 MiB LV2 window every site reaches every base, so the range cannot fail
+ * for a real row (asserted below); the check is still real code, and the same
+ * step refuses a displacement that cannot be encoded - here a call site that is
+ * not 4-aligned - with nothing written, borrowed or changed. */
+static int test_output_branchl_out_of_range_refused(void)
+{
+	struct snap before;
+
+	CHECK(DS45_LV2_BOUND - DS45_LV2_BASE <= 0x2000000ULL);    /* window within reach */
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	g_ent.output_patches[0].addr = OUT_CALL_QA + 2;   /* its qword still hashes right */
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+	CHECK(fake_lv2_out_of_bounds == 0);
+
+	/* the same row at an encodable address installs */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	kshim_remove();
+	return 0;
+}
+
+/* One poke failing at each step of the final apply, with every output site and
+ * the inline words selected, leaves the image byte-identical (the output sites
+ * included in the snapshot). */
+static int fail_at_out(int poke_index)
+{
+	struct snap before, after;
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_inline_pid = 1;
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	take_snap(&before);
+	g_fault_at = poke_index;
+	fake_lv2_poke_fail_after = g_fault_at;
+	fake_lv2_on_peek = clear_fault_after_failed_poke;
+	CHECK_SUB(kshim_install_from(&g_ent, 1) == KSHIM_FAILED ? 0 : __LINE__);
+	fake_lv2_on_peek = NULL;
+	fake_lv2_poke_fail_after = -1;
+	take_snap(&after);
+	CHECK_SUB(snap_eq(&before, &after) ? 0 : __LINE__);
+	CHECK_SUB(rd(SPARE_SLOT) == SPARE_STUB ? 0 : __LINE__);
+	CHECK_SUB(fake_lv2_out_of_bounds == 0 ? 0 : __LINE__);
+	return 0;
+}
+
+static int test_output_rollback_each_step(void)
+{
+	const int n = 3 + 4 + 3 + 3;  /* helper + 2 inline, 4 output + 3 receive sites, 3 redirects */
+	int pokes, i;
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_inline_pid = 1;
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	pokes = fake_lv2_poke_count;
+	kshim_remove();
+	CHECK(fake_lv2_poke_count - pokes == n + (DS45_SHIM_BLOB_LEN + 16) / 8);
+	for (i = 0; i < n; i++)
+		CHECK(fail_at_out(pokes - n + i) == 0);
+	return 0;
+}
+
+/* The transaction's order, and the data block complete before the first patch.
+ * Order: the helper and inline rows as today, then the two buffer slots back to
+ * back, then the call site, then the cap word, then the event, enable and input
+ * redirects, and last the three receive-limit words (so an unload, last first,
+ * lowers the limits before the input bounce goes away). At each of those writes
+ * the block already carries the magic, the version, the sender's address
+ * (orig_output: the stub tail-branches to it the moment the call site is patched)
+ * and the recorded originals. */
+static int g_ord_in_cb, g_ord_checks, g_ord_bad;
+static void order_on_peek(uint64_t addr)
+{
+	static const uint64_t sites[] = {
+		HELPER_QA, PID0_QA, PID1_QA, OUT_SLOT5, OUT_SLOT6, OUT_CALL_QA, OUT_CAP_QA,
+		RECV_QA(0), RECV_QA(1), RECV_QA(2), EVENT_SLOT, ENABLE_SLOT, INPUT_SLOT
+	};
+	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	int n0, i;
+
+	if (g_ord_in_cb)
+		return;
+	n0 = g_wlog_n;
+	wlog_on_peek(addr);
+	if (g_wlog_n == n0)
+		return;                                   /* not the read-back of a write */
+	for (i = 0; i < (int)(sizeof sites / sizeof sites[0]); i++)
+		if (sites[i] == addr) {
+			g_ord_in_cb = 1;
+			g_ord_checks++;
+			if (rd(db) != DS45_SHIM_MAGIC ||
+			    (uint32_t)(rd(db + offsetof(ds45_shim_data_t, version)) >> 32) !=
+			        DS45_SHIM_VERSION ||
+			    rd(db + offsetof(ds45_shim_data_t, orig_output)) != OUTPUT_ORIG ||
+			    (uint32_t)(rd(db + offsetof(ds45_shim_data_t, pid_applied)) >> 32) != 0x3FFu ||
+			    rd(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 3) != OUT_Q(0) ||
+			    rd(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 5) != OLD_BUF ||
+			    rd(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 7) != RECV_Q(0) ||
+			    rd(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 9) != RECV_Q(2))
+				g_ord_bad++;
+			g_ord_in_cb = 0;
+		}
+}
+
+static int wlog_index(uint64_t addr)
+{
+	int i;
+	for (i = 0; i < g_wlog_n; i++)
+		if (g_wlog[i] == addr)
+			return i;
+	return -1;
+}
+
+static int test_output_apply_order_and_block_complete(void)
+{
+	int helper, p0, p1, s5, s6, call, cap, r0, r1, r2, ev, en, in;
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_inline_pid = 1;
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	wlog_start();
+	g_ord_checks = g_ord_bad = g_ord_in_cb = 0;
+	fake_lv2_on_peek = order_on_peek;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	fake_lv2_on_peek = NULL;
+
+	CHECK(g_ord_checks == 13);                    /* every patched site was checked */
+	CHECK(g_ord_bad == 0);
+
+	helper = wlog_index(HELPER_QA);
+	p0 = wlog_index(PID0_QA);
+	p1 = wlog_index(PID1_QA);
+	s5 = wlog_index(OUT_SLOT5);
+	s6 = wlog_index(OUT_SLOT6);
+	call = wlog_index(OUT_CALL_QA);
+	cap = wlog_index(OUT_CAP_QA);
+	r0 = wlog_index(RECV_QA(0));
+	r1 = wlog_index(RECV_QA(1));
+	r2 = wlog_index(RECV_QA(2));
+	ev = wlog_index(EVENT_SLOT);
+	en = wlog_index(ENABLE_SLOT);
+	in = wlog_index(INPUT_SLOT);
+	CHECK(helper >= 0 && helper < p0 && p0 < p1 && p1 < s5);
+	CHECK(s6 == s5 + 1);                          /* the two slots back to back */
+	CHECK(s6 < call && call < cap && cap < ev);
+	CHECK(ev < en && en < in);
+	/* the receive-limit words come after the redirects (so unload, which undoes the
+	 * journal last first, lowers them before it switches the input bounce off) */
+	CHECK(in < r0 && r0 < r1 && r1 < r2);
+	CHECK(r2 == g_wlog_n - 1);                    /* the last receive word is the last write */
+	kshim_remove();
+	return 0;
+}
+
+/* Remove undoes every output site, in the same journal as the rest. */
+static int test_output_remove_restores_all(void)
+{
+	struct snap before, after;
+	int pokes, g, mode, n;
+
+	for (g = 0; g < 2; g++)
+		for (mode = 0; mode < 3; mode++) {
+			setup();
+			plant_output_rows();
+			g_cfg.shim_inline_pid = g;
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			take_snap(&before);
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			CHECK(check_out_sites(BLOB_BASE, 1, mode != 0, 1, mode != 0) == 0);
+
+			n = 1 + (g ? 2 : 0) + 1 + (mode != 0) + 2 + 3 + 3 * (mode != 0);
+			pokes = fake_lv2_poke_count;
+			kshim_remove();
+			CHECK(fake_lv2_poke_count - pokes == n + (DS45_SHIM_BLOB_LEN + 16) / 8);
+			take_snap(&after);
+			CHECK(snap_eq(&before, &after));
+			CHECK(check_out_sites(BLOB_BASE, 0, 0, 0, 0) == 0);
+			CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
+			CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == 0);
+
+			pokes = fake_lv2_poke_count;
+			kshim_remove();                       /* again: a harmless no-op */
+			CHECK(fake_lv2_poke_count == pokes);
+		}
+	return 0;
+}
+
+/* Adoption restores every site the adopted install recorded as applied - the
+ * output sites included - from the install's own originals, whatever the current
+ * config says (like the inline words). A bit whose site is unpopulated in the row,
+ * already changed, or not carrying our edit is skipped, never written; a row
+ * without the sender address restores no output site; a version-7 block is not
+ * adopted at all. */
+static int test_output_adopt_v8(void)
+{
+	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	struct snap pristine, after;
+	uint32_t mask;
+	int pokes, g, mode, n;
+
+	/* 1. adopt with another config and restore all of it */
+	for (g = 0; g < 2; g++)
+		for (mode = 0; mode < 3; mode++) {
+			setup();
+			plant_output_rows();
+			g_cfg.shim_inline_pid = g;
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			take_snap(&pristine);
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			mask = 1u | (g ? 6u : 0u) | 8u | (mode ? 16u : 0u) | 96u | (mode ? 0x380u : 0u);
+			CHECK(pid_applied_at(BLOB_BASE) == mask);
+
+			g_cfg.shim_inline_pid = !g;           /* the adopter's config differs */
+			g_cfg.shim_output_hook = 0;
+			g_cfg.shim_output_mode = 0;
+			pokes = fake_lv2_poke_count;
+			g_tr_applied_n = 0;
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+			CHECK(fake_lv2_poke_count == pokes);      /* zero pokes */
+			CHECK(g_tr_applied_n == 1 && g_tr_applied == mask);
+			CHECK(check_out_sites(BLOB_BASE, 1, mode != 0, 1, mode != 0) == 0);
+
+			n = 1 + (g ? 2 : 0) + 1 + (mode != 0) + 2 + 3 + 3 * (mode != 0);
+			g_haz_checks = g_haz_bad = g_haz_in_cb = 0;
+			fake_lv2_on_peek = haz_on_peek;   /* never the original read under a raised limit */
+			kshim_unhook();
+			fake_lv2_on_peek = NULL;
+			CHECK(g_haz_checks > 0 && g_haz_bad == 0);
+			CHECK(fake_lv2_poke_count - pokes == n);
+			kshim_scrub();
+			take_snap(&after);
+			CHECK(snap_eq(&pristine, &after));
+			CHECK(check_out_sites(BLOB_BASE, 0, 0, 0, 0) == 0);
+			CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
+			CHECK(fake_lv2_out_of_bounds == 0);
+		}
+
+	/* 2. a forged bit (site 4, never applied in observe mode: the cap qword is not
+	 * carrying our word), a call site and a slot someone changed since: all three
+	 * skipped and left as found; the intact slot 5, helper and redirects restored */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 0;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(pid_applied_at(BLOB_BASE) == (1u | 8u | 96u));
+	put_q(db + offsetof(ds45_shim_data_t, pid_applied),
+	      (uint64_t)(1u | 8u | 16u | 96u) << 32);
+	put_q(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 4, OUT_Q(1));
+	{
+		const uint64_t call_changed = rd(OUT_CALL_QA) ^ 0x1;       /* the low half */
+		const uint64_t slot6_changed = pktbuf_at(BLOB_BASE) + 0x20;
+
+		put_q(OUT_CALL_QA, call_changed);
+		put_q(OUT_SLOT6, slot6_changed);
+		pokes = fake_lv2_poke_count;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+		CHECK(fake_lv2_poke_count == pokes);
+		kshim_unhook();
+		CHECK(fake_lv2_poke_count - pokes == 1 + 1 + 3);   /* helper, slot 5, redirects */
+		kshim_scrub();
+		CHECK(rd(OUT_CALL_QA) == call_changed);               /* left as found */
+		CHECK(rd(OUT_SLOT6) == slot6_changed);
+		CHECK(rd(OUT_CAP_QA) == OUT_Q(1));                    /* never written */
+		CHECK(rd(OUT_SLOT5) == OLD_BUF);                      /* restored */
+		CHECK(rd(HELPER_QA) == HELPER_Q);
+		CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
+	}
+
+	/* 3. a site the adopter's row does not populate is not restored, even with its
+	 * bit set and a good original; nor is any output site when the adopter's row
+	 * has no sender address */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	memset(&g_ent.output_patches[3], 0, sizeof g_ent.output_patches[3]);
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	kshim_unhook();
+	CHECK(fake_lv2_poke_count - pokes == 1 + 1 + 1 + 1 + 3 + 3);  /* all but slot 6 */
+	kshim_scrub();
+	CHECK(rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);         /* left as found */
+	CHECK(rd(OUT_SLOT5) == OLD_BUF && rd(OUT_CALL_QA) == OUT_Q(0));
+	CHECK(rd(OUT_CAP_QA) == OUT_Q(1));
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	g_ent.orig_output = 0;
+	/* the receive words recorded as applied are then not restorable: the adoption is
+	 * refused as a whole (R19), nothing is written and nothing is left to undo */
+	CHECK(adopt_refused_check(0x380u) == 0);
+	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);          /* all left as found */
+	CHECK(fake_lv2_out_of_bounds == 0);
+
+	/* the same row without receive words applied (observe mode): still adopted;
+	 * with no sender address no output site is restorable, so only the helper and
+	 * the redirects are undone */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 0;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	g_ent.orig_output = 0;
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	kshim_unhook();
+	CHECK(fake_lv2_poke_count - pokes == 1 + 3);              /* helper + redirects */
+	kshim_scrub();
+	/* every output and receive site exactly as the observe-mode install left it:
+	 * call site and both buffer slots still ours (not restorable without a sender
+	 * address), cap word and the three receive words never touched */
+	CHECK(check_out_sites(BLOB_BASE, 1, 0, 1, 0) == 0);
+	CHECK(rd(HELPER_QA) == HELPER_Q);                          /* the helper restored */
+	CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(ENABLE_SLOT) == ENABLE_ORIG &&
+	      rd(INPUT_SLOT) == INPUT_ORIG);                       /* the redirects restored */
+	CHECK(fake_lv2_out_of_bounds == 0);
+
+	/* 4. a version-7 block is not adopted (its layout is not ours) */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(DS45_SHIM_VERSION == 11);
+	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)7 << 32) | 1);
+	g_spare_calls = 0;
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+	CHECK(fake_lv2_poke_count == pokes && g_spare_calls == 0);
+	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);          /* left as found */
+	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	kshim_remove();
+	return 0;
+}
+
+/* ----- the receive-limit words (data-block sites 7-9, Task 13) ------------- */
+
+/* Make the memory behind receive row i (0..2) differ from what the row expects. */
+static void tamper_recv(int i)
+{
+	put_q(RECV_QA(i), RECV_Q(i) ^ 1);
+}
+
+/* The receive-limit words follow the cap word's gating (the full-length reports
+ * the cap word lets out are what they let in): applied only with the output hook
+ * set, SHIM_OUTPUT_MODE 1 or 2, a row that names the output sender and the input
+ * hook (SHIM_INPUT_HOOK) on: without the bounce hook the original transport read
+ * would copy a 79-byte report into the pad driver's 64-byte stack buffer. Observe
+ * mode, an out-of-range mode, the hook off, no input hook or no sender address:
+ * none of the three is read, written or recorded - not even a row whose memory is
+ * wrong is noticed. Whenever any of them is applied, so are both buffer slots
+ * (sites 5 and 6): an 80-byte read into the kernel's packet buffer would otherwise
+ * run into the HID client pointer behind it. */
+static int test_recv_sites_gated(void)
+{
+	static const struct {
+		int hook, mode;
+		uint64_t orig_output;
+		int recv;
+		int in_off;                 /* SHIM_INPUT_HOOK = 0 */
+	} c[] = {
+		{ 0, 0, OUTPUT_ORIG, 0, 0 }, { 0, 1, OUTPUT_ORIG, 0, 0 }, { 0, 2, OUTPUT_ORIG, 0, 0 },
+		{ 1, 0, OUTPUT_ORIG, 0, 0 },                         /* observe: none */
+		{ 1, 1, OUTPUT_ORIG, 1, 0 }, { 1, 2, OUTPUT_ORIG, 1, 0 },  /* probe, full: all three */
+		{ 1, 3, OUTPUT_ORIG, 0, 0 }, { 1, -1, OUTPUT_ORIG, 0, 0 }, { 1, 99, OUTPUT_ORIG, 0, 0 },
+		{ 1, 1, 0, 0, 0 }, { 1, 2, 0, 0, 0 }, { 0, 1, 0, 0, 0 },   /* no sender address: none */
+		/* no input hook (no bounce): none, in probe and full mode alike */
+		{ 1, 1, OUTPUT_ORIG, 0, 1 }, { 1, 2, OUTPUT_ORIG, 0, 1 },
+	};
+	struct snap before, after;
+	uint32_t applied;
+	size_t t;
+	int g, i, tamper, pokes, n;
+
+	for (t = 0; t < sizeof c / sizeof c[0]; t++)
+		for (g = 0; g < 2; g++)
+			for (tamper = 0; tamper < 2; tamper++) {
+				if (tamper && c[t].recv)
+					continue;     /* a selected row that is wrong refuses: its own test */
+				setup();
+				plant_output_rows();
+				g_ent.orig_output = c[t].orig_output;
+				g_cfg.shim_inline_pid = g;
+				g_cfg.shim_output_hook = c[t].hook;
+				g_cfg.shim_output_mode = c[t].mode;
+				g_cfg.shim_input_hook = !c[t].in_off;
+				if (tamper)
+					for (i = 0; i < RECV_PATCHES_N; i++)
+						tamper_recv(i);
+				take_snap(&before);
+
+				wlog_start();
+				CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+				fake_lv2_on_peek = NULL;
+				applied = pid_applied_at(BLOB_BASE);
+				CHECK((applied & 0x380u) == (c[t].recv ? 0x380u : 0u));
+				CHECK(!c[t].in_off || (applied & 0x10u) == 0);       /* no cap word either */
+				CHECK(!c[t].in_off ||
+				      (rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
+				          offsetof(ds45_shim_data_t, out_mode)) >> 32) == 0);
+				/* structural: never a receive row without both buffer slots */
+				if (applied & 0x380u)
+					CHECK((applied & 0x60u) == 0x60u);
+				for (i = 0; i < RECV_PATCHES_N; i++) {
+					CHECK(wlog_has(RECV_QA(i)) == c[t].recv);
+					CHECK(pid_orig_at(BLOB_BASE, 7 + i) == (c[t].recv ? RECV_Q(i) : 0));
+					if (!tamper)
+						CHECK(rd(RECV_QA(i)) ==
+						      (c[t].recv ? ((RECV_Q(i) & HI32) | RECV_WORD) : RECV_Q(i)));
+					else
+						CHECK(rd(RECV_QA(i)) == (RECV_Q(i) ^ 1));   /* never looked at */
+				}
+
+				/* helper, [2 inline,] the redirects (2 without the input hook); with the
+				 * output sites selected also the call site and the 2 buffer slots; with
+				 * the receive words also the cap word and the 3 words */
+				n = 1 + (g ? 2 : 0) + (c[t].in_off ? 2 : 3) +
+				    (c[t].hook && c[t].orig_output ? 3 : 0) + 4 * c[t].recv;
+				pokes = fake_lv2_poke_count;
+				kshim_unhook();
+				CHECK(fake_lv2_poke_count - pokes == n);
+				kshim_scrub();
+				take_snap(&after);
+				CHECK(snap_eq(&before, &after));
+				CHECK(fake_lv2_out_of_bounds == 0);
+			}
+	return 0;
+}
+
+/* The built-in DEX 4.92 row carries exactly the three receive-limit rows of the
+ * F9 section 4 facts: WORD rows turning `li r7,0x41` (0x38E00041) into `li r7,0x50`
+ * (0x38E00050; the read limit goes from 0x41 to 0x50), each the LOW half of its
+ * qword, with the FNV of the pristine 8-aligned qword; and nothing touches the
+ * channel-3 limit at 0xF8484, which is a different channel's. */
+static int test_recv_rows_exact(void)
+{
+	static const uint64_t addr[3]    = { 0x80000000000F9094ULL, 0x80000000000F9134ULL,
+	                                     0x80000000000F91F4ULL };
+	static const uint64_t expect[3]  = { 0x069BC077D72F4325ULL, 0x57006EC0FDB88DBCULL,
+	                                     0x995A6CDC70F64A38ULL };
+	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
+	int i;
+
+	CHECK(DS45_SHIM_RECV_PATCHES == 3);
+	CHECK(DS45_SHIM_PID_SITES == 10);
+	CHECK(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES +
+	      DS45_SHIM_RECV_PATCHES == DS45_SHIM_PID_SITES);
+	for (i = 0; i < 3; i++) {
+		CHECK(k->recv_patches[i].kind == DS45_KPATCH_WORD);
+		CHECK(k->recv_patches[i].addr == addr[i]);
+		CHECK((k->recv_patches[i].addr & 7) == 4);     /* the low half of its qword */
+		CHECK(k->recv_patches[i].expect == expect[i]);
+		CHECK(k->recv_patches[i].value == 0x38E00050ULL);
+	}
+	/* the channel-3 limit (0xF8484, in the qword 0xF8480) is not one of the rows */
+	for (i = 0; i < 3; i++)
+		CHECK((k->recv_patches[i].addr & ~7ULL) != 0x80000000000F8480ULL);
+	for (i = 0; i < DS45_SHIM_OUTPUT_PATCHES; i++)
+		CHECK((k->output_patches[i].addr & ~7ULL) != 0x80000000000F8480ULL);
+	return 0;
+}
+
+/* The receive rows depend on the buffer slots (sites 5 and 6): the read limit is
+ * raised to 0x50 only because the buffer behind it now has room. A row whose
+ * buffer-slot rows are not populated (all, or just one of the two) is REFUSED
+ * outright - the install fails, nothing is written, the receive qwords included -
+ * and never applied alone. (site_selected makes the receive rows depend on the
+ * buffer slots' selection, and the buffer slots with an unpopulated row fail the
+ * capture; both halves are exercised here.) */
+static int test_recv_refused_without_buffer_slots(void)
+{
+	struct snap before;
+	int mode, v;
+
+	for (mode = 1; mode < 3; mode++)
+		for (v = 0; v < 3; v++) {
+			setup();
+			plant_output_rows();
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			if (v != 2)
+				memset(&g_ent.output_patches[2], 0, sizeof g_ent.output_patches[2]);
+			if (v != 1)
+				memset(&g_ent.output_patches[3], 0, sizeof g_ent.output_patches[3]);
+			take_snap(&before);
+			CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+			CHECK(rd(RECV_QA(0)) == RECV_Q(0) && rd(RECV_QA(1)) == RECV_Q(1) &&
+			      rd(RECV_QA(2)) == RECV_Q(2));
+			CHECK(fake_lv2_out_of_bounds == 0);
+		}
+	return 0;
+}
+
+/* The converse, fail closed too: with the hook on in probe or full mode the
+ * receive rows are required - a row that names the output sender but leaves a
+ * receive row unpopulated is refused, not installed with a DualSense that stalls.
+ * (Observe mode does not use them, and installs.) */
+static int test_recv_unpopulated_row_refused(void)
+{
+	struct snap before;
+	int mode, k;
+
+	for (mode = 1; mode < 3; mode++)
+		for (k = 0; k < RECV_PATCHES_N; k++) {
+			setup();
+			plant_output_rows();
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			memset(&g_ent.recv_patches[k], 0, sizeof g_ent.recv_patches[k]);
+			take_snap(&before);
+			CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+		}
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 0;
+	memset(g_ent.recv_patches, 0, sizeof g_ent.recv_patches);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(pid_applied_at(BLOB_BASE) == (1u | 8u | 96u));
+	kshim_remove();
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* Each receive word lands as exactly its own qword write with the other half of
+ * the qword preserved (the instruction is the low half; the high half is a
+ * neighbour that must survive), after the cap word AND after the three redirects
+ * (the last writes of the transaction), and with the data block already complete
+ * (including the recorded originals). */
+static int test_recv_apply_order_and_values(void)
+{
+	int i, cap, r[3], in, nwrites[3];
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_inline_pid = 1;
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 2;
+	wlog_start();
+	g_ord_checks = g_ord_bad = g_ord_in_cb = 0;
+	fake_lv2_on_peek = order_on_peek;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	fake_lv2_on_peek = NULL;
+	CHECK(g_ord_checks == 13 && g_ord_bad == 0);
+
+	cap = wlog_index(OUT_CAP_QA);
+	in = wlog_index(INPUT_SLOT);       /* the last redirect */
+	for (i = 0; i < RECV_PATCHES_N; i++) {
+		int w;
+
+		r[i] = wlog_index(RECV_QA(i));
+		nwrites[i] = 0;
+		for (w = 0; w < g_wlog_n; w++)
+			if (g_wlog[w] == RECV_QA(i))
+				nwrites[i]++;
+		CHECK(nwrites[i] == 1);                          /* one write each */
+		/* the new word in the low half, the high half exactly as it was */
+		CHECK(rd(RECV_QA(i)) == ((RECV_Q(i) & HI32) | RECV_WORD));
+		CHECK((rd(RECV_QA(i)) >> 32) == (RECV_Q(i) >> 32));
+		CHECK((uint32_t)rd(RECV_QA(i)) == RECV_WORD);
+	}
+	/* after the cap word and all three redirects, in site order, as the last writes */
+	CHECK(cap < wlog_index(EVENT_SLOT) && wlog_index(EVENT_SLOT) < wlog_index(ENABLE_SLOT));
+	CHECK(wlog_index(ENABLE_SLOT) < in && in < r[0] && r[0] < r[1] && r[1] < r[2]);
+	CHECK(r[2] == g_wlog_n - 1);
+	kshim_remove();
+	for (i = 0; i < RECV_PATCHES_N; i++)
+		CHECK(rd(RECV_QA(i)) == RECV_Q(i));
+	return 0;
+}
+
+/* Any one receive word not holding what its row was researched against fails the
+ * whole install, before anything lasting is written: statically (zero pokes,
+ * nothing borrowed) and as a change between the verify and the apply (every kernel
+ * qword as found once the change is undone), at each of the three in turn, in
+ * probe and in full mode. */
+static int test_recv_site_mismatch_fails_clean(void)
+{
+	struct snap before, after;
+	int i, mode;
+
+	for (mode = 1; mode < 3; mode++)
+		for (i = 0; i < RECV_PATCHES_N; i++) {
+			/* static mismatch */
+			setup();
+			plant_output_rows();
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			tamper_recv(i);
+			take_snap(&before);
+			CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+			CHECK(fake_lv2_out_of_bounds == 0);
+
+			/* the site changes after it was verified, before the apply */
+			setup();
+			plant_output_rows();
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			take_snap(&before);
+			g_toctou_addr = RECV_QA(i);
+			g_toctou_val = RECV_Q(i) ^ 0x10;
+			fake_lv2_on_peek = toctou_out_on_peek;
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+			fake_lv2_on_peek = NULL;
+			CHECK(rd(RECV_QA(i)) == g_toctou_val);            /* not clobbered */
+			put_q(RECV_QA(i), RECV_Q(i));                     /* undo the test's artefact */
+			take_snap(&after);
+			CHECK(snap_eq(&before, &after));
+			CHECK(rd(SPARE_SLOT) == SPARE_STUB);
+			CHECK(fake_lv2_out_of_bounds == 0);
+		}
+	return 0;
+}
+
+/* Remove undoes the receive words with the rest of the journal (and only the
+ * words the install applied). */
+static int test_recv_remove_restores_all(void)
+{
+	struct snap before, after;
+	int pokes, g, mode, i;
+
+	for (g = 0; g < 2; g++)
+		for (mode = 1; mode < 3; mode++) {
+			setup();
+			plant_output_rows();
+			g_cfg.shim_inline_pid = g;
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			take_snap(&before);
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			for (i = 0; i < RECV_PATCHES_N; i++)
+				CHECK(rd(RECV_QA(i)) == ((RECV_Q(i) & HI32) | RECV_WORD));
+
+			/* helper, [2 inline,] call, cap, 2 slots, 3 receive words, 3 redirects */
+			pokes = fake_lv2_poke_count;
+			kshim_remove();
+			CHECK(fake_lv2_poke_count - pokes ==
+			      (11 + (g ? 2 : 0)) + (DS45_SHIM_BLOB_LEN + 16) / 8);
+			take_snap(&after);
+			CHECK(snap_eq(&before, &after));
+			for (i = 0; i < RECV_PATCHES_N; i++)
+				CHECK(rd(RECV_QA(i)) == RECV_Q(i));
+
+			pokes = fake_lv2_poke_count;
+			kshim_remove();                       /* again: a harmless no-op */
+			CHECK(fake_lv2_poke_count == pokes);
+		}
+	return 0;
+}
+
+/* Unload order: the revert is the exact mirror of the install, so the three
+ * receive-limit words go back to 0x41 FIRST - before the input slot stops
+ * bouncing - and only then the redirects, the cap word, the call site and the two
+ * buffer slots, the helper last. (A DualSense in the 79-byte mode polled between
+ * two reverts must never be read by the original with the raised limit.) The same
+ * order for an unload that adopted the install, and for one with the inline words. */
+static int unload_order_check(int adopt, int inl)
+{
+	static const uint64_t mirror[] = {          /* the revert order, install's reversed */
+		RECV_QA(2), RECV_QA(1), RECV_QA(0), INPUT_SLOT, ENABLE_SLOT, EVENT_SLOT,
+		OUT_CAP_QA, OUT_CALL_QA, OUT_SLOT6, OUT_SLOT5
+	};
+	int idx[sizeof mirror / sizeof mirror[0]];
+	size_t m;
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_inline_pid = inl;
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 2;
+	CHECK_SUB(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED ? 0 : __LINE__);
+	if (adopt)
+		CHECK_SUB(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY ? 0 : __LINE__);
+
+	wlog_start();
+	g_haz_checks = g_haz_bad = g_haz_in_cb = 0;
+	g_haz_chain = 1;
+	fake_lv2_on_peek = haz_on_peek;
+	kshim_unhook();
+	g_haz_chain = 0;
+	fake_lv2_on_peek = NULL;
+	CHECK_SUB(g_haz_checks > 0 && g_haz_bad == 0 ? 0 : __LINE__);   /* no overrun state, ever */
+	CHECK_SUB(g_wlog_n == 10 + 1 + (inl ? 2 : 0) ? 0 : __LINE__);   /* every journalled qword */
+	for (m = 0; m < sizeof mirror / sizeof mirror[0]; m++) {
+		idx[m] = wlog_index(mirror[m]);
+		CHECK_SUB(idx[m] >= 0 ? 0 : __LINE__);
+		if (m)
+			CHECK_SUB(idx[m - 1] < idx[m] ? 0 : __LINE__);
+	}
+	CHECK_SUB(idx[0] == 0 ? 0 : __LINE__);          /* the receive words are the first reverts */
+	CHECK_SUB(idx[2] + 1 == idx[3] ? 0 : __LINE__); /* ... directly followed by the input slot */
+	CHECK_SUB(wlog_index(HELPER_QA) == g_wlog_n - 1 ? 0 : __LINE__);   /* the helper last */
+	kshim_scrub();
+	return 0;
+}
+
+static int test_unload_order_recv_before_input(void)
+{
+	CHECK(unload_order_check(0, 0) == 0);
+	CHECK(unload_order_check(0, 1) == 0);
+	CHECK(unload_order_check(1, 0) == 0);
+	CHECK(unload_order_check(1, 1) == 0);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* Adoption of a version-10 block restores every receive word the adopted install
+ * recorded, from its own originals, whatever the current config says - like the
+ * other output sites. For a receive word, a forged bit (the word is not there), a
+ * changed qword, a corrupt recorded original, a row the adopter does not populate
+ * and a row without the sender address are all REFUSALS of the whole adoption (R19:
+ * KSHIM_FAILED, nothing written or journalled, the previous blob left live and
+ * consistent, the refusal traced with the offending sites' mask), because
+ * journalling the redirects while a limit stays raised would put the original,
+ * unbounced read back in front of a 0x50 limit; only non-receive sites are merely
+ * skipped (see test_output_adopt_v8). A version-9 block (no receive support, a layout
+ * that stops short of the new fields) is not adopted at all. */
+static int test_recv_adopt_v10(void)
+{
+	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	struct snap pristine, after;
+	int pokes, g, i;
+
+	CHECK(DS45_SHIM_VERSION == 11);
+
+	/* 1. adopt with another config and restore all of it */
+	for (g = 0; g < 2; g++) {
+		setup();
+		plant_output_rows();
+		g_cfg.shim_inline_pid = g;
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = 1;
+		take_snap(&pristine);
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		CHECK((pid_applied_at(BLOB_BASE) & 0x380u) == 0x380u);
+
+		g_cfg.shim_inline_pid = !g;               /* the adopter's config differs */
+		g_cfg.shim_output_hook = 0;
+		g_cfg.shim_output_mode = 0;
+		pokes = fake_lv2_poke_count;
+		g_tr_applied_n = 0;
+		g_tr_skipped = g_tr_refused = 0;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+		CHECK(fake_lv2_poke_count == pokes);      /* zero pokes */
+		CHECK(g_tr_applied_n == 1 && (g_tr_applied & 0x380u) == 0x380u);
+		CHECK(g_tr_skipped == 0 && g_tr_refused == 0);
+		for (i = 0; i < RECV_PATCHES_N; i++)
+			CHECK(rd(RECV_QA(i)) == ((RECV_Q(i) & HI32) | RECV_WORD));
+
+		g_haz_checks = g_haz_bad = g_haz_in_cb = 0;
+		fake_lv2_on_peek = haz_on_peek;       /* no original read under a raised word */
+		kshim_unhook();
+		fake_lv2_on_peek = NULL;
+		CHECK(g_haz_checks > 0 && g_haz_bad == 0);
+		CHECK(fake_lv2_poke_count - pokes == 11 + (g ? 2 : 0));  /* the whole journal */
+		kshim_scrub();
+		take_snap(&after);
+		CHECK(snap_eq(&pristine, &after));
+		for (i = 0; i < RECV_PATCHES_N; i++)
+			CHECK(rd(RECV_QA(i)) == RECV_Q(i));
+		CHECK(fake_lv2_out_of_bounds == 0);
+	}
+
+	/* 2. forged bits in a block that never applied the words (observe mode): the
+	 * qwords do not carry our word, so the adoption is REFUSED as a whole (R19) */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 0;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(pid_applied_at(BLOB_BASE) == (1u | 8u | 96u));
+	put_q(db + offsetof(ds45_shim_data_t, pid_applied),
+	      (uint64_t)(1u | 8u | 96u | 0x380u) << 32);
+	for (i = 0; i < RECV_PATCHES_N; i++)
+		put_q(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * (7 + i), RECV_Q(i));
+	CHECK(adopt_refused_check(0x380u) == 0);
+	for (i = 0; i < RECV_PATCHES_N; i++)
+		CHECK(rd(RECV_QA(i)) == RECV_Q(i));                /* never written */
+
+	/* 3. one recorded original that no longer hashes to its row (word 8): refused
+	 * as a whole; every word, both slots and all redirects exactly as found */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	put_q(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 8, RECV_Q(1) ^ 0x10);
+	CHECK(adopt_refused_check(0x100u) == 0);
+	for (i = 0; i < RECV_PATCHES_N; i++)
+		CHECK(rd(RECV_QA(i)) == ((RECV_Q(i) & HI32) | RECV_WORD));   /* still raised */
+	CHECK(rd(OUT_SLOT5) == pktbuf_at(BLOB_BASE) &&
+	      rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);                /* still the blob's */
+
+	/* 4. a row the adopter does not populate (receive row 2): refused as a whole,
+	 * and so is an adopter whose row has no sender address (every receive word is
+	 * then not restorable) */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	memset(&g_ent.recv_patches[2], 0, sizeof g_ent.recv_patches[2]);
+	CHECK(adopt_refused_check(0x200u) == 0);
+	CHECK(rd(RECV_QA(2)) == ((RECV_Q(2) & HI32) | RECV_WORD));       /* still raised */
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	g_ent.orig_output = 0;
+	CHECK(adopt_refused_check(0x380u) == 0);
+	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);    /* all left as found */
+
+	/* 4b. a receive word recorded as applied whose qword has since changed (no
+	 * longer exactly our patched value), for each of the three words in turn:
+	 * refused as a whole - nothing written, the journal empty, the input slot, both
+	 * buffer slots and every word (the changed one included) as found, so the
+	 * bounce and the raised limits stay consistent with each other - and a later
+	 * unload does nothing */
+	for (i = 0; i < RECV_PATCHES_N; i++) {
+		setup();
+		plant_output_rows();
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = 1;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		put_q(RECV_QA(i), rd(RECV_QA(i)) ^ 0x1);             /* someone else's edit */
+		CHECK(adopt_refused_check(0x80u << i) == 0);
+		CHECK(rd(RECV_QA(i)) == (((RECV_Q(i) & HI32) | RECV_WORD) ^ 0x1));   /* as found */
+		CHECK(rd(OUT_SLOT5) == pktbuf_at(BLOB_BASE) &&
+		      rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);                    /* as found */
+		CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);            /* bounce stays */
+		CHECK(fake_lv2_out_of_bounds == 0);
+	}
+
+	/* 4c. the refused adoption leaves the blob adoptable once the word is whole
+	 * again (nothing was armed or journalled by the refusal), and that adoption's
+	 * unload is the full, ordered, hazard-free revert of a fresh install's */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	g_cfg.shim_inline_pid = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	put_q(RECV_QA(1), rd(RECV_QA(1)) ^ 0x1);
+	CHECK(adopt_refused_check(0x100u) == 0);
+	put_q(RECV_QA(1), rd(RECV_QA(1)) ^ 0x1);                 /* whole again */
+	pokes = fake_lv2_poke_count;
+	g_tr_skipped = 0;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	CHECK(fake_lv2_poke_count == pokes && g_tr_skipped == 0);
+	g_haz_checks = g_haz_bad = g_haz_in_cb = 0;
+	fake_lv2_on_peek = haz_on_peek;
+	kshim_unhook();
+	fake_lv2_on_peek = NULL;
+	CHECK(fake_lv2_poke_count - pokes == 13);                /* the 13-entry journal */
+	CHECK(g_haz_checks > 0 && g_haz_bad == 0);
+	kshim_scrub();
+	for (i = 0; i < RECV_PATCHES_N; i++)
+		CHECK(rd(RECV_QA(i)) == RECV_Q(i));
+	CHECK(rd(INPUT_SLOT) == INPUT_ORIG && rd(HELPER_QA) == HELPER_Q);
+
+	/* 5. a version-9 block is not adopted: it has no receive support and a shorter
+	 * layout. Nothing is written or borrowed, everything is left as found */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)9 << 32) | 1);
+	g_spare_calls = 0;
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+	CHECK(fake_lv2_poke_count == pokes && g_spare_calls == 0);
+	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);    /* left as found */
+	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	kshim_remove();
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
 /* The DS3 info block of the facts note, section C1.5 (Bluetooth variant). */
 static const uint8_t c15_template[0x56] = {
 	0x00, 0x05, 0x03, 0x50, 0x00, 0x00, 0x00, 0x00,
@@ -1546,6 +3087,52 @@ static int test_builtin_table(void)
 	CHECK(k->inline_patches[1].addr == 0x800000000011B5ECULL);
 	CHECK(k->inline_patches[1].expect == 0xF86140C9C3D7FB8DULL);
 	CHECK(k->inline_patches[1].value == 0x4BFFFC48ULL);
+
+	/* the DS3-route output rows (facts note 2026-11-03: F1.1 the two TOC slots,
+	 * F5 the hashes): sites 3-6 in order, and the sender the hook tail-calls */
+	CHECK(DS45_SHIM_OUTPUT_PATCHES == 4);
+	CHECK(DS45_SHIM_RECV_PATCHES == 3);
+	CHECK(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES +
+	      DS45_SHIM_RECV_PATCHES == DS45_SHIM_PID_SITES);
+	CHECK(DS45_SHIM_PID_SITES == 10);
+	CHECK(k->orig_output == 0x800000000010283CULL);
+	/* [0] site 3: the bl to the sender, retargeted at install to the blob's entry */
+	CHECK(k->output_patches[0].kind == DS45_KPATCH_BRANCHL);
+	CHECK(k->output_patches[0].addr == 0x80000000002A2DE8ULL);
+	CHECK(k->output_patches[0].expect == 0x2A29E6BB7BA10D5EULL);
+	CHECK(k->output_patches[0].value == 0);
+	/* [1] site 4: the send cap, cmplwi cr7,r31,0x4D (the compare is the low half) */
+	CHECK(k->output_patches[1].kind == DS45_KPATCH_WORD);
+	CHECK(k->output_patches[1].addr == 0x80000000000F8D74ULL);
+	CHECK(k->output_patches[1].expect == 0xBF27C253F5228E13ULL);
+	CHECK(k->output_patches[1].value == 0x2B9F004DULL);
+	/* [2] [3] sites 5 and 6: the two TOC slots; a PTR row compares the current
+	 * value (the old buffer, and the buffer plus one), the new one is the blob's
+	 * packet buffer, filled in at install */
+	CHECK(k->output_patches[2].kind == DS45_KPATCH_PTR);
+	CHECK(k->output_patches[2].addr == 0x8000000000372650ULL);
+	CHECK(k->output_patches[2].expect == 0x80000000004326C8ULL);
+	CHECK(k->output_patches[2].value == 0);
+	CHECK(k->output_patches[3].kind == DS45_KPATCH_PTR);
+	CHECK(k->output_patches[3].addr == 0x8000000000372660ULL);
+	CHECK(k->output_patches[3].expect == 0x80000000004326C9ULL);
+	CHECK(k->output_patches[3].value == 0);
+
+	/* the receive-limit words (note 2026-11-03: F9 section 4), sites 7-9: WORD rows
+	 * `li r7,0x50`, the low half of their qwords (the rows themselves are pinned in
+	 * test_recv_rows_exact) */
+	CHECK(k->recv_patches[0].kind == DS45_KPATCH_WORD);
+	CHECK(k->recv_patches[0].addr == 0x80000000000F9094ULL);
+	CHECK(k->recv_patches[0].expect == 0x069BC077D72F4325ULL);
+	CHECK(k->recv_patches[0].value == 0x38E00050ULL);
+	CHECK(k->recv_patches[1].kind == DS45_KPATCH_WORD);
+	CHECK(k->recv_patches[1].addr == 0x80000000000F9134ULL);
+	CHECK(k->recv_patches[1].expect == 0x57006EC0FDB88DBCULL);
+	CHECK(k->recv_patches[1].value == 0x38E00050ULL);
+	CHECK(k->recv_patches[2].kind == DS45_KPATCH_WORD);
+	CHECK(k->recv_patches[2].addr == 0x80000000000F91F4ULL);
+	CHECK(k->recv_patches[2].expect == 0x995A6CDC70F64A38ULL);
+	CHECK(k->recv_patches[2].value == 0x38E00050ULL);
 	return 0;
 }
 
@@ -1625,11 +3212,25 @@ static int test_builtin_row_on_pristine_image(void)
 {
 	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
 	uint64_t spare = k->syscall_table + (uint64_t)k->spare_syscall * 8;
-	uint64_t q[DS45_SHIM_PID_SITES], qa[DS45_SHIM_PID_SITES];
+	/* the code sites the installer applies: the helper, the two inline words, the
+	 * output call site and the cap word, and the three receive-limit words. The two
+	 * output TOC slots (sites 5 and 6) are data, past the code image, and are
+	 * planted below. */
+	enum { NSITES = DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + 2 +
+	                DS45_SHIM_RECV_PATCHES,
+	       CALL = DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES, CAP = CALL + 1,
+	       RECV = CAP + 1 };
+	/* FNV of the three receive qwords once `li r7,0x50` is in (F9 section 4) */
+	static const uint64_t recv_patched_hash[DS45_SHIM_RECV_PATCHES] =
+		{ 0x069BCF77D72F5CA2ULL, 0x57005FC0FDB8743FULL, 0x995A7DDC70F6671BULL };
+	/* the channel-3 receive limit lives in the qword at 0xF8480 and is not ours */
+	const uint64_t ch3_qa = 0x80000000000F8480ULL;
+	uint64_t q[NSITES], qa[NSITES], ch3;
 	long n;
-	int inl, i;
+	int inl, mode, i, j;
 
-	for (inl = 0; inl < 2; inl++) {
+	for (inl = 0; inl < 2; inl++)
+	for (mode = 0; mode < 2; mode++) {
 		setup();
 		n = load_image_492();
 		if (n == 0) {
@@ -1642,12 +3243,24 @@ static int test_builtin_row_on_pristine_image(void)
 		CHECK(in_image(k->fp_addr, n) && k->fp_addr + DS45_FP_LEN <= B + (uint64_t)n);
 		CHECK(in_image(k->event_code_addr & ~7ULL, n));
 		CHECK(in_image(k->enable_code_addr & ~7ULL, n));
-		for (i = 0; i < DS45_SHIM_PID_SITES; i++) {
+		for (i = 0; i < NSITES; i++) {
 			qa[i] = (i < DS45_SHIM_PID_PATCHES ? k->pid_patches[i].addr
-			         : k->inline_patches[i - DS45_SHIM_PID_PATCHES].addr) & ~7ULL;
+			         : i < CALL ? k->inline_patches[i - DS45_SHIM_PID_PATCHES].addr
+			         : i < RECV ? k->output_patches[i - CALL].addr
+			         : k->recv_patches[i - RECV].addr) & ~7ULL;
 			CHECK(in_image(qa[i], n));
 			q[i] = rd(qa[i]);
 		}
+		/* the output call site and the cap word are code (in the image) ... */
+		CHECK(k->output_patches[0].addr == 0x80000000002A2DE8ULL);
+		CHECK(k->output_patches[1].addr == 0x80000000000F8D74ULL);
+		ch3 = rd(ch3_qa);
+		/* ... and the two TOC slots (0x372650, 0x372660) are past it, so they are
+		 * planted with the values the row expects, like the other data slots */
+		CHECK(!in_image(k->output_patches[2].addr, n) &&
+		      !in_image(k->output_patches[3].addr, n));
+		put_q(k->output_patches[2].addr, k->output_patches[2].expect);
+		put_q(k->output_patches[3].addr, k->output_patches[3].expect);
 		/* ... and what is planted lies past it, so it masks no image byte; the
 		 * fixed exec region (0x57C000..) is past the code image too, so it reads
 		 * zero and the installer's zero-check passes */
@@ -1662,6 +3275,8 @@ static int test_builtin_row_on_pristine_image(void)
 		put_q(k->alloc_desc + 8, KERNEL_TOC);
 		fake_spare_syscall = (int)k->spare_syscall;
 		g_cfg.shim_inline_pid = inl;
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = mode;         /* 0 observe: no cap word; 1 probe */
 
 		CHECK(kshim_install_from(ds45_shim_table, ds45_shim_table_count) ==
 		      KSHIM_INSTALLED);
@@ -1671,10 +3286,34 @@ static int test_builtin_row_on_pristine_image(void)
 		CHECK(rd(qa[0]) != q[0]);
 		CHECK((rd(qa[1]) != q[1]) == (inl != 0));
 		CHECK((rd(qa[2]) != q[2]) == (inl != 0));
+		/* the call site is now a bl to the blob's output entry (high half of its
+		 * qword, the low half kept), the cap word only outside observe mode, and
+		 * the TOC slots hold the blob's packet buffer and that plus one */
+		CHECK(rd(qa[CALL]) == (((uint64_t)ppc_bl(k->output_patches[0].addr,
+		      k->exec_base + DS45_SHIM_OFF_OUTPUT) << 32) | (q[CALL] & 0xFFFFFFFFULL)));
+		CHECK((rd(qa[CAP]) != q[CAP]) == (mode != 0));
+		if (mode)
+			CHECK(rd(qa[CAP]) == ((q[CAP] & HI32) | 0x2B9F004DULL));
+		CHECK(rd(k->output_patches[2].addr) == pktbuf_at(k->exec_base));
+		CHECK(rd(k->output_patches[3].addr) == pktbuf_at(k->exec_base) + 1);
+		/* the receive-limit words go in with the cap word (probe and full mode only):
+		 * `li r7,0x50` in the low half, the high half kept, the whole qword hashing
+		 * to the researched value; in observe mode they stay pristine. The channel-3
+		 * limit is never touched. */
+		for (j = 0; j < DS45_SHIM_RECV_PATCHES; j++) {
+			CHECK((rd(qa[RECV + j]) != q[RECV + j]) == (mode != 0));
+			if (mode) {
+				CHECK(rd(qa[RECV + j]) == ((q[RECV + j] & HI32) | 0x38E00050ULL));
+				CHECK(qhash(rd(qa[RECV + j])) == recv_patched_hash[j]);
+			}
+		}
+		CHECK(rd(ch3_qa) == ch3);
 
 		kshim_remove();
-		for (i = 0; i < DS45_SHIM_PID_SITES; i++)
+		for (i = 0; i < NSITES; i++)
 			CHECK(rd(qa[i]) == q[i]);
+		CHECK(rd(k->output_patches[2].addr) == k->output_patches[2].expect);
+		CHECK(rd(k->output_patches[3].addr) == k->output_patches[3].expect);
 		CHECK(rd(k->event_slot) == k->event_expect);
 		CHECK(rd(k->enable_slot) == k->enable_expect);
 		CHECK(rd(k->input_slot) == k->input_expect);
@@ -1696,6 +3335,8 @@ int run_tests(void)
 		test_inline_rows_gated,
 		test_input_hook_gated,
 		test_stable_id_switch,
+		test_output_fields,
+		test_output_sites_hook_off,
 		test_event_code_hash_mismatch,
 		test_enable_code_hash_mismatch,
 		test_code_hash_is_of_the_aligned_qword,
@@ -1715,6 +3356,25 @@ int run_tests(void)
 		test_remove_restores_all,
 		test_word_rows_do_not_follow_the_load_base,
 		test_helper_branch_row,
+		test_output_sites_gated,
+		test_output_site_index_mapping,
+		test_output_branchl_follows_load_base,
+		test_buffer_slots_point_into_blob,
+		test_output_site_mismatch_fails_clean,
+		test_output_branchl_out_of_range_refused,
+		test_output_rollback_each_step,
+		test_output_apply_order_and_block_complete,
+		test_output_remove_restores_all,
+		test_output_adopt_v8,
+		test_recv_sites_gated,
+		test_recv_rows_exact,
+		test_recv_refused_without_buffer_slots,
+		test_recv_unpopulated_row_refused,
+		test_recv_apply_order_and_values,
+		test_unload_order_recv_before_input,
+		test_recv_site_mismatch_fails_clean,
+		test_recv_remove_restores_all,
+		test_recv_adopt_v10,
 		test_builtin_table,
 		test_builtin_row_on_pristine_image,
 	};

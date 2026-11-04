@@ -244,10 +244,59 @@ static int test_shim_stable_id_key(void)
 	return 0;
 }
 
+/* SHIM_OUTPUT_HOOK gates the output (rumble / LED / light bar) hook and
+ * SHIM_OUTPUT_MODE picks its stage: 0 observe, 1 probe, 2 full. The hook is on
+ * by default and the mode defaults to 2 (full); modes 0 and 1 stay selectable,
+ * the mode is clamped to 0..2 and junk leaves either default. */
+static int test_shim_output_keys(void)
+{
+	ds45_config_t c;
+
+	ds45_config_defaults(&c);
+	CHECK(c.shim_output_hook == 1);
+	CHECK(c.shim_output_mode == 2);
+	c = cfg_from("ENABLE_SHIM = 1\n");
+	CHECK(c.shim_output_hook == 1);
+	CHECK(c.shim_output_mode == 2);
+
+	c = cfg_from("SHIM_OUTPUT_HOOK = 0\n");
+	CHECK(c.shim_output_hook == 0);
+	CHECK(c.shim_output_mode == 2);
+	CHECK(c.enable_shim == 0);                             /* a separate key */
+	c = cfg_from("shim_output_hook = 0\n");
+	CHECK(c.shim_output_hook == 0);
+	c = cfg_from("SHIM_OUTPUT_HOOK = 7\n");
+	CHECK(c.shim_output_hook == 1);
+	c = cfg_from("SHIM_OUTPUT_HOOK = abc\n");
+	CHECK(c.shim_output_hook == 1);
+	c = cfg_from("SHIM_OUTPUT_HOOK = 0\nSHIM_OUTPUT_HOOK = 1\n");
+	CHECK(c.shim_output_hook == 1);
+
+	c = cfg_from("SHIM_OUTPUT_MODE = 1\n");
+	CHECK(c.shim_output_mode == 1);
+	CHECK(c.shim_output_hook == 1);
+	c = cfg_from("shim_output_mode = 2\n");
+	CHECK(c.shim_output_mode == 2);
+	c = cfg_from("SHIM_OUTPUT_MODE = 0\n");
+	CHECK(c.shim_output_mode == 0);
+	c = cfg_from("SHIM_OUTPUT_MODE = 9\n");                /* clamped to the top */
+	CHECK(c.shim_output_mode == 2);
+	c = cfg_from("SHIM_OUTPUT_MODE = -3\n");               /* clamped to the bottom */
+	CHECK(c.shim_output_mode == 0);
+	c = cfg_from("SHIM_OUTPUT_MODE = abc\n");              /* junk keeps the default */
+	CHECK(c.shim_output_mode == 2);
+	c = cfg_from("SHIM_OUTPUT_MODE = 2\nSHIM_OUTPUT_MODE = xyz\n");
+	CHECK(c.shim_output_mode == 2);                        /* junk after a good line */
+	c = cfg_from("SHIM_OUTPUT_MODE = 2\nSHIM_OUTPUT_MODE = 1\n");
+	CHECK(c.shim_output_mode == 1);                        /* last line wins */
+	return 0;
+}
+
 int run_tests(void)
 {
 	int r;
 
+	if ((r = test_shim_output_keys()) != 0) return r;
 	if ((r = test_shim_stable_id_key()) != 0) return r;
 	if ((r = test_shim_is_off_by_default()) != 0) return r;
 	if ((r = test_shim_is_enabled_by_one()) != 0) return r;

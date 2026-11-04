@@ -353,6 +353,19 @@ typedef struct {
 	 * default; 0 makes the shim use its per-boot counter identity instead, which is
 	 * also what it falls back to whenever the address cannot be read safely. */
 	int      shim_stable_id;
+	/* SHIM_OUTPUT_HOOK (0/1, VSH builds only): install the hook on the kernel's
+	 * Bluetooth output call so a DualSense gets the rumble, player LEDs and light
+	 * bar the PS3 asks of a DualShock 3. On by default. SHIM_OUTPUT_MODE (0..2,
+	 * clamped; default 2) picks the stage: 0 observe only (capture and count, pass
+	 * the call through), 1 probe (fixed blue light bar and player LED 1, for
+	 * tests), 2 full translation (rumble, player LEDs and light bar colour by
+	 * controller number). Modes 1 and 2 need the input hook (SHIM_INPUT_HOOK, default
+	 * 1): they let the DualSense switch to its 79-byte input report, which only the
+	 * input redirect can take in safely. With SHIM_INPUT_HOOK = 0 the output hook
+	 * only observes (the shim writes out_mode 0 and installs neither the send-length
+	 * cap nor the receive limits), whatever SHIM_OUTPUT_MODE says. */
+	int      shim_output_hook;
+	int      shim_output_mode;
 #ifdef DS45_LV2DUMP
 	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
 	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */

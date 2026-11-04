@@ -45,6 +45,13 @@ this empirically and the brief's own rule ("any relocation that would need a
 load base other than the ADDR64 list is an error") agrees: it needs the load
 base, so it is rebased. See the task report for the evidence.
 
+shim_output (the DS3-route output hook) is entered by a plain `bl` from the
+kernel's code, not through a descriptor; it still has an .opd descriptor so the
+code entry is found the same way as shim_pid_ok's, and it is exported as
+DS45_SHIM_OFF_OUTPUT. Its stub adopts the blob TOC from a literal word in .text
+(`.quad .TOC.@tocbase`, an aligned R_PPC64_TOC word): the generic absolute-word
+rule above rebases it with the descriptors' words, wherever it sits.
+
 Standard library only; it never imports anything from the directory of the ELF
 it is handed.
 """
@@ -110,7 +117,7 @@ class PackError(Exception):
 
 class Packed(object):
     def __init__(self, blob, relocs, off_data, off_event, off_enable,
-                 off_input, off_pid_ok):
+                 off_input, off_pid_ok, off_output):
         self.blob = blob
         self.blob_len = len(blob)
         self.relocs = relocs
@@ -120,6 +127,7 @@ class Packed(object):
         self.off_enable = off_enable
         self.off_input = off_input
         self.off_pid_ok = off_pid_ok
+        self.off_output = off_output
 
 
 def _cstr(buf, off):
@@ -317,8 +325,23 @@ def pack(data):
                 "shim_pid_ok uses the TOC/data (relocation type %d at 0x%x); "
                 "it must run with the kernel's r2" % (rtype, roff))
 
+    # shim_output is entered by a plain `bl` from the kernel, not through its
+    # descriptor; the descriptor exists only so its code entry can be read here,
+    # exactly as for shim_pid_ok. The stub keeps its blob-TOC literal in .text
+    # (an aligned R_PPC64_TOC word); the relocation loop above already rebases it
+    # like any other absolute word.
+    output = find("shim_output")
+    desc = output["value"]                           # .opd descriptor address
+    if desc + 8 > len(image):
+        raise PackError("shim_output descriptor is outside the image")
+    off_output = struct.unpack(">Q", bytes(image[desc:desc + 8]))[0]
+    if not in_text(off_output) or off_output % 4 != 0:
+        raise PackError(
+            "shim_output descriptor 0x%x holds entry 0x%x, which is not an "
+            "aligned address in an executable section" % (desc, off_output))
+
     return Packed(bytes(image), sorted(set(rebase)), off_data, off_event,
-                  off_enable, off_input, off_pid_ok)
+                  off_enable, off_input, off_pid_ok, off_output)
 
 
 def render_header(packed, source):
@@ -369,6 +392,8 @@ def render_header(packed, source):
       % packed.off_input)
     w("#define DS45_SHIM_OFF_PID_OK 0x%x /* entry (code) of shim_pid_ok */"
       % packed.off_pid_ok)
+    w("#define DS45_SHIM_OFF_OUTPUT 0x%x /* entry (code) of shim_output, reached by bl */"
+      % packed.off_output)
     w("")
     w("#endif /* DS45_SHIM_BLOB_H */")
     return "\n".join(out) + "\n"

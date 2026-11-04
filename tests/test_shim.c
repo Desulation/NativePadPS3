@@ -1,4 +1,4 @@
-/* SOURCES: ds_body.c sixaxis.c ../shim/ds3_report.c ../shim/shim.c ../shim/entry.c */
+/* SOURCES: ds_body.c sixaxis.c ../shim/ds3_report.c ../shim/ds3_output.c ../shim/shim.c ../shim/entry.c */
 /*
  * Host tests for the kernel shim (data block v3): the decision logic in
  * shim/shim.c - the product-ID helper, the start-up and enable completions,
@@ -19,6 +19,7 @@
 #include "ds45_state.h"
 #include "../shim/shim_abi.h"
 #include "../shim/ds3_report.h"
+#include "../shim/ds3_output.h"
 #include "../shim/shim.h"
 
 /* shim/entry.c: the one data object the plugin and the blob share, and the
@@ -27,6 +28,8 @@ extern ds45_shim_data_t ds45_shim_data;
 int shim_event(void *drv, long status, long len);
 int shim_enable(void *drv, long status, long len);
 int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag);
+int shim_output(const uint8_t *buf, uint16_t len, uint8_t *rid,
+                const uint8_t **obuf, uint16_t *olen);
 
 /* Sony USB identity. */
 #define VID_SONY        0x054C
@@ -689,8 +692,12 @@ static int test_input_identity_unknown_passthrough(void)
 static int      g_oe_calls, g_on_calls, g_oi_calls;
 static void    *g_oe_drv, *g_on_drv;
 static long     g_oe_status, g_oe_len, g_on_status, g_on_len;
-static uint8_t  g_oi_report[RPT_LEN];  /* what the original read delivers ... */
-static int      g_oi_len;              /* ... and how many bytes it reports */
+static uint8_t  g_oi_report[96];       /* what the original read delivers ... */
+static int      g_oi_len;              /* ... and how many bytes it reports (< 0: an error, nothing copied) */
+static void    *g_oi_xport;            /* what the last call to the original was given */
+static uint8_t *g_oi_dst;
+static uint16_t g_oi_len_in;
+static int      g_oi_flag;
 
 static int fake_orig_event(void *drv, long status, long len)
 {
@@ -712,11 +719,14 @@ static int fake_orig_enable(void *drv, long status, long len)
 
 static int fake_orig_input(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 {
-	(void)xport;
-	(void)len_in;
-	(void)flag;
 	g_oi_calls++;
-	memcpy(dst, g_oi_report, (size_t)g_oi_len);
+	g_oi_xport = xport;
+	g_oi_dst = dst;
+	g_oi_len_in = len_in;
+	g_oi_flag = flag;
+	/* Like the transport read: copy the whole packet into dst with no bound. */
+	if (dst && g_oi_len > 0)
+		memcpy(dst, g_oi_report, (size_t)g_oi_len);
 	return g_oi_len;
 }
 
@@ -734,6 +744,10 @@ static void glue_reset(void)
 	g_oe_status = g_oe_len = g_on_status = g_on_len = -1;
 	memset(g_oi_report, 0, sizeof(g_oi_report));
 	g_oi_len = 0;
+	g_oi_xport = (void *)1;
+	g_oi_dst = (uint8_t *)1;
+	g_oi_len_in = 0xFFFF;
+	g_oi_flag = -1;
 }
 
 /* A DualSense's first start-up event is answered 0 without the original; the
@@ -891,6 +905,704 @@ static int test_input_passthrough(void)
 	CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 0) == DS_BASIC_LEN);
 	CHECK(dst[DS_BASIC_LEN] == 0xCC);
 	CHECK(ds45_shim_data.stat_translated == 0);
+	return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Bounce-buffer input hook (full-report input, output mode 1 or 2)           */
+/* ------------------------------------------------------------------------ */
+
+/* A long record that never translates (report id 0x02), recognisable byte by byte. */
+static void record_make(uint8_t *r, int n)
+{
+	int i;
+
+	for (i = 0; i < n; i++)
+		r[i] = (uint8_t)(i * 7 + 3);
+	r[0] = 0x02;
+}
+
+/* The shim's own bounce buffer is untouched (all zero as installed). */
+static int inbuf_clean(void)
+{
+	static const uint8_t zero[sizeof(ds45_shim_data.inbuf)];
+
+	return memcmp(ds45_shim_data.inbuf, zero, sizeof(zero)) == 0;
+}
+
+static int bounce_counters_zero(void)
+{
+	return ds45_shim_data.dbg_in_bounce == 0 && ds45_shim_data.dbg_in_big == 0 &&
+	       ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0;
+}
+
+/* Mode 0, any other mode value, and a disabled shim never bounce: the original
+ * gets the caller's own dst, length and flag, first, as it always did. */
+static int test_input_mode0_unchanged(void)
+{
+	static const uint32_t modes[] = { 0, 3, 99, 0xFFFFFFFFu };
+	uint8_t dst[64], want[DS3_REPORT_LEN];
+	ds45_shim_cfg_t cfg;
+	unsigned i;
+	int mode;
+
+	for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+		glue_reset();
+		ds45_shim_data.out_mode = modes[i];
+		cfg = ds45_shim_data.cfg;
+		report_basic(g_oi_report);
+		g_oi_len = DS_BASIC_LEN;
+		CHECK(ds3_report_from_dualsense_basic(g_oi_report, DS_BASIC_LEN, &cfg, want) == 0);
+		memset(dst, 0xCC, sizeof(dst));
+
+		CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 7) == DS3_REPORT_LEN);
+		CHECK(g_oi_calls == 1);
+		CHECK(g_oi_xport == (void *)&g_x_ds && g_oi_dst == dst);
+		CHECK(g_oi_len_in == sizeof(dst) && g_oi_flag == 7);
+		CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);
+		CHECK(dst[DS3_REPORT_LEN] == 0xCC);
+		CHECK(ds45_shim_data.stat_translated == 1 && ds45_shim_data.stat_passed == 0);
+		CHECK(ds45_shim_data.dbg_input_calls == 1 && ds45_shim_data.dbg_input_ds == 1);
+		CHECK(bounce_counters_zero() && inbuf_clean());
+	}
+
+	/* a disabled shim in the bounce modes: the original's result, untouched */
+	for (mode = 0; mode <= 2; mode++) {
+		glue_reset();
+		ds45_shim_data.enabled = 0;
+		ds45_shim_data.out_mode = (uint32_t)mode;
+		report_basic(g_oi_report);
+		g_oi_len = DS_BASIC_LEN;
+		memset(dst, 0xCC, sizeof(dst));
+
+		CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 7) == DS_BASIC_LEN);
+		CHECK(g_oi_calls == 1 && g_oi_dst == dst && g_oi_len_in == sizeof(dst));
+		CHECK(g_oi_flag == 7);
+		CHECK(memcmp(dst, g_oi_report, DS_BASIC_LEN) == 0);
+		CHECK(dst[DS_BASIC_LEN] == 0xCC);
+		CHECK(ds45_shim_data.stat_translated == 0 && ds45_shim_data.stat_passed == 0);
+		CHECK(ds45_shim_data.dbg_input_calls == 0);
+		CHECK(bounce_counters_zero() && inbuf_clean());
+	}
+	return 0;
+}
+
+/* In modes 1 and 2 a DS3's read is bounced like every other (the raised limit is
+ * shared, nothing may reach the caller's 64-byte buffer unbounded), but its
+ * bytes and return value arrive in the caller's buffer exactly as the original
+ * produced them, and nothing is translated. */
+static int test_input_ds3_bounced_unchanged(void)
+{
+	uint8_t dst[96], want[96];
+	int mode, i;
+
+	for (mode = 1; mode <= 2; mode++) {
+		glue_reset();
+		ds45_shim_data.out_mode = (uint32_t)mode;
+		for (i = 0; i < RPT_LEN; i++)
+			g_oi_report[i] = (uint8_t)(i * 3 + 1);
+		g_oi_report[0] = 0x01;
+		g_oi_len = DS3_REPORT_LEN;
+		memset(dst, 0xCC, sizeof(dst));
+		memset(want, 0xCC, sizeof(want));
+		memcpy(want, g_oi_report, DS3_REPORT_LEN);
+
+		CHECK(shim_input(&g_x_ds3, dst, 64, 5) == DS3_REPORT_LEN);
+		CHECK(g_oi_calls == 1);
+		CHECK(g_oi_xport == (void *)&g_x_ds3);
+		CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);   /* bounced */
+		CHECK(g_oi_flag == 5);
+		CHECK(memcmp(dst, want, sizeof(dst)) == 0);       /* byte-identical, no extra */
+		CHECK(ds45_shim_data.stat_passed == 1 && ds45_shim_data.stat_translated == 0);
+		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 0);
+		CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
+		CHECK(ds45_shim_data.dbg_input_calls == 1 && ds45_shim_data.dbg_input_ds == 0);
+		CHECK(ds45_shim_data.dbg_input_padmiss == 0);
+
+		/* a 0x41-byte read fits a 65-byte caller, byte for byte, but is dropped
+		 * for a 64-byte one (and counted); more than 0x41 is "big" */
+		g_oi_len = 0x41;
+		memset(dst, 0xCC, sizeof(dst));
+		memset(want, 0xCC, sizeof(want));
+		memcpy(want, g_oi_report, 0x41);
+		CHECK(shim_input(&g_x_ds3, dst, 0x41, 5) == 0x41);
+		CHECK(memcmp(dst, want, sizeof(dst)) == 0);
+		CHECK(ds45_shim_data.dbg_in_big == 0 && ds45_shim_data.dbg_in_drop == 0);
+		memset(dst, 0xCC, sizeof(dst));
+		CHECK(shim_input(&g_x_ds3, dst, 64, 5) == 0);
+		CHECK(dst[0] == 0xCC && dst[63] == 0xCC);
+		CHECK(ds45_shim_data.dbg_in_bounce == 3 && ds45_shim_data.dbg_in_drop == 1);
+		CHECK(ds45_shim_data.stat_translated == 0);
+	}
+	return 0;
+}
+
+/* A DualSense's 78-byte 0x31 report lands in the bounce buffer and comes out as
+ * the 49-byte DS3 report in the caller's buffer, and nothing past 49 bytes. */
+static int test_input_bounce_translates_full_report(void)
+{
+	uint8_t buf[96], want[DS3_REPORT_LEN];
+	int mode, i;
+
+	ds3_neutral(want);
+	for (mode = 1; mode <= 2; mode++) {
+		glue_reset();
+		ds45_shim_data.out_mode = (uint32_t)mode;
+		report_neutral(g_oi_report);
+		g_oi_len = RPT_LEN;
+		memset(buf, 0xCC, sizeof(buf));
+
+		CHECK(shim_input(&g_x_ds, buf, 64, 3) == DS3_REPORT_LEN);
+		CHECK(g_oi_calls == 1);
+		CHECK(g_oi_xport == (void *)&g_x_ds);
+		CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
+		CHECK(g_oi_flag == 3);
+		CHECK(memcmp(buf, want, DS3_REPORT_LEN) == 0);
+		for (i = DS3_REPORT_LEN; i < 96; i++)
+			CHECK(buf[i] == 0xCC);               /* guard bytes, never written */
+		CHECK(ds45_shim_data.stat_translated == 1 && ds45_shim_data.stat_passed == 0);
+		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 1);
+		CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
+		CHECK(ds45_shim_data.dbg_input_calls == 1 && ds45_shim_data.dbg_input_ds == 1);
+	}
+
+	/* a caller that holds exactly a DS3 report */
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	report_neutral(g_oi_report);
+	g_oi_len = RPT_LEN;
+	memset(buf, 0xCC, sizeof(buf));
+	CHECK(shim_input(&g_x_ds, buf, DS3_REPORT_LEN, 0) == DS3_REPORT_LEN);
+	CHECK(memcmp(buf, want, DS3_REPORT_LEN) == 0 && buf[DS3_REPORT_LEN] == 0xCC);
+	return 0;
+}
+
+/* The 10-byte basic report still translates through the bounce buffer. */
+static int test_input_bounce_basic_report(void)
+{
+	uint8_t buf[96], want[DS3_REPORT_LEN];
+	ds45_shim_cfg_t cfg;
+	int mode;
+
+	for (mode = 1; mode <= 2; mode++) {
+		glue_reset();
+		ds45_shim_data.out_mode = (uint32_t)mode;
+		cfg = ds45_shim_data.cfg;
+		report_basic(g_oi_report);
+		g_oi_len = DS_BASIC_LEN;
+		CHECK(ds3_report_from_dualsense_basic(g_oi_report, DS_BASIC_LEN, &cfg, want) == 0);
+		memset(buf, 0xCC, sizeof(buf));
+
+		CHECK(shim_input(&g_x_ds, buf, 64, 0) == DS3_REPORT_LEN);
+		CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
+		CHECK(memcmp(buf, want, DS3_REPORT_LEN) == 0);
+		CHECK(buf[DS3_REPORT_LEN] == 0xCC);
+		CHECK(ds45_shim_data.stat_translated == 1);
+		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 0);
+		CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
+	}
+
+	/* too small a caller buffer for the DS3 report: dropped, dst untouched */
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	report_basic(g_oi_report);
+	g_oi_len = DS_BASIC_LEN;
+	memset(buf, 0xCC, sizeof(buf));
+	CHECK(shim_input(&g_x_ds, buf, DS3_REPORT_LEN - 1, 0) == 0);
+	CHECK(buf[0] == 0xCC && buf[DS3_REPORT_LEN - 1] == 0xCC);
+	CHECK(ds45_shim_data.dbg_in_drop == 1 && ds45_shim_data.dbg_in_big == 0);
+	return 0;
+}
+
+/* Whatever the original reports (1..79 bytes of any content), whichever pad it
+ * is (a DualSense, a DS3, a transport no pad owns, a missing pad manager, a pad
+ * class that is not set) and however small the caller's buffer, dst is written
+ * for at most min(n, len_in) bytes and the return value never exceeds len_in.
+ * For every pad but a DualSense the bytes and the count are the original's. */
+static int test_input_bounce_never_overruns_dst(void)
+{
+	uint8_t buf[160];
+	void *xport;
+	int who, kind, rc, len_in, ret, i, ds;
+
+	for (who = 0; who < 5; who++) {
+		for (kind = 0; kind < 3; kind++) {
+			for (rc = 1; rc <= 0x4F; rc++) {
+				for (len_in = 0; len_in <= 64; len_in++) {
+					glue_reset();
+					ds45_shim_data.out_mode = (uint32_t)(1 + (rc & 1));
+					xport = &g_x_ds;
+					ds = who == 0;
+					if (who == 1)
+						xport = &g_x_ds3;
+					else if (who == 2)
+						xport = &g_x_other;           /* no pad owns it */
+					else if (who == 3)
+						ds45_shim_data.pad_mgr = 0;
+					else if (who == 4)
+						ds45_shim_data.pad_vtable = 0;
+					record_make(g_oi_report, 96);
+					if (kind == 1)
+						report_basic(g_oi_report);
+					else if (kind == 2)
+						report_neutral(g_oi_report);
+					g_oi_len = rc;
+					memset(buf, 0xA5, sizeof(buf));
+
+					ret = shim_input(xport, buf + 16, (uint16_t)len_in, 0);
+
+					CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
+					CHECK(ret >= 0 && ret <= len_in);
+					for (i = 0; i < 160; i++) {
+						if (i < 16 || i >= 16 + ret)
+							CHECK(buf[i] == 0xA5);
+					}
+					if (ds) {
+						CHECK(ret == 0 || ret == rc || ret == DS3_REPORT_LEN);
+						if (kind == 0 && ret != 0)
+							CHECK(memcmp(buf + 16, g_oi_report, (size_t)ret) == 0);
+						if (rc > len_in && rc != DS3_REPORT_LEN && ret != 0)
+							CHECK(ret == DS3_REPORT_LEN);   /* only a translation shrinks */
+					} else {
+						/* no translation, ever: the original's bytes and count, or a drop */
+						CHECK(ret == (rc <= len_in ? rc : 0));
+						CHECK(memcmp(buf + 16, g_oi_report, (size_t)ret) == 0);
+						CHECK(ds45_shim_data.stat_translated == 0);
+						CHECK(ds45_shim_data.dbg_in_drop == (uint32_t)(rc > len_in));
+					}
+					CHECK(ds45_shim_data.dbg_in_bounce == 1);
+					CHECK(ds45_shim_data.dbg_in_big == (uint32_t)(rc > 0x41));
+				}
+			}
+		}
+	}
+	return 0;
+}
+
+/* An error from the original is returned unchanged and counted only in
+ * dbg_in_err (plus the bounce count); a zero-byte read returns 0. */
+static int test_input_bounce_error_and_zero(void)
+{
+	uint8_t dst[64];
+
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	g_oi_len = -5;
+	memset(dst, 0xCC, sizeof(dst));
+	CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 0) == -5);
+	CHECK(g_oi_calls == 1 && g_oi_dst == ds45_shim_data.inbuf);
+	CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_err == 1);
+	CHECK(ds45_shim_data.dbg_in_big == 0 && ds45_shim_data.dbg_in_drop == 0);
+	CHECK(ds45_shim_data.dbg_input_calls == 0);       /* no valid read to note */
+	CHECK(ds45_shim_data.stat_passed == 0 && ds45_shim_data.stat_translated == 0);
+	CHECK(dst[0] == 0xCC && dst[63] == 0xCC);
+
+	g_oi_len = 0;
+	CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 0) == 0);
+	CHECK(ds45_shim_data.dbg_in_bounce == 2 && ds45_shim_data.dbg_in_err == 1);
+	CHECK(ds45_shim_data.dbg_in_big == 0 && ds45_shim_data.dbg_in_drop == 0);
+	CHECK(dst[0] == 0xCC && dst[63] == 0xCC);
+
+	/* the pure function directly */
+	ds45_shim_data = data_enabled();
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, -1) == -1);
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0) == 0);
+	CHECK(shim_input_bounce(NULL, g_pad_ds.b, dst, 64, 10) == 0);
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, NULL, 64, 10) == 0);
+	CHECK(shim_input_bounce(NULL, g_pad_ds.b, dst, 64, -7) == -7);
+	CHECK(dst[0] == 0xCC);
+	return 0;
+}
+
+/* A 70-byte record that does not translate cannot fit the caller's 64 bytes:
+ * dropped (0), dst untouched - from a DualSense, a DS3 and a pad nobody owns. */
+static int test_input_bounce_drop_oversize(void)
+{
+	fake_xport_t *const xp[3] = { &g_x_ds, &g_x_ds3, &g_x_other };
+	uint8_t buf[96];
+	int i, w;
+
+	for (w = 0; w < 3; w++) {
+		glue_reset();
+		ds45_shim_data.out_mode = 1;
+		record_make(g_oi_report, 70);
+		g_oi_len = 70;
+		memset(buf, 0xCC, sizeof(buf));
+
+		CHECK(shim_input(xp[w], buf, 64, 0) == 0);
+		CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
+		for (i = 0; i < 96; i++)
+			CHECK(buf[i] == 0xCC);
+		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 1);
+		CHECK(ds45_shim_data.dbg_in_drop == 1 && ds45_shim_data.dbg_in_err == 0);
+		CHECK(ds45_shim_data.stat_passed == 1 && ds45_shim_data.stat_translated == 0);
+	}
+	return 0;
+}
+
+/* The same counters from a DS3: every bounce read counts, whichever pad. */
+static int test_input_bounce_counters_other_pad(void)
+{
+	static uint8_t dst[128];
+	const ds45_shim_data_t *d = &ds45_shim_data;
+
+	glue_reset();
+	ds45_shim_data.out_mode = 1;
+
+#define DS3_READ(len_in) shim_input(&g_x_ds3, dst, (uint16_t)(len_in), 0)
+
+	record_make(g_oi_report, 96);
+	g_oi_len = DS3_REPORT_LEN;                   /* 1: a DS3 report */
+	CHECK(DS3_READ(64) == 49);
+	CHECK(memcmp(dst, g_oi_report, 49) == 0);
+	CHECK(d->dbg_in_bounce == 1 && d->dbg_in_big == 0 && d->dbg_in_drop == 0 && d->dbg_in_err == 0);
+
+	g_oi_len = 70;                               /* 2: long, too long for 64 */
+	CHECK(DS3_READ(64) == 0);
+	CHECK(d->dbg_in_bounce == 2 && d->dbg_in_big == 1 && d->dbg_in_drop == 1 && d->dbg_in_err == 0);
+
+	g_oi_len = -2;                               /* 3: error */
+	CHECK(DS3_READ(64) == -2);
+	CHECK(d->dbg_in_bounce == 3 && d->dbg_in_big == 1 && d->dbg_in_drop == 1 && d->dbg_in_err == 1);
+
+	g_oi_len = 0;                                /* 4: nothing */
+	CHECK(DS3_READ(64) == 0);
+	CHECK(d->dbg_in_bounce == 4 && d->dbg_in_big == 1 && d->dbg_in_drop == 1 && d->dbg_in_err == 1);
+
+	g_oi_len = 0x41;                             /* 5: 65 fits a 100-byte caller, not "big" */
+	CHECK(DS3_READ(100) == 0x41);
+	CHECK(d->dbg_in_bounce == 5 && d->dbg_in_big == 1 && d->dbg_in_drop == 1 && d->dbg_in_err == 1);
+
+	g_oi_len = 0x42;                             /* 6: 66 is big and fits 100 */
+	CHECK(DS3_READ(100) == 0x42);
+	CHECK(d->dbg_in_bounce == 6 && d->dbg_in_big == 2 && d->dbg_in_drop == 1 && d->dbg_in_err == 1);
+
+	CHECK(d->stat_translated == 0 && d->stat_passed == 4);   /* 1, 2, 5, 6 */
+	CHECK(d->dbg_input_calls == 5 && d->dbg_input_ds == 0);  /* the error was not noted */
+#undef DS3_READ
+	return 0;
+}
+
+/* One read of each kind, with the exact counter values after each. */
+static int test_input_bounce_counters(void)
+{
+	static uint8_t dst[128];
+	const ds45_shim_data_t *d = &ds45_shim_data;
+
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+
+#define BOUNCE_READ(len_in) shim_input(&g_x_ds, dst, (uint16_t)(len_in), 0)
+
+	report_basic(g_oi_report);                   /* 1: basic, translates */
+	g_oi_len = DS_BASIC_LEN;
+	CHECK(BOUNCE_READ(64) == 49);
+	CHECK(d->dbg_in_bounce == 1 && d->dbg_in_big == 0 && d->dbg_in_drop == 0 && d->dbg_in_err == 0);
+
+	report_neutral(g_oi_report);                 /* 2: full, translates */
+	g_oi_len = RPT_LEN;
+	CHECK(BOUNCE_READ(64) == 49);
+	CHECK(d->dbg_in_bounce == 2 && d->dbg_in_big == 1 && d->dbg_in_drop == 0 && d->dbg_in_err == 0);
+
+	record_make(g_oi_report, 96);                /* 3: 70 bytes, too long for 64 */
+	g_oi_len = 70;
+	CHECK(BOUNCE_READ(64) == 0);
+	CHECK(d->dbg_in_bounce == 3 && d->dbg_in_big == 2 && d->dbg_in_drop == 1 && d->dbg_in_err == 0);
+
+	g_oi_len = -3;                               /* 4: error */
+	CHECK(BOUNCE_READ(64) == -3);
+	CHECK(d->dbg_in_bounce == 4 && d->dbg_in_big == 2 && d->dbg_in_drop == 1 && d->dbg_in_err == 1);
+
+	g_oi_len = 0;                                /* 5: nothing */
+	CHECK(BOUNCE_READ(64) == 0);
+	CHECK(d->dbg_in_bounce == 5 && d->dbg_in_big == 2 && d->dbg_in_drop == 1 && d->dbg_in_err == 1);
+
+	g_oi_len = 0x41;                             /* 6: 65 is not "big", but 65 > 64 */
+	CHECK(BOUNCE_READ(64) == 0);
+	CHECK(d->dbg_in_bounce == 6 && d->dbg_in_big == 2 && d->dbg_in_drop == 2 && d->dbg_in_err == 1);
+
+	g_oi_len = 0x42;                             /* 7: 66 is big, and fits a 100-byte caller */
+	CHECK(BOUNCE_READ(100) == 0x42);
+	CHECK(memcmp(dst, g_oi_report, 0x42) == 0);
+	CHECK(d->dbg_in_bounce == 7 && d->dbg_in_big == 3 && d->dbg_in_drop == 2 && d->dbg_in_err == 1);
+
+	g_oi_len = 0x4F;                             /* 8: the longest read, caller of 64 */
+	CHECK(BOUNCE_READ(64) == 0);
+	CHECK(d->dbg_in_bounce == 8 && d->dbg_in_big == 4 && d->dbg_in_drop == 3 && d->dbg_in_err == 1);
+
+	g_oi_len = 0x42;                             /* 9: big, one byte short of fitting */
+	CHECK(BOUNCE_READ(0x41) == 0);
+	CHECK(d->dbg_in_bounce == 9 && d->dbg_in_big == 5 && d->dbg_in_drop == 4 && d->dbg_in_err == 1);
+
+	/* 10: more than the read can ever return (defensive): dropped, not "big" */
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0x50) == 0);
+	CHECK(d->dbg_in_bounce == 10 && d->dbg_in_big == 5 && d->dbg_in_drop == 5 && d->dbg_in_err == 1);
+
+	CHECK(d->stat_translated == 2 && d->stat_passed == 5);
+	CHECK(d->dbg_input_calls == 9 && d->dbg_input_ds == 9);   /* the error was not noted */
+#undef BOUNCE_READ
+	return 0;
+}
+
+/* The pad is looked up AFTER the bounce read. A lookup miss (a transport no pad
+ * owns), a pad that is not a DualSense, an unreachable pad manager and an unset
+ * pad class all take the bounded pass-through: the read is bounced, the bytes
+ * reach the caller untranslated and counted exactly, never an overrun. NULL
+ * arguments keep the normal path with the caller's own buffer. */
+static int test_input_bounce_pad_lookup(void)
+{
+	uint8_t dst[64], want[64];
+	fake_pad_t pad4;
+	int what;
+
+	for (what = 0; what < 6; what++) {
+		glue_reset();
+		ds45_shim_data.out_mode = 2;
+		pad_make(&pad4, PAD_VTABLE, VID_SONY, PID_DS4);
+		put_native(pad4.b + SHIM_PAD_XPORT, &g_x_other);
+		put_native(g_mgr.b + SHIM_MGR_OBJS + 7 * 8, pad4.b);
+		report_basic(g_oi_report);
+		g_oi_len = DS_BASIC_LEN;
+		memset(dst, 0xCC, sizeof(dst));
+		memset(want, 0xCC, sizeof(want));
+		memcpy(want, g_oi_report, DS_BASIC_LEN);
+
+		if (what <= 3) {
+			void *xport = &g_x_other;
+
+			if (what == 0)                       /* no pad owns this transport */
+				put_native(g_mgr.b + SHIM_MGR_OBJS + 7 * 8, NULL);
+			else if (what == 2) {                /* no pad manager */
+				ds45_shim_data.pad_mgr = 0;
+				xport = &g_x_ds;
+			} else if (what == 3) {              /* the pad class is not set */
+				ds45_shim_data.pad_vtable = 0;
+				xport = &g_x_ds;
+			}                                    /* what == 1: a pad that is a DS4 */
+
+			CHECK(shim_input(xport, dst, sizeof(dst), 9) == DS_BASIC_LEN);
+			CHECK(g_oi_calls == 1 && g_oi_xport == xport);
+			CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);   /* bounced */
+			CHECK(g_oi_flag == 9);
+			CHECK(memcmp(dst, want, sizeof(dst)) == 0);   /* untranslated, as read */
+			CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 0);
+			CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
+			CHECK(ds45_shim_data.stat_translated == 0 && ds45_shim_data.stat_passed == 1);
+			CHECK(ds45_shim_data.dbg_input_calls == 1 && ds45_shim_data.dbg_input_ds == 0);
+			CHECK(ds45_shim_data.dbg_input_padmiss == (what == 1 ? 0u : (what == 3 ? 0u : 1u)));
+			if (what == 1)
+				CHECK(ds45_shim_data.dbg_last_pid == 0x054C05C4u);
+
+			/* a long record from the same pad cannot fit 64 bytes: dropped, counted */
+			g_oi_len = 0x4F;
+			record_make(g_oi_report, 0x4F);
+			memset(dst, 0xCC, sizeof(dst));
+			CHECK(shim_input(xport, dst, sizeof(dst), 9) == 0);
+			CHECK(dst[0] == 0xCC && dst[63] == 0xCC);
+			CHECK(ds45_shim_data.dbg_in_bounce == 2 && ds45_shim_data.dbg_in_big == 1);
+			CHECK(ds45_shim_data.dbg_in_drop == 1 && ds45_shim_data.dbg_in_err == 0);
+		} else if (what == 4) {                  /* NULL transport: the normal path */
+			CHECK(shim_input(NULL, dst, sizeof(dst), 9) == DS_BASIC_LEN);
+			CHECK(g_oi_xport == NULL && g_oi_dst == dst);
+			CHECK(g_oi_calls == 1 && g_oi_len_in == sizeof(dst) && g_oi_flag == 9);
+			CHECK(memcmp(dst, want, sizeof(dst)) == 0);
+			CHECK(ds45_shim_data.stat_translated == 0);
+			CHECK(bounce_counters_zero() && inbuf_clean());
+		} else {                                 /* NULL destination: the normal path */
+			CHECK(shim_input(&g_x_ds, NULL, sizeof(dst), 9) == DS_BASIC_LEN);
+			CHECK(g_oi_xport == (void *)&g_x_ds && g_oi_dst == NULL);
+			CHECK(g_oi_calls == 1 && g_oi_len_in == sizeof(dst) && g_oi_flag == 9);
+			CHECK(bounce_counters_zero() && inbuf_clean());
+		}
+	}
+	return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Raw DualSense report capture (version 11, debug only)                      */
+/* ------------------------------------------------------------------------ */
+
+/* The raw capture is not part of the bounce counters: it must not disturb them. */
+static int raw_capture_clean(void)
+{
+	static const uint8_t zero[sizeof(ds45_shim_data.dbg_in_raw)];
+
+	return ds45_shim_data.dbg_in_raw_len == 0 && ds45_shim_data.dbg_in_raw_seq == 0 &&
+	       memcmp(ds45_shim_data.dbg_in_raw, zero, sizeof(zero)) == 0;
+}
+
+/* A neutral 0x31 report with recognisable bytes in the common block, so a copy
+ * is visible byte for byte (the translation does not refuse them). */
+static void report_marked(uint8_t r[RPT_LEN])
+{
+	int i;
+
+	report_neutral(r);
+	for (i = BT(DS_C_STATUS) - 4; i < BT(DS_C_STATUS) + 8; i++)
+		r[i] = (uint8_t)(0xA0 + i);
+	r[BT(DS_C_STATUS)] = 0x2A;
+}
+
+/* A 78-byte 0x31 report: the first 64 bytes arrive in dbg_in_raw exactly as the
+ * original wrote them, before the in-place translation, and the translated
+ * 49-byte report still reaches dst unchanged. */
+static int test_input_raw_capture_full_report(void)
+{
+	uint8_t dst[96], want[DS3_REPORT_LEN], raw[RPT_LEN];
+	ds45_shim_cfg_t cfg;
+	int mode, i;
+
+	for (mode = 1; mode <= 2; mode++) {
+		glue_reset();
+		ds45_shim_data.out_mode = (uint32_t)mode;
+		cfg = ds45_shim_data.cfg;
+		report_marked(g_oi_report);
+		memcpy(raw, g_oi_report, RPT_LEN);
+		g_oi_len = RPT_LEN;
+		CHECK(ds3_report_from_dualsense(raw, RPT_LEN, &cfg, want) == 0);
+		memset(dst, 0xCC, sizeof(dst));
+		CHECK(raw_capture_clean());
+
+		CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
+		CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);       /* translation unchanged */
+		CHECK(dst[DS3_REPORT_LEN] == 0xCC);
+		CHECK(ds45_shim_data.dbg_in_raw_len == 64);
+		CHECK(ds45_shim_data.dbg_in_raw_seq == 1);
+		CHECK(memcmp(ds45_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
+		CHECK(ds45_shim_data.dbg_in_raw[BT(DS_C_STATUS)] == 0x2A);   /* byte 54, raw */
+		CHECK(ds45_shim_data.inbuf[0] == 0x01);              /* inbuf holds the translated report */
+		for (i = 0; i < 64; i++)
+			CHECK(ds45_shim_data.dbg_in_raw[i] == raw[i]);
+		/* the existing counters are exactly as before */
+		CHECK(ds45_shim_data.stat_translated == 1 && ds45_shim_data.stat_passed == 0);
+		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 1);
+		CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
+	}
+
+	/* a 79-byte read (the longest) is clamped to the same 64 bytes */
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	report_marked(g_oi_report);
+	g_oi_report[78] = 0x77;
+	g_oi_len = 0x4F;
+	CHECK(shim_input(&g_x_ds, dst, 100, 0) > 0);
+	CHECK(ds45_shim_data.dbg_in_raw_len == 64 && ds45_shim_data.dbg_in_raw_seq == 1);
+	CHECK(memcmp(ds45_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
+	return 0;
+}
+
+/* A 10-byte basic report: the capture holds those 10 bytes, length 10, and the
+ * bytes after them are not touched. */
+static int test_input_raw_capture_basic_report(void)
+{
+	uint8_t dst[96], want[DS3_REPORT_LEN], raw[DS_BASIC_LEN];
+	ds45_shim_cfg_t cfg;
+	int i;
+
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	cfg = ds45_shim_data.cfg;
+	report_basic(g_oi_report);
+	memcpy(raw, g_oi_report, DS_BASIC_LEN);
+	g_oi_len = DS_BASIC_LEN;
+	CHECK(ds3_report_from_dualsense_basic(raw, DS_BASIC_LEN, &cfg, want) == 0);
+	memset(dst, 0xCC, sizeof(dst));
+
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
+	CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);
+	CHECK(ds45_shim_data.dbg_in_raw_len == DS_BASIC_LEN);
+	CHECK(ds45_shim_data.dbg_in_raw_seq == 1);
+	CHECK(memcmp(ds45_shim_data.dbg_in_raw, raw, DS_BASIC_LEN) == 0);
+	for (i = DS_BASIC_LEN; i < 64; i++)
+		CHECK(ds45_shim_data.dbg_in_raw[i] == 0);
+
+	/* a shorter report after a longer one: the length shrinks, the stale tail
+	 * is allowed to stay (the length says what is valid) */
+	report_marked(g_oi_report);
+	g_oi_len = RPT_LEN;
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
+	CHECK(ds45_shim_data.dbg_in_raw_len == 64 && ds45_shim_data.dbg_in_raw_seq == 2);
+	report_basic(g_oi_report);
+	g_oi_len = DS_BASIC_LEN;
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
+	CHECK(ds45_shim_data.dbg_in_raw_len == DS_BASIC_LEN && ds45_shim_data.dbg_in_raw_seq == 3);
+	CHECK(memcmp(ds45_shim_data.dbg_in_raw, raw, DS_BASIC_LEN) == 0);
+	return 0;
+}
+
+/* Only a DualSense read of 1..0x4F bytes is captured: not a DS3, not a pad nobody
+ * owns, not an error, a zero-byte read or an impossible length. */
+static int test_input_raw_capture_only_dualsense(void)
+{
+	fake_xport_t *const xp[2] = { &g_x_ds3, &g_x_other };
+	uint8_t dst[128];
+	int w;
+
+	for (w = 0; w < 2; w++) {
+		glue_reset();
+		ds45_shim_data.out_mode = 1;
+		record_make(g_oi_report, 70);
+		g_oi_len = 70;
+		CHECK(shim_input(xp[w], dst, 100, 0) == 70);
+		g_oi_len = DS_BASIC_LEN;
+		report_basic(g_oi_report);
+		CHECK(shim_input(xp[w], dst, 100, 0) == DS_BASIC_LEN);
+		g_oi_len = DS3_REPORT_LEN;
+		CHECK(shim_input(xp[w], dst, 100, 0) == DS3_REPORT_LEN);
+		CHECK(ds45_shim_data.dbg_in_bounce == 3);
+		CHECK(raw_capture_clean());
+	}
+
+	/* a DualSense, but an error, nothing, or more than the read can return */
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	record_make(g_oi_report, 96);
+	g_oi_len = -4;
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == -4);
+	CHECK(raw_capture_clean());
+	g_oi_len = 0;
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == 0);
+	CHECK(raw_capture_clean());
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, -1) == -1);
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0) == 0);
+	memcpy(ds45_shim_data.inbuf, g_oi_report, 96);
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0x50) == 0);
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0x7FFFFFFF) == 0);
+	CHECK(raw_capture_clean());
+	CHECK(ds45_shim_data.dbg_in_drop == 2);
+
+	/* NULL arguments change nothing either */
+	CHECK(shim_input_bounce(NULL, g_pad_ds.b, dst, 64, 10) == 0);
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, NULL, 64, 10) == 0);
+	CHECK(raw_capture_clean());
+
+	/* one DualSense read of 1 byte is captured (the lower edge) */
+	g_oi_len = 1;
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == 1);
+	CHECK(ds45_shim_data.dbg_in_raw_len == 1 && ds45_shim_data.dbg_in_raw_seq == 1);
+	CHECK(ds45_shim_data.dbg_in_raw[0] == g_oi_report[0]);
+	return 0;
+}
+
+/* Each captured read bumps the sequence; the latest bytes are held. */
+static int test_input_raw_capture_seq_counts(void)
+{
+	uint8_t dst[96];
+	int k;
+
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	for (k = 1; k <= 3; k++) {
+		report_marked(g_oi_report);
+		g_oi_report[BT(DS_C_STATUS)] = (uint8_t)(0x10 * k + k);
+		g_oi_len = RPT_LEN;
+		CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
+		CHECK(ds45_shim_data.dbg_in_raw_seq == (uint32_t)k);
+		CHECK(ds45_shim_data.dbg_in_raw_len == 64);
+		CHECK(ds45_shim_data.dbg_in_raw[BT(DS_C_STATUS)] == (uint8_t)(0x10 * k + k));
+		CHECK(memcmp(ds45_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
+	}
+	CHECK(ds45_shim_data.dbg_in_bounce == 3 && ds45_shim_data.stat_translated == 3);
 	return 0;
 }
 
@@ -1198,9 +1910,824 @@ static int test_stable_identity_off(void)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* DS3-route output hook (observe only): shim_output_filter                   */
+/* ------------------------------------------------------------------------ */
+
+/* The kernel's output call hands the filter the payload at pad+0x22B, 48 bytes
+ * of it; a payload pattern makes the byte-for-byte capture visible. */
+static void out_payload(fake_pad_t *pad, int n, uint8_t seed)
+{
+	int i;
+
+	for (i = 0; i < n; i++)
+		pad->b[SHIM_PAD_OUT_BUF_OFF + i] = (uint8_t)(seed + i * 3);
+}
+
+/* Sentinels for the three out-parameters: the observe-only filter must leave
+ * all of them exactly as they were. */
+#define RID_SENTINEL 0xA7
+#define OLEN_SENTINEL 0xBEEF
+
+static int test_output_counts_and_captures(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+
+	/* a DualSense pad, 48-byte payload */
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	out_payload(&pad, 48, 0x10);
+	CHECK(SHIM_PAD_OUT_BUF_OFF == 0x22B);
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_calls == 1);
+	CHECK(d.dbg_out_ds == 1);
+	CHECK(d.dbg_out_passed == 1);
+	CHECK(d.dbg_out_translated == 0);
+	CHECK(d.dbg_out_last_len == 48);
+	CHECK(d.dbg_out_cap_len == 48);
+	CHECK(memcmp(d.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	/* observe only: no output parameter is written, the payload is not touched */
+	CHECK(rid == RID_SENTINEL);
+	CHECK(ob == (const uint8_t *)&pad);
+	CHECK(ol == OLEN_SENTINEL);
+	CHECK(pad.b[SHIM_PAD_OUT_BUF_OFF + 5] == (uint8_t)(0x10 + 15));
+	CHECK(pad.b[SHIM_PAD_OUT_BUF_OFF + 48] == 0x5A);
+	/* nothing else of the data block moved */
+	CHECK(d.stat_translated == 0 && d.stat_passed == 0 && d.out_seq == 0);
+
+	/* a second call bumps again */
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_calls == 2 && d.dbg_out_ds == 2 && d.dbg_out_passed == 2);
+	return 0;
+}
+
+/* A DualShock 3: the Sony pad class but PID 0x0268. It is counted and captured
+ * (the capture is the ground truth about what the console sends a DS3), but not
+ * as a DualSense, and nothing is rewritten. */
+static int test_output_ds3_pad_untouched(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t pad, before;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DS3);
+	out_payload(&pad, 48, 0x40);
+	before = pad;
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_calls == 1);
+	CHECK(d.dbg_out_ds == 0);
+	CHECK(d.dbg_out_passed == 1);
+	CHECK(d.dbg_out_last_len == 48 && d.dbg_out_cap_len == 48);
+	CHECK(memcmp(d.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+	CHECK(memcmp(pad.b, before.b, sizeof(pad.b)) == 0);
+
+	/* a pad of another class entirely (the vtable does not match): same */
+	pad_make(&pad, PAD_VTABLE + 8, VID_SONY, PID_DUALSENSE);
+	out_payload(&pad, 48, 0x40);
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_calls == 2 && d.dbg_out_ds == 0 && d.dbg_out_passed == 2);
+	return 0;
+}
+
+static int test_output_bad_arguments(void)
+{
+	ds45_shim_data_t d = data_enabled(), zero;
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+	const uint8_t *buf;
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	buf = pad.b + SHIM_PAD_OUT_BUF_OFF;
+
+	/* NULL data block: return 0, write nothing (the call must not crash) */
+	CHECK(shim_output_filter(NULL, buf, 48, &rid, &ob, &ol) == 0);
+	CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+
+	/* NULL buffer: counted as a call, nothing else */
+	zero = d;
+	CHECK(shim_output_filter(&d, NULL, 48, &rid, &ob, &ol) == 0);
+	zero.dbg_out_calls = 1;
+	CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+	/* length 0 */
+	CHECK(shim_output_filter(&d, buf, 0, &rid, &ob, &ol) == 0);
+	zero.dbg_out_calls = 2;
+	CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+	/* length 65, over the 64-byte payload cap */
+	CHECK(shim_output_filter(&d, buf, 65, &rid, &ob, &ol) == 0);
+	zero.dbg_out_calls = 3;
+	CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+	CHECK(d.dbg_out_ds == 0 && d.dbg_out_passed == 0 && d.dbg_out_cap_len == 0);
+
+	/* shim disabled: counted as a call, nothing captured, nothing else */
+	d = data_enabled();
+	d.enabled = 0;
+	zero = d;
+	CHECK(shim_output_filter(&d, buf, 48, &rid, &ob, &ol) == 0);
+	zero.dbg_out_calls = 1;
+	CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+	/* none of the above wrote an out-parameter or the payload */
+	CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+	return 0;
+}
+
+/* The capture holds the LAST payload only, and its length is the payload length
+ * (at most 64, the cap the kernel's sender enforces). */
+static int test_output_capture_keeps_last(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t pad;
+	uint8_t rid = 0;
+	const uint8_t *ob = NULL;
+	uint16_t ol = 0;
+	const uint8_t *buf;
+	int i;
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	buf = pad.b + SHIM_PAD_OUT_BUF_OFF;
+
+	/* the longest payload the kernel accepts: all 64 bytes captured */
+	out_payload(&pad, 64, 0x01);
+	CHECK(shim_output_filter(&d, buf, 64, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_last_len == 64 && d.dbg_out_cap_len == 64);
+	CHECK(memcmp(d.dbg_out_cap, buf, 64) == 0);
+
+	/* a shorter, different one replaces it: the length follows, the bytes are
+	 * the new ones, nothing past the length is claimed */
+	out_payload(&pad, 30, 0xC0);
+	CHECK(shim_output_filter(&d, buf, 30, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_last_len == 30 && d.dbg_out_cap_len == 30);
+	CHECK(memcmp(d.dbg_out_cap, buf, 30) == 0);
+	for (i = 0; i < 30; i++)
+		CHECK(d.dbg_out_cap[i] == (uint8_t)(0xC0 + i * 3));
+
+	/* a rejected call (65) does not disturb the capture */
+	CHECK(shim_output_filter(&d, buf, 65, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_last_len == 30 && d.dbg_out_cap_len == 30);
+	CHECK(d.dbg_out_calls == 3);
+
+	/* one byte */
+	CHECK(shim_output_filter(&d, buf, 1, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_last_len == 1 && d.dbg_out_cap_len == 1);
+	CHECK(d.dbg_out_cap[0] == buf[0]);
+	return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Rumble-aware capture: the last motor-on payload and the next zero-motor    */
+/* payload from the same pad (debug only; the filter still returns 0).        */
+/* ------------------------------------------------------------------------ */
+
+/* A pattern payload of n bytes (n >= 5) with the two motor bytes set: payload
+ * byte 2 is the small motor on/off, byte 4 the large motor strength. */
+static void out_motor(fake_pad_t *pad, int n, uint8_t seed, uint8_t small, uint8_t large)
+{
+	out_payload(pad, n, seed);
+	pad->b[SHIM_PAD_OUT_BUF_OFF + 2] = small;
+	pad->b[SHIM_PAD_OUT_BUF_OFF + 4] = large;
+}
+
+static uint64_t pad_key(const fake_pad_t *pad)
+{
+	return (uint64_t)(uintptr_t)pad->b;
+}
+
+static int test_output_motor_on_capture(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t a, b, c;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = (const uint8_t *)&a;
+	uint16_t ol = OLEN_SENTINEL;
+	const uint8_t zero64[64] = {0};
+
+	pad_make(&a, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	pad_make(&b, PAD_VTABLE, VID_SONY, PID_DS3);
+	pad_make(&c, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+
+	/* nothing captured at the start */
+	CHECK(d.dbg_out_on_count == 0 && d.dbg_out_on_len == 0 && d.dbg_out_on_pad == 0);
+	CHECK(d.dbg_out_off_count == 0 && d.dbg_out_off_len == 0 && d.dbg_out_off_armed == 0);
+
+	/* a DualSense pad, small motor on: captured exactly */
+	out_motor(&a, 48, 0x10, 0x01, 0x00);
+	CHECK(shim_output_filter(&d, a.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 1);
+	CHECK(d.dbg_out_on_len == 48);
+	CHECK(d.dbg_out_on_pad == pad_key(&a));
+	CHECK(memcmp(d.dbg_out_on_cap, a.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(d.dbg_out_off_armed == 1);
+	CHECK(d.dbg_out_off_count == 0 && d.dbg_out_off_len == 0);
+
+	/* a DS3 pad, large motor on (byte 4 only): the last motor-on payload from ANY
+	 * pad replaces it */
+	out_motor(&b, 48, 0x70, 0x00, 0x80);
+	CHECK(shim_output_filter(&d, b.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 2);
+	CHECK(d.dbg_out_on_len == 48);
+	CHECK(d.dbg_out_on_pad == pad_key(&b));
+	CHECK(memcmp(d.dbg_out_on_cap, b.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(d.dbg_out_off_armed == 1);
+
+	/* a zero-motor payload from ANOTHER pad does not touch the off capture */
+	out_motor(&c, 48, 0x33, 0x00, 0x00);
+	CHECK(shim_output_filter(&d, c.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 0 && d.dbg_out_off_len == 0);
+	CHECK(memcmp(d.dbg_out_off_cap, zero64, 64) == 0);
+	CHECK(d.dbg_out_off_armed == 1);
+	CHECK(d.dbg_out_on_count == 2 && d.dbg_out_on_pad == pad_key(&b));
+
+	/* the longest payload: 64 bytes copied, the length is 64 */
+	out_motor(&a, 64, 0x01, 0xFF, 0xFF);
+	CHECK(shim_output_filter(&d, a.b + SHIM_PAD_OUT_BUF_OFF, 64, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 3 && d.dbg_out_on_len == 64);
+	CHECK(d.dbg_out_on_pad == pad_key(&a));
+	CHECK(memcmp(d.dbg_out_on_cap, a.b + SHIM_PAD_OUT_BUF_OFF, 64) == 0);
+
+	/* a rejected call (65) and a disabled shim capture nothing */
+	CHECK(shim_output_filter(&d, a.b + SHIM_PAD_OUT_BUF_OFF, 65, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 3);
+	d.enabled = 0;
+	CHECK(shim_output_filter(&d, a.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 3);
+	d.enabled = 1;
+	CHECK(shim_output_filter(&d, NULL, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 3);
+
+	/* observe only: no output parameter written, the payload not touched */
+	CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&a && ol == OLEN_SENTINEL);
+	CHECK(a.b[SHIM_PAD_OUT_BUF_OFF + 2] == 0xFF);
+	return 0;
+}
+
+static int test_output_motor_off_after_on_same_pad(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t a, b;
+	uint8_t rid = 0;
+	const uint8_t *ob = NULL;
+	uint16_t ol = 0;
+	const uint8_t *abuf, *bbuf;
+
+	pad_make(&a, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	pad_make(&b, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	abuf = a.b + SHIM_PAD_OUT_BUF_OFF;
+	bbuf = b.b + SHIM_PAD_OUT_BUF_OFF;
+
+	/* a zero-motor payload before any motor-on one: not armed, not captured */
+	out_motor(&a, 48, 0x20, 0, 0);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 0 && d.dbg_out_off_len == 0);
+
+	/* on, then the first zero from the same pad is captured once */
+	out_motor(&a, 48, 0x30, 0x01, 0x40);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_armed == 1);
+	out_motor(&a, 40, 0x41, 0, 0);
+	CHECK(shim_output_filter(&d, abuf, 40, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 1);
+	CHECK(d.dbg_out_off_len == 40);
+	CHECK(memcmp(d.dbg_out_off_cap, abuf, 40) == 0);
+	CHECK(d.dbg_out_off_armed == 0);
+	CHECK(d.dbg_out_on_count == 1);                   /* the on capture is kept */
+
+	/* later zero payloads are not captured */
+	out_motor(&a, 48, 0x55, 0, 0);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 1 && d.dbg_out_off_len == 40);
+	CHECK(d.dbg_out_off_cap[0] == (uint8_t)(0x41));
+
+	/* a new motor-on payload re-arms; a zero from ANOTHER pad is ignored while the
+	 * on pad's own zero is captured */
+	out_motor(&a, 48, 0x60, 0x00, 0x01);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 2 && d.dbg_out_off_armed == 1);
+	out_motor(&b, 48, 0x70, 0, 0);
+	CHECK(shim_output_filter(&d, bbuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 1 && d.dbg_out_off_armed == 1);
+	out_motor(&a, 48, 0x80, 0, 0);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 2 && d.dbg_out_off_len == 48);
+	CHECK(memcmp(d.dbg_out_off_cap, abuf, 48) == 0);
+	CHECK(d.dbg_out_off_armed == 0);
+
+	/* the on pad moves to another pad: its zero is the one captured, the old
+	 * pad's is not */
+	out_motor(&a, 48, 0x90, 0x01, 0x00);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	out_motor(&b, 48, 0xA0, 0x01, 0x00);
+	CHECK(shim_output_filter(&d, bbuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 4 && d.dbg_out_on_pad == pad_key(&b));
+	out_motor(&a, 48, 0xB0, 0, 0);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 2 && d.dbg_out_off_armed == 1);
+	out_motor(&b, 48, 0xC0, 0, 0);
+	CHECK(shim_output_filter(&d, bbuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 3 && d.dbg_out_off_armed == 0);
+	CHECK(memcmp(d.dbg_out_off_cap, bbuf, 48) == 0);
+
+	/* a motor-on payload while armed keeps it armed and just replaces the capture */
+	out_motor(&b, 48, 0xD0, 0x01, 0x00);
+	CHECK(shim_output_filter(&d, bbuf, 48, &rid, &ob, &ol) == 0);
+	out_motor(&b, 48, 0xE0, 0x00, 0xFF);
+	CHECK(shim_output_filter(&d, bbuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 6 && d.dbg_out_off_armed == 1);
+	CHECK(memcmp(d.dbg_out_on_cap, bbuf, 48) == 0);
+
+	/* the calls still return 0 and wrote no out-parameter */
+	CHECK(rid == 0 && ob == NULL && ol == 0);
+	return 0;
+}
+
+static int test_output_motor_short_payload(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t a;
+	uint8_t rid = 0;
+	const uint8_t *ob = NULL;
+	uint16_t ol = 0;
+	const uint8_t *buf;
+	int n;
+
+	pad_make(&a, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	buf = a.b + SHIM_PAD_OUT_BUF_OFF;
+
+	/* lengths 1..4 hold no motor bytes (bytes 2 and 4): never on, even with every
+	 * byte set */
+	memset(a.b + SHIM_PAD_OUT_BUF_OFF, 0xFF, 8);
+	for (n = 1; n <= 4; n++)
+		CHECK(shim_output_filter(&d, buf, (uint16_t)n, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 0 && d.dbg_out_on_len == 0 && d.dbg_out_on_pad == 0);
+	CHECK(d.dbg_out_off_armed == 0);
+
+	/* length 5 is the shortest that counts (byte 4 is inside it) */
+	CHECK(shim_output_filter(&d, buf, 5, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 1 && d.dbg_out_on_len == 5);
+	CHECK(d.dbg_out_on_pad == pad_key(&a));
+	CHECK(d.dbg_out_off_armed == 1);
+
+	/* a short all-zero payload from the same pad is not an off */
+	memset(a.b + SHIM_PAD_OUT_BUF_OFF, 0, 8);
+	for (n = 1; n <= 4; n++)
+		CHECK(shim_output_filter(&d, buf, (uint16_t)n, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 0 && d.dbg_out_off_len == 0);
+	CHECK(d.dbg_out_off_armed == 1);
+
+	/* length 5 and zero motors is */
+	CHECK(shim_output_filter(&d, buf, 5, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 1 && d.dbg_out_off_len == 5);
+	CHECK(d.dbg_out_off_armed == 0);
+
+	/* short payloads did not disturb the on capture */
+	CHECK(d.dbg_out_on_count == 1 && d.dbg_out_on_len == 5);
+	return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* DS3-route output hook, rewriting modes (1 probe, 2 full)                   */
+/* ------------------------------------------------------------------------ */
+
+/* A real DS3 output payload (48 bytes) at the pad's output buffer: durations
+ * 0x96, the two motors, the LED bitmap, four non-zero LED timing blocks (they
+ * are ignored), the rest zero. */
+static void out_ds3_payload(fake_pad_t *pad, uint8_t small, uint8_t large, uint8_t leds)
+{
+	uint8_t *p = pad->b + SHIM_PAD_OUT_BUF_OFF;
+	int i;
+
+	memset(p, 0, 48);
+	p[1] = 0x96;
+	p[2] = small;
+	p[3] = 0x96;
+	p[4] = large;
+	p[5] = 0x01;
+	p[9] = leds;
+	for (i = 0; i < 4; i++) {
+		p[10 + 5 * i + 0] = 0xFF;
+		p[10 + 5 * i + 1] = 0x27;
+		p[10 + 5 * i + 2] = 0x10;
+		p[10 + 5 * i + 3] = 0x00;
+		p[10 + 5 * i + 4] = 0x32;
+	}
+}
+
+/* The test's own reflected CRC-32 (0xEDB88320) of the byte 0xA2 followed by
+ * report bytes 0..73, bit by bit. */
+static uint32_t ref_crc_a2(const uint8_t *r)
+{
+	uint32_t crc = 0xFFFFFFFFu;
+	int i, b;
+
+	for (i = -1; i < 74; i++) {
+		crc ^= (i < 0) ? 0xA2u : r[i];
+		for (b = 0; b < 8; b++)
+			crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
+	}
+	return ~crc;
+}
+
+static int crc_bytes_ok(const uint8_t *r)
+{
+	uint32_t c = ref_crc_a2(r);
+
+	return r[74] == (uint8_t)c && r[75] == (uint8_t)(c >> 8) &&
+	       r[76] == (uint8_t)(c >> 16) && r[77] == (uint8_t)(c >> 24);
+}
+
+/* The data block for a rewriting mode, with the report buffer pre-filled so an
+ * untouched buffer is visible. */
+static ds45_shim_data_t data_out_mode(uint32_t mode, uint32_t seq)
+{
+	ds45_shim_data_t d = data_enabled();
+
+	d.out_mode = mode;
+	d.out_seq = seq;
+	memset(d.out_buf, 0xEE, sizeof(d.out_buf));
+	return d;
+}
+
+static int test_output_probe_rewrites(void)
+{
+	ds45_shim_data_t d = data_out_mode(1, 3);
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL, exp[DS_OUT_LEN];
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+
+	/* any payload at all: the probe does not read it */
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	out_payload(&pad, 48, 0x10);
+	ds3_output_probe(3, exp);
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 1);
+	CHECK(rid == 0x31);
+	CHECK(ob == d.out_buf + 1);
+	CHECK(ol == 77);
+	CHECK(memcmp(d.out_buf, exp, DS_OUT_LEN) == 0);
+	CHECK(d.out_buf[0] == 0x31 && d.out_buf[1] == 0x30);     /* sequence 3 */
+	CHECK(d.out_buf[41] == 0x02 && d.out_buf[44] == 0x02);   /* light bar setup */
+	CHECK(crc_bytes_ok(d.out_buf));
+	CHECK(d.out_buf[78] == 0xEE && d.out_buf[79] == 0xEE);   /* nothing past the report */
+	CHECK(d.out_seq == 4);
+	CHECK(d.dbg_out_translated == 1);
+	CHECK(d.dbg_out_passed == 0);
+	CHECK(d.dbg_out_calls == 1 && d.dbg_out_ds == 1);
+	CHECK(d.dbg_out_cap_len == 48);                          /* the capture still runs */
+	CHECK(memcmp(d.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(pad.b[SHIM_PAD_OUT_BUF_OFF + 5] == (uint8_t)(0x10 + 15));   /* payload intact */
+
+	/* the probe does not care about the shape: a short payload is rewritten too */
+	rid = RID_SENTINEL;
+	ob = (const uint8_t *)&pad;
+	ol = OLEN_SENTINEL;
+	ds3_output_probe(4, exp);
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 7, &rid, &ob, &ol) == 1);
+	CHECK(rid == 0x31 && ob == d.out_buf + 1 && ol == 77);
+	CHECK(memcmp(d.out_buf, exp, DS_OUT_LEN) == 0);
+	CHECK(d.out_seq == 5 && d.dbg_out_translated == 2 && d.dbg_out_passed == 0);
+	return 0;
+}
+
+static int test_output_full_rewrites_exact_bytes(void)
+{
+	ds45_shim_data_t d = data_out_mode(2, 5);
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL, exp[DS_OUT_LEN];
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+	const uint8_t *pl = pad.b + SHIM_PAD_OUT_BUF_OFF;
+	int i;
+
+	/* player 2, the small motor on, the large motor off: the console's payload
+	 * 00 96 01 96 00 00 00 00 00 04 | timing blocks | zeros */
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	memset(pad.b + SHIM_PAD_OUT_BUF_OFF, 0, 48);
+	{
+		static const uint8_t head[10] = { 0x00, 0x96, 0x01, 0x96, 0x00,
+		                                  0x00, 0x00, 0x00, 0x00, 0x04 };
+		memcpy(pad.b + SHIM_PAD_OUT_BUF_OFF, head, sizeof(head));
+	}
+	for (i = 10; i < 30; i++)
+		pad.b[SHIM_PAD_OUT_BUF_OFF + i] = (uint8_t)(0xC0 + i);
+
+	/* the report built by hand: id, seq 5 in the high nibble, tag, flags, right
+	 * motor full, left motor off, light bar setup (valid_flag2 and setup = 0x02),
+	 * player LEDs 0x0A, light bar red, zeros, CRC */
+	memset(exp, 0, sizeof(exp));
+	exp[0] = 0x31; exp[1] = 0x50; exp[2] = 0x10; exp[3] = 0x03; exp[4] = 0x14;
+	exp[5] = 0xFF; exp[6] = 0x00;
+	exp[41] = 0x02; exp[44] = 0x02;
+	exp[46] = 0x0A;
+	exp[47] = 0xFF; exp[48] = 0x00; exp[49] = 0x00;
+	exp[74] = 0x46; exp[75] = 0xF4; exp[76] = 0xCA; exp[77] = 0xE5;   /* hard-coded CRC */
+
+	CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 1);
+	CHECK(rid == 0x31 && ob == d.out_buf + 1 && ol == 77);
+	CHECK(memcmp(d.out_buf, exp, DS_OUT_LEN) == 0);
+	CHECK(crc_bytes_ok(d.out_buf));                         /* and the test's own CRC agrees */
+	CHECK(d.out_buf[78] == 0xEE && d.out_buf[79] == 0xEE);
+	CHECK(d.out_seq == 6);
+	CHECK(d.dbg_out_translated == 1 && d.dbg_out_passed == 0);
+	CHECK(d.dbg_out_calls == 1 && d.dbg_out_ds == 1);
+	CHECK(memcmp(d.dbg_out_cap, pl, 48) == 0);
+
+	/* both motors, player 1 (bitmap 0x02, extra non-LED bits ignored), sequence
+	 * 6 now: the large motor is passed through as it is */
+	out_ds3_payload(&pad, 0x00, 0x80, 0x02 | 0x01 | 0x80);
+	CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 1);
+	CHECK(d.out_buf[1] == 0x60);
+	CHECK(d.out_buf[5] == 0x00 && d.out_buf[6] == 0x80);
+	CHECK(d.out_buf[46] == 0x04);
+	CHECK(d.out_buf[47] == 0x00 && d.out_buf[48] == 0x00 && d.out_buf[49] == 0xFF);
+	CHECK(crc_bytes_ok(d.out_buf));
+	CHECK(d.out_seq == 7 && d.dbg_out_translated == 2 && d.dbg_out_passed == 0);
+
+	/* no LED bit: LEDs and light bar off */
+	out_ds3_payload(&pad, 0x00, 0x00, 0x00);
+	CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 1);
+	CHECK(d.out_buf[46] == 0 && d.out_buf[47] == 0 && d.out_buf[48] == 0 && d.out_buf[49] == 0);
+	CHECK(d.out_buf[5] == 0 && d.out_buf[6] == 0);
+	CHECK(crc_bytes_ok(d.out_buf));
+	return 0;
+}
+
+static int test_output_two_pads_use_own_leds(void)
+{
+	ds45_shim_data_t d = data_out_mode(2, 0);
+	fake_pad_t a, b;
+	uint8_t rid = 0, saved[DS_OUT_LEN];
+	const uint8_t *ob = NULL;
+	uint16_t ol = 0;
+	int i;
+
+	pad_make(&a, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	pad_make(&b, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	out_ds3_payload(&a, 0x00, 0x00, 0x02);   /* player 1: blue */
+	out_ds3_payload(&b, 0x01, 0x40, 0x04);   /* player 2: red  */
+
+	/* alternate the two pads: one counter 0,1,2,... wrapping 15 -> 0, each report
+	 * carrying its own pad's LEDs and colour */
+	for (i = 0; i < 20; i++) {
+		fake_pad_t *p = (i & 1) ? &b : &a;
+
+		rid = 0; ob = NULL; ol = 0;
+		CHECK(shim_output_filter(&d, p->b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 1);
+		CHECK(rid == 0x31 && ob == d.out_buf + 1 && ol == 77);
+		memcpy(saved, d.out_buf, sizeof(saved));
+		CHECK(saved[0] == 0x31);
+		CHECK((saved[1] >> 4) == (i & 0x0F));            /* 0..15, then back to 0 */
+		CHECK((saved[1] & 0x0F) == 0);
+		CHECK(saved[2] == 0x10 && saved[3] == 0x03 && saved[4] == 0x14);
+		CHECK(saved[41] == 0x02 && saved[44] == 0x02);   /* light bar setup */
+		if (i & 1) {
+			CHECK(saved[5] == 0xFF && saved[6] == 0x40);
+			CHECK(saved[46] == 0x0A);
+			CHECK(saved[47] == 0xFF && saved[48] == 0x00 && saved[49] == 0x00);
+		} else {
+			CHECK(saved[5] == 0x00 && saved[6] == 0x00);
+			CHECK(saved[46] == 0x04);
+			CHECK(saved[47] == 0x00 && saved[48] == 0x00 && saved[49] == 0xFF);
+		}
+		CHECK(crc_bytes_ok(saved));
+		CHECK(d.out_seq == (uint32_t)((i + 1) & 0x0F));
+	}
+	CHECK(d.dbg_out_translated == 20 && d.dbg_out_passed == 0);
+	CHECK(d.dbg_out_calls == 20 && d.dbg_out_ds == 20);
+	return 0;
+}
+
+static int test_output_malformed_dualsense_passes(void)
+{
+	ds45_shim_data_t d = data_out_mode(2, 7);
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+	const uint8_t *pl = pad.b + SHIM_PAD_OUT_BUF_OFF;
+	uint16_t lens[] = { 1, 5, 47, 49, 64 };
+	unsigned i, calls = 0;
+	static const int bad[] = { 7, 8, 30, 47 };
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+
+	/* wrong length */
+	out_ds3_payload(&pad, 0x01, 0x40, 0x02);
+	for (i = 0; i < sizeof(lens) / sizeof(lens[0]); i++) {
+		CHECK(shim_output_filter(&d, pl, lens[i], &rid, &ob, &ol) == 0);
+		calls++;
+	}
+	/* right length, wrong shape: a byte that must be zero is not */
+	for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+		out_ds3_payload(&pad, 0x01, 0x40, 0x02);
+		pad.b[SHIM_PAD_OUT_BUF_OFF + bad[i]] = 0x01;
+		CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 0);
+		calls++;
+	}
+
+	CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+	CHECK(d.out_seq == 7);
+	{
+		uint8_t ee[sizeof(d.out_buf)];
+
+		memset(ee, 0xEE, sizeof(ee));
+		CHECK(memcmp(d.out_buf, ee, sizeof(ee)) == 0);
+	}
+	CHECK(d.dbg_out_translated == 0);
+	CHECK(d.dbg_out_passed == calls);
+	CHECK(d.dbg_out_calls == calls && d.dbg_out_ds == calls);
+
+	/* a good payload right after still goes through, with the unadvanced counter */
+	out_ds3_payload(&pad, 0x01, 0x40, 0x02);
+	CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 1);
+	CHECK(d.out_buf[1] == 0x70 && d.out_seq == 8);
+	return 0;
+}
+
+static int test_output_ds3_never_rewritten_all_modes(void)
+{
+	uint32_t mode;
+	int kind;
+
+	/* kind 0: a DualShock 3 (the Sony pad class, PID 0x0268); 1: a pad of another
+	 * class; 2: a Sony class pad with another PID; 3: a pad with a wrong vendor */
+	for (kind = 0; kind < 4; kind++) {
+		for (mode = 0; mode <= 3; mode++) {
+			ds45_shim_data_t d = data_out_mode(mode, 9), before;
+			fake_pad_t pad, pad_before;
+			uint8_t rid = RID_SENTINEL;
+			const uint8_t *ob = (const uint8_t *)&pad;
+			uint16_t ol = OLEN_SENTINEL;
+
+			if (kind == 0)
+				pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DS3);
+			else if (kind == 1)
+				pad_make(&pad, PAD_VTABLE + 8, VID_SONY, PID_DUALSENSE);
+			else if (kind == 2)
+				pad_make(&pad, PAD_VTABLE, VID_SONY, 0x042F);
+			else
+				pad_make(&pad, PAD_VTABLE, 0x1234, PID_DUALSENSE);
+			out_ds3_payload(&pad, 0x01, 0x40, 0x04);
+			pad_before = pad;
+			before = d;
+			CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+			CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+			CHECK(memcmp(pad.b, pad_before.b, sizeof(pad.b)) == 0);
+			CHECK(d.out_seq == 9 && d.dbg_out_translated == 0);
+			CHECK(memcmp(d.out_buf, before.out_buf, sizeof(d.out_buf)) == 0);
+			CHECK(d.dbg_out_calls == 1 && d.dbg_out_ds == 0 && d.dbg_out_passed == 1);
+			CHECK(d.dbg_out_cap_len == 48);
+			CHECK(memcmp(d.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+		}
+	}
+	return 0;
+}
+
+static int test_output_mode0_never_rewrites(void)
+{
+	static const uint32_t modes[] = { 0, 3, 4, 7, 16, 255, 0x80000000u, 0xFFFFFFFFu };
+	unsigned i;
+
+	for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+		ds45_shim_data_t d = data_out_mode(modes[i], 2), before;
+		fake_pad_t pad, pad_before;
+		uint8_t rid = RID_SENTINEL;
+		const uint8_t *ob = (const uint8_t *)&pad;
+		uint16_t ol = OLEN_SENTINEL;
+
+		pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+		out_ds3_payload(&pad, 0x01, 0x40, 0x04);
+		pad_before = pad;
+		before = d;
+		CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+		CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+		CHECK(memcmp(pad.b, pad_before.b, sizeof(pad.b)) == 0);
+		CHECK(d.out_seq == 2 && d.dbg_out_translated == 0);
+		CHECK(memcmp(d.out_buf, before.out_buf, sizeof(d.out_buf)) == 0);
+		/* observed exactly as before: a DualSense, passed */
+		CHECK(d.dbg_out_calls == 1 && d.dbg_out_ds == 1 && d.dbg_out_passed == 1);
+		CHECK(d.dbg_out_cap_len == 48);
+	}
+	return 0;
+}
+
+static int test_output_bad_arguments_in_modes(void)
+{
+	uint32_t mode;
+	int sel;
+
+	for (mode = 1; mode <= 2; mode++) {
+		ds45_shim_data_t d = data_out_mode(mode, 4), zero;
+		fake_pad_t pad;
+		uint8_t rid = RID_SENTINEL;
+		const uint8_t *ob = (const uint8_t *)&pad;
+		uint16_t ol = OLEN_SENTINEL;
+		const uint8_t *buf;
+
+		pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+		out_ds3_payload(&pad, 0x01, 0x40, 0x04);
+		buf = pad.b + SHIM_PAD_OUT_BUF_OFF;
+
+		/* NULL data block */
+		CHECK(shim_output_filter(NULL, buf, 48, &rid, &ob, &ol) == 0);
+
+		/* NULL buffer, length 0, length 65: counted as calls, nothing else */
+		zero = d;
+		CHECK(shim_output_filter(&d, NULL, 48, &rid, &ob, &ol) == 0);
+		zero.dbg_out_calls = 1;
+		CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+		CHECK(shim_output_filter(&d, buf, 0, &rid, &ob, &ol) == 0);
+		zero.dbg_out_calls = 2;
+		CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+		CHECK(shim_output_filter(&d, buf, 65, &rid, &ob, &ol) == 0);
+		zero.dbg_out_calls = 3;
+		CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+		/* shim disabled */
+		d = data_out_mode(mode, 4);
+		d.enabled = 0;
+		zero = d;
+		CHECK(shim_output_filter(&d, buf, 48, &rid, &ob, &ol) == 0);
+		zero.dbg_out_calls = 1;
+		CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+		/* a DualSense in the rewriting stage whose caller passed a NULL out-parameter
+		 * (rid, out_buf, out_len in turn): never rewritten, passed through, nothing
+		 * written through the other two, out_seq not advanced, out_buf untouched,
+		 * counted as one passed call */
+		for (sel = 0; sel < 3; sel++) {
+			ds45_shim_data_t before;
+			uint8_t r2 = RID_SENTINEL;
+			const uint8_t *ob2 = (const uint8_t *)&pad;
+			uint16_t ol2 = OLEN_SENTINEL;
+
+			d = data_out_mode(mode, 4);
+			before = d;
+			CHECK(shim_output_filter(&d, buf, 48, sel == 0 ? NULL : &r2,
+			                         sel == 1 ? NULL : &ob2,
+			                         sel == 2 ? NULL : &ol2) == 0);
+			CHECK(r2 == RID_SENTINEL && ob2 == (const uint8_t *)&pad && ol2 == OLEN_SENTINEL);
+			CHECK(d.out_seq == 4 && d.dbg_out_translated == 0);
+			CHECK(memcmp(d.out_buf, before.out_buf, sizeof(d.out_buf)) == 0);
+			CHECK(d.dbg_out_calls == before.dbg_out_calls + 1 &&
+			      d.dbg_out_ds == before.dbg_out_ds + 1 &&
+			      d.dbg_out_passed == before.dbg_out_passed + 1);
+		}
+
+		CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+		CHECK(d.out_seq == 4 && d.dbg_out_translated == 0);
+	}
+	return 0;
+}
+
+/* The glue: on the host shim_output is the C body itself (entry.c), and it
+ * decides on the one shared data object. */
+static int test_glue_output(void)
+{
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = NULL;
+	uint16_t ol = OLEN_SENTINEL;
+
+	ds45_shim_data = data_enabled();
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	out_payload(&pad, 48, 0x20);
+	CHECK(shim_output(pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(ds45_shim_data.dbg_out_calls == 1);
+	CHECK(ds45_shim_data.dbg_out_ds == 1);
+	CHECK(ds45_shim_data.dbg_out_passed == 1);
+	CHECK(ds45_shim_data.dbg_out_cap_len == 48);
+	CHECK(memcmp(ds45_shim_data.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(rid == RID_SENTINEL && ob == NULL && ol == OLEN_SENTINEL);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int (*const tests[])(void) = {
+		test_output_counts_and_captures,
+		test_output_ds3_pad_untouched,
+		test_output_bad_arguments,
+		test_output_capture_keeps_last,
+		test_output_motor_on_capture,
+		test_output_motor_off_after_on_same_pad,
+		test_output_motor_short_payload,
+		test_output_probe_rewrites,
+		test_output_full_rewrites_exact_bytes,
+		test_output_two_pads_use_own_leds,
+		test_output_malformed_dualsense_passes,
+		test_output_ds3_never_rewritten_all_modes,
+		test_output_mode0_never_rewrites,
+		test_output_bad_arguments_in_modes,
+		test_glue_output,
 		test_stable_identity_from_connection,
 		test_stable_identity_survives_reconnect,
 		test_stable_identity_fallbacks,
@@ -1229,6 +2756,20 @@ int run_tests(void)
 		test_dbg_counts_event,
 		test_dbg_counts_enable,
 		test_input_note,
+		test_input_mode0_unchanged,
+		test_input_ds3_bounced_unchanged,
+		test_input_bounce_translates_full_report,
+		test_input_bounce_basic_report,
+		test_input_bounce_never_overruns_dst,
+		test_input_bounce_error_and_zero,
+		test_input_bounce_drop_oversize,
+		test_input_bounce_counters,
+		test_input_bounce_counters_other_pad,
+		test_input_bounce_pad_lookup,
+		test_input_raw_capture_full_report,
+		test_input_raw_capture_basic_report,
+		test_input_raw_capture_only_dualsense,
+		test_input_raw_capture_seq_counts,
 	};
 	unsigned i;
 	int line;

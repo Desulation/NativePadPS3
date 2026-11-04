@@ -353,10 +353,102 @@ static char *shim_dbg_hex(char *p, uint32_t v)
 	return p;
 }
 
+/* DS3-route output capture: one payload the output hook saw, as hex on its own
+ * line, written only when it differs from the one last written for the same
+ * capture (the pad's output reports repeat, so the trace shows each distinct
+ * payload once). tag is "outcap", "outon" or "outoff"; len_off and cap_off are
+ * the capture's length and 64-byte buffer in the data block; last and last_len
+ * are that capture's own memory of what was last written. */
+static void shim_dbg_cap_line(uint64_t base, const char *tag, size_t len_off,
+                              size_t cap_off, uint8_t last[64], uint32_t *last_len)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	uint8_t cap[64];
+	char line[160];   /* tag (<= 6) + " len=0x" + 8 + ' ' + 128 hex digits + '\n' = 151 */
+	char *p = line;
+	uint32_t len = shim_dbg_u32(base, len_off);
+	uint32_t i;
+
+	if (len > sizeof cap)
+		len = sizeof cap;
+	if (ds45_lv2_read_bytes(base + cap_off, cap, (int)sizeof cap))
+		return;
+	if (len == *last_len && memcmp(cap, last, len) == 0)
+		return;
+	*last_len = len;
+	memcpy(last, cap, sizeof cap);
+
+	p = shim_dbg_tag(p, tag);
+	p = shim_dbg_tag(p, " len=");
+	p = shim_dbg_hex(p, len);
+	*p++ = ' ';
+	for (i = 0; i < len; i++) {
+		*p++ = hex[cap[i] >> 4];
+		*p++ = hex[cap[i] & 0xF];
+	}
+	*p++ = '\n';
+	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+}
+
+/* The last raw DualSense report the input hook read, before translation
+ * ("inraw"): its captured length, the capture counter and the bytes as hex. Written
+ * only when the counter changed since the last line, so an idle pad adds nothing;
+ * a busy one adds a line per housekeeping tick, not per report. It shows what the
+ * pad really sends (the battery status byte is report byte 54). */
+static void shim_dbg_inraw(uint64_t base)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	static uint32_t last_seq;
+	uint8_t cap[64];
+	char line[192];   /* "inraw len=0x" + 8 + " seq=0x" + 8 + ' ' + 128 hex digits + '\n' = 165 */
+	char *p = line;
+	uint32_t seq = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_raw_seq));
+	uint32_t len, i;
+
+	if (seq == last_seq)
+		return;
+	len = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_raw_len));
+	if (len > sizeof cap)
+		len = sizeof cap;
+	if (ds45_lv2_read_bytes(base + offsetof(ds45_shim_data_t, dbg_in_raw), cap, (int)sizeof cap))
+		return;
+	last_seq = seq;
+
+	p = shim_dbg_tag(p, "inraw len=");
+	p = shim_dbg_hex(p, len);
+	p = shim_dbg_tag(p, " seq=");
+	p = shim_dbg_hex(p, seq);
+	*p++ = ' ';
+	for (i = 0; i < len; i++) {
+		*p++ = hex[cap[i] >> 4];
+		*p++ = hex[cap[i] & 0xF];
+	}
+	*p++ = '\n';
+	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+}
+
+/* The last payload of any kind ("outcap"), then the last motor-on payload
+ * ("outon") and the next zero-motor payload from that same pad ("outoff"). */
+static void shim_dbg_outcap(uint64_t base)
+{
+	static uint8_t last_cap[64], last_on[64], last_off[64];
+	static uint32_t len_cap, len_on, len_off;
+
+	shim_dbg_cap_line(base, "outcap", offsetof(ds45_shim_data_t, dbg_out_cap_len),
+	                  offsetof(ds45_shim_data_t, dbg_out_cap), last_cap, &len_cap);
+	shim_dbg_cap_line(base, "outon", offsetof(ds45_shim_data_t, dbg_out_on_len),
+	                  offsetof(ds45_shim_data_t, dbg_out_on_cap), last_on, &len_on);
+	shim_dbg_cap_line(base, "outoff", offsetof(ds45_shim_data_t, dbg_out_off_len),
+	                  offsetof(ds45_shim_data_t, dbg_out_off_cap), last_off, &len_off);
+}
+
 static void shim_dbg_trace(void)
 {
 	uint64_t base = 0, vt = 0;
-	char line[320];   /* the longest line is ~235 bytes */
+	/* The longest line is 425 bytes: 25 tags (164 bytes with their spaces and
+	 * '='), 26 values of "0x" and 8 hex digits (260 bytes; lastvt is two of them)
+	 * and the newline. 448 leaves margin. */
+	char line[448];
 	char *p = line;
 
 	if (!kshim_dbg_data_base(&base))
@@ -394,9 +486,40 @@ static void shim_dbg_trace(void)
 	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_id_fallback)));
 	p = shim_dbg_tag(p, " hnd=");
 	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_last_handle)));
+	/* DS3-route output hook: calls entered, calls for a DualSense, calls rewritten,
+	 * calls passed through unchanged, and the last call's payload length */
+	p = shim_dbg_tag(p, " outc=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_calls)));
+	p = shim_dbg_tag(p, " outds=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_ds)));
+	p = shim_dbg_tag(p, " outxl=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_translated)));
+	p = shim_dbg_tag(p, " outps=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_passed)));
+	p = shim_dbg_tag(p, " outlen=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_last_len)));
+	/* rumble-aware capture: motor-on payloads seen, and zero-motor payloads that
+	 * followed one from the same pad */
+	p = shim_dbg_tag(p, " outon=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_on_count)));
+	p = shim_dbg_tag(p, " outoff=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_off_count)));
+	/* DS3-route input (the full report): reads of a DualSense through the bounce
+	 * buffer, reads of 66-79 bytes, results dropped for not fitting the caller's
+	 * buffer, and errors */
+	p = shim_dbg_tag(p, " inb=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_bounce)));
+	p = shim_dbg_tag(p, " inbig=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_big)));
+	p = shim_dbg_tag(p, " indrop=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_drop)));
+	p = shim_dbg_tag(p, " inerr=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_err)));
 	*p++ = '\n';
 
 	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+	shim_dbg_outcap(base);
+	shim_dbg_inraw(base);
 }
 #endif /* DS45_DEBUG */
 

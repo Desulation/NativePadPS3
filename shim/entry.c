@@ -2,7 +2,7 @@
  * DS45PAD kernel shim - blob entry points (kernel-ABI glue).
  *
  * This is the one translation unit unique to the blob (shim.c, ds3_report.c,
- * src/sixaxis.c and src/ds_body.c are shared with the host tests). It defines
+ * ds3_output.c, src/sixaxis.c and src/ds_body.c are shared with the host tests). It defines
  * the single data object the plugin fills in, and the three wrappers the plugin
  * points the kernel's DS3 driver at: the start-up driver's event handler, the
  * enable (0xF4) driver's event handler and the Bluetooth transport's input read.
@@ -82,24 +82,47 @@ int SHIM_HOOK(shim_enable)(void *drv, long status, long len)
 	return ((orig_event_fn)(uintptr_t)ds45_shim_data.orig_enable)(drv, status, len);
 }
 
-/* Bluetooth transport input read (method 4, slot 0x37CE38). Always run the
- * original first to fill dst and get the byte count. Then find the pad that
- * owns this transport in the pad manager (the transport has no pointer back to
- * its pad) and, for an enabled DualSense, let the filter rewrite its report in
- * dst into a DS3 report. An error or implausible count from the original, or a
- * buffer too small for a DS3 report, returns the original result untouched.
- * Every other read - a DS3's included - pays the bounded 16-entry manager scan
- * and is counted in stat_passed by the filter (vid/pid 0 for a non-DualSense),
- * so on the console stat_passed rises with any pad's reads, not just a
- * DualSense's. */
+/* Bluetooth transport input read (method 4, slot 0x37CE38).
+ *
+ * Bounce path, EVERY read in modes 1 and 2 (the modes that raise the read limit
+ * to 0x50, so a DualSense's full 0x31 report arrives whole), when the shim is
+ * enabled and xport and dst are non-NULL, whichever pad it is. The transport
+ * read copies the whole packet into its destination with no bound, the limit is
+ * shared by every device on the channel and the pad driver's buffer is 64
+ * bytes, so no read may go to the caller's buffer directly (and which pad it is
+ * cannot be decided before the read: the transport has no pointer back to its
+ * pad, and a lookup that misses must not mean an overrun). The original is given
+ * the shim's own 96-byte buffer (d->inbuf) and 0x50 as its length instead (it
+ * only tests the length for non-zero; the pad manager lock serialises reads, so
+ * one buffer is enough). After the read the pad is looked up and
+ * shim_input_bounce translates a DualSense's report in the bounce buffer, passes
+ * any other pad's bytes through unchanged, and copies at most len_in bytes to the
+ * caller's buffer (anything longer is dropped).
+ *
+ * Normal path - every other case (mode 0 or any other mode value, a disabled
+ * shim, NULL arguments): run the original first with the caller's own dst and
+ * length to fill dst and get the byte count. Then find the pad that owns this transport in the pad manager
+ * and, for an enabled DualSense, let the filter rewrite its report in dst into a
+ * DS3 report. An error or implausible count from the original, or a buffer too
+ * small for a DS3 report, returns the original result untouched. Every such
+ * read - a DS3's included - pays the bounded 16-entry manager scan and is
+ * counted in stat_passed by the filter (vid/pid 0 for a non-DualSense), so on
+ * the console stat_passed rises with any pad's reads, not just a DualSense's. */
 int SHIM_HOOK(shim_input)(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 {
-	int rc = ((orig_input_fn)(uintptr_t)ds45_shim_data.orig_input)(xport, dst,
-	                                                               len_in, flag);
+	orig_input_fn orig = (orig_input_fn)(uintptr_t)ds45_shim_data.orig_input;
 	const uint8_t *pad;
-	int ds;
+	int rc, ds;
 	uint16_t n;
 
+	if (ds45_shim_data.enabled && xport && dst &&
+	    (ds45_shim_data.out_mode == 1 || ds45_shim_data.out_mode == 2)) {
+		rc = orig(xport, ds45_shim_data.inbuf, SHIM_IN_BOUNCE_LEN, flag);
+		pad = rc >= 0 ? shim_pad_from_xport(&ds45_shim_data, xport) : 0;
+		return shim_input_bounce(&ds45_shim_data, pad, dst, len_in, rc);
+	}
+
+	rc = orig(xport, dst, len_in, flag);
 	if (!ds45_shim_data.enabled || !xport || !dst || rc < 0 || rc > 0x41 ||
 	    len_in < DS3_REPORT_LEN)
 		return rc;
@@ -114,7 +137,32 @@ int SHIM_HOOK(shim_input)(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 	                         dst, &n);
 }
 
+/* DS3-route output decision, called by the shim_output stub below, not by the
+ * kernel: the stub is entered by a plain `bl` at the kernel's output call (the
+ * Bluetooth sender 0x10283C is called with r3 = connection handle, r4 = 2,
+ * r5 = report id, r6 = payload, r7 = length), saves those arguments and passes
+ * this body the payload (buf), its length and three out-parameter slots in its own
+ * frame. A 1 means "replace report id, payload and length with *rid, *obuf,
+ * *olen"; the body (shim_output_filter) answers 1 only for a DualSense in the
+ * rewriting stages (out_mode 1 and 2) and 0 in observe mode (out_mode 0, which is
+ * also what the plugin writes without the input hook). The original sender is
+ * tail-called by the stub, never from here. */
+int SHIM_HOOK(shim_output)(const uint8_t *buf, uint16_t len, uint8_t *rid,
+                           const uint8_t **obuf, uint16_t *olen)
+{
+	return shim_output_filter(&ds45_shim_data, buf, len, rid, obuf, olen);
+}
+
 #ifndef DS45_HOST_TEST
+/* orig_output's offset in the data block, spelled out for the stub below (an
+ * asm block cannot take offsetof). The typedef fails the build if the ABI
+ * header ever moves the field. */
+#define SHIM_OFF_ORIG_OUTPUT 328   /* 304 until version 10 grew pid_orig by 24 bytes */
+typedef char shim_off_orig_output_matches_abi[
+	(__builtin_offsetof(ds45_shim_data_t, orig_output) == SHIM_OFF_ORIG_OUTPUT) ? 1 : -1];
+#define SHIM_XSTR_(x) #x
+#define SHIM_XSTR(x) SHIM_XSTR_(x)
+
 /* The kernel's vtable dispatch (framework 0xCB5C0, input caller 0x2A4E00) loads
  * the descriptor's env word (opd+0x10) into r11 and the entry (opd+0) but never
  * r2, assuming the one kernel TOC. Our descriptors put the blob TOC in BOTH toc
@@ -139,6 +187,7 @@ __asm__(
 "\t.globl shim_event\n"  "shim_event:\n"  "\t.quad .Ltr_event, .TOC.@tocbase, .TOC.@tocbase\n"
 "\t.globl shim_enable\n" "shim_enable:\n" "\t.quad .Ltr_enable, .TOC.@tocbase, .TOC.@tocbase\n"
 "\t.globl shim_input\n"  "shim_input:\n"  "\t.quad .Ltr_input, .TOC.@tocbase, .TOC.@tocbase\n"
+"\t.globl shim_output\n" "shim_output:\n" "\t.quad .Ltr_output, .TOC.@tocbase, .TOC.@tocbase\n"
 "\t.text\n"
 "\t.p2align 2\n"
 ".Ltr_event:\n"
@@ -153,5 +202,95 @@ __asm__(
 "\tmflr 0\n" "\tstd 0, 16(1)\n" "\tstdu 1, -0x30(1)\n" "\tstd 2, 0x20(1)\n"
 "\tmr 2, 11\n" "\tbl shim_input_impl\n" "\tnop\n"
 "\tld 2, 0x20(1)\n" "\taddi 1, 1, 0x30\n" "\tld 0, 16(1)\n" "\tmtlr 0\n" "\tblr\n"
+);
+
+/* shim_output: the output hook, entered by a PLAIN `bl` from the kernel's code
+ * at the call to the Bluetooth sender 0x10283C (0x2A2DE8 on DEX 4.92; facts note
+ * F6), unlike the three hooks above, which the kernel reaches through a vtable
+ * descriptor. It has a descriptor only so tools/shim_pack.py finds its code
+ * entry (DS45_SHIM_OFF_OUTPUT); nothing dispatches through it, so r11 is NOT the
+ * blob TOC here and r2 is the KERNEL TOC.
+ *
+ * On entry (kernel contract):
+ *   r2  kernel TOC             r3  connection handle byte   r4  2 (output)
+ *   r5  report id (1)          r6  payload (pad + 0x22B)    r7  length (48)
+ *   LR  the instruction after the kernel's bl     r1  the kernel caller's frame
+ *   r14..r31 live (the kernel needs them preserved)   r0, r8..r12, cr7 dead.
+ * On exit it BRANCHES (bctr) to the original sender, so that must see exactly
+ * what the kernel's bl would have given it: r2 = kernel TOC, LR = the kernel's
+ * return address, r1 = the kernel's frame, r3, r4 unchanged, and r5, r6, r7
+ * unchanged - or, if the decision rewrote the call, replaced by the report id,
+ * payload pointer and length (a 16-bit length, in r7). The original then returns
+ * straight to the kernel. Registers touched: r0, r2 (restored), r3..r7, r11, r12,
+ * CTR, cr0 and cr7, LR (restored); the C body keeps r14..r31 intact by itself.
+ * The frame is below r1: nothing above it is touched.
+ *
+ * Steps: 1. save LR, r2, r3..r7 in a new frame; 2. adopt the BLOB TOC into r2
+ * position-independently: `bcl 20,31` (the PC-capture form of bl-to-next that
+ * does not unbalance the return-address predictor) + mflr give the address of
+ * .Ltr_output_pc, and the 8-byte literal .Ltr_output_toc beside the stub holds
+ * `.TOC.@tocbase`, an R_PPC64_TOC word the packer rebases to the load base like
+ * the descriptor words; 3. call shim_output_impl(payload, length, &rid, &obuf,
+ * &olen) with the three out-parameters in the frame (the nop after the bl is, as
+ * in the wrappers above, the TOC-restore slot a linker may rewrite; r2 stays the
+ * blob TOC across the call, which is all this needs); 4. with r2 still the blob
+ * TOC, load ds45_shim_data.orig_output (TOC-relative, PC-independent) into CTR;
+ * 5. restore the kernel r2, r3, r4, then r5..r7 from the frame, or from the
+ * out-parameters if the result was non-zero; 6. restore LR, pop the frame, bctr.
+ *
+ * Frame (0xC0 bytes, 16-aligned; the stdu keeps the back chain):
+ *   0x00 back chain   0x08 CR   0x10 LR slot (the callee's)   0x18..0x2F reserved
+ *   0x30..0x6F parameter save area for the callee (8 doublewords, ELFv1)
+ *   0x70 rid (byte)   0x78 obuf (pointer)   0x80 olen (halfword)
+ *   0x88 saved LR   0x90 saved r2   0x98 r3   0xA0 r4   0xA8 r5   0xB0 r6   0xB8 r7
+ * The three out-parameters are read back at the very addresses (and widths) the
+ * body stores them, so byte order and zero-extension need no thought. */
+__asm__(
+"\t.text\n"
+"\t.p2align 2\n"
+".Ltr_output:\n"
+"\tmflr 0\n"
+"\tstdu 1, -0xC0(1)\n"
+"\tstd 0, 0x88(1)\n"
+"\tstd 2, 0x90(1)\n"
+"\tstd 3, 0x98(1)\n"
+"\tstd 4, 0xA0(1)\n"
+"\tstd 5, 0xA8(1)\n"
+"\tstd 6, 0xB0(1)\n"
+"\tstd 7, 0xB8(1)\n"
+"\tbcl 20, 31, .Ltr_output_pc\n"
+".Ltr_output_pc:\n"
+"\tmflr 12\n"
+"\tld 2, .Ltr_output_toc-.Ltr_output_pc(12)\n"
+"\tmr 3, 6\n"
+"\tclrldi 4, 7, 48\n"
+"\taddi 5, 1, 0x70\n"
+"\taddi 6, 1, 0x78\n"
+"\taddi 7, 1, 0x80\n"
+"\tbl shim_output_impl\n" "\tnop\n"
+"\taddis 12, 2, ds45_shim_data+" SHIM_XSTR(SHIM_OFF_ORIG_OUTPUT) "@toc@ha\n"
+"\tld 12, ds45_shim_data+" SHIM_XSTR(SHIM_OFF_ORIG_OUTPUT) "@toc@l(12)\n"
+"\tmtctr 12\n"
+"\tcmpwi 7, 3, 0\n"
+"\tld 2, 0x90(1)\n"
+"\tld 3, 0x98(1)\n"
+"\tld 4, 0xA0(1)\n"
+"\tbeq 7, .Ltr_output_keep\n"
+"\tlbz 5, 0x70(1)\n"
+"\tld 6, 0x78(1)\n"
+"\tlhz 7, 0x80(1)\n"
+"\tb .Ltr_output_done\n"
+".Ltr_output_keep:\n"
+"\tld 5, 0xA8(1)\n"
+"\tld 6, 0xB0(1)\n"
+"\tld 7, 0xB8(1)\n"
+".Ltr_output_done:\n"
+"\tld 0, 0x88(1)\n"
+"\tmtlr 0\n"
+"\taddi 1, 1, 0xC0\n"
+"\tbctr\n"
+"\t.p2align 3\n"
+".Ltr_output_toc:\n"
+"\t.quad .TOC.@tocbase\n"
 );
 #endif

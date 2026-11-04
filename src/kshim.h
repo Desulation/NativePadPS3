@@ -30,6 +30,8 @@
 
 #define DS45_SHIM_PID_PATCHES     1   /* helper branch, always */
 #define DS45_SHIM_INLINE_PATCHES  2   /* inline words, only with SHIM_INLINE_PID = 1 */
+#define DS45_SHIM_OUTPUT_PATCHES  4   /* output call site, cap word, two TOC slots (SHIM_OUTPUT_HOOK) */
+#define DS45_SHIM_RECV_PATCHES    3   /* receive-limit words (SHIM_OUTPUT_HOOK, probe and full mode) */
 
 /* One firmware. The fingerprint is the same (fp_addr, fp_hash) scheme
  * ds45_kernel_t uses, so a row is only ever applied to the kernel it was
@@ -66,6 +68,29 @@ typedef struct {
 	const uint8_t *info_tmpl;                  /* DS45_SHIM_INFO_LEN bytes (facts note C1.5) */
 	ds45_kpatch_t pid_patches[DS45_SHIM_PID_PATCHES];
 	ds45_kpatch_t inline_patches[DS45_SHIM_INLINE_PATCHES];
+	/* The DS3-route output sites (data-block product-ID sites 3-6): [0] the call
+	 * site (BRANCHL, aimed at the blob's output entry at install), [1] the send
+	 * cap word (WORD), [2] and [3] the two TOC slots of the packet buffer (PTR rows,
+	 * aimed at the blob's packet buffer and that plus one at install). Applied
+	 * only with SHIM_OUTPUT_HOOK (the cap word also only outside observe mode and
+	 * only with SHIM_INPUT_HOOK, the bounce that can receive the long report),
+	 * and only when orig_output is non-zero: the code address of the kernel's
+	 * Bluetooth output sender they lead to (0x10283C on DEX 4.92; 0 = none, every
+	 * output site off), which the output hook tail-calls. */
+	ds45_kpatch_t output_patches[DS45_SHIM_OUTPUT_PATCHES];
+	/* The receive-limit words (data-block product-ID sites 7-9): three WORD rows,
+	 * each the `li r7,0x41` that sets the read limit (0x41) of a channel-1 receive
+	 * function of the Bluetooth transport, rewritten to `li r7,0x50` so the
+	 * DualSense's 79-byte full report is accepted (the limit goes from 0x41 to
+	 * 0x50). Applied
+	 * exactly when the cap word is - SHIM_OUTPUT_HOOK with SHIM_OUTPUT_MODE 1 or 2,
+	 * SHIM_INPUT_HOOK on and a non-zero orig_output - and only together with the
+	 * two packet-buffer slots (sites 5 and 6): the larger read would otherwise run
+	 * past the kernel's packet buffer. All three must be populated for such an
+	 * install, or it is refused. They are the last writes of the install (after the
+	 * redirects) and so the first reverts of an unload. */
+	ds45_kpatch_t recv_patches[DS45_SHIM_RECV_PATCHES];
+	uint64_t orig_output;
 } ds45_shim_kernel_t;
 extern const ds45_shim_kernel_t ds45_shim_table[];
 extern const int ds45_shim_table_count;
@@ -83,7 +108,12 @@ typedef enum { KSHIM_OFF = 0, KSHIM_INSTALLED, KSHIM_ALREADY, KSHIM_NO_ENTRY, KS
  *   KSHIM_FAILED    a target was not as expected, the fixed exec region did not
  *                   read zero or did not fit under exec_bound, or a write did not
  *                   read back; everything already written is undone and the kernel
- *                   image is byte-identical to before.
+ *                   image is byte-identical to before. Also returned, with nothing
+ *                   written, journalled or armed (a later unload does nothing), when
+ *                   an install that would be adopted recorded a receive-limit word
+ *                   as applied that is no longer exactly our patched value: the
+ *                   earlier blob stays live as it is, because its input bounce and
+ *                   its raised limits can only be taken away together.
  * The two inline product-ID words are applied only when g_cfg.shim_inline_pid is
  * set (config key SHIM_INLINE_PID). Debug builds trace the failing step. */
 kshim_result_t kshim_install(void);
@@ -99,7 +129,9 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n);
  * qword (pid_orig) and which sites it applied (pid_applied), and adoption
  * journals a site only if that original hashes to the row's expected value and
  * the site still holds it with the row's instruction applied; any other site is
- * left as found.
+ * left as found - except the receive-limit words (sites 7-9): if one of those
+ * recorded as applied is not provably ours the whole adoption is refused
+ * (KSHIM_FAILED).
  *
  * Unload is two steps, because the fixed blob region cannot be freed and a driver
  * thread may still be executing inside it:

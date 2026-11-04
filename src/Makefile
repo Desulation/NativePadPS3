@@ -157,11 +157,13 @@ SHIM_CFLAGS  = --target=powerpc64-unknown-linux-gnu -std=c99 -O2 -ffreestanding 
 
 shim-blob:
 	$(SHIM_CLANG) $(SHIM_CFLAGS) -c ../shim/entry.c      -o ../shim/entry.o
+	$(SHIM_CLANG) $(SHIM_CFLAGS) -c ../shim/shim.c       -o ../shim/shim.o
 	$(SHIM_CLANG) $(SHIM_CFLAGS) -c ../shim/ds3_report.c -o ../shim/ds3_report.o
+	$(SHIM_CLANG) $(SHIM_CFLAGS) -c ../shim/ds3_output.c -o ../shim/ds3_output.o
 	$(SHIM_CLANG) $(SHIM_CFLAGS) -c sixaxis.c            -o ../shim/sixaxis.o
 	$(SHIM_CLANG) $(SHIM_CFLAGS) -c ds_body.c            -o ../shim/ds_body.o
 	$(SHIM_LLD) -m elf64ppc -T ../shim/shim.ld --emit-relocs --no-dynamic-linker \
-	    -static ../shim/entry.o ../shim/ds3_report.o ../shim/sixaxis.o \
+	    -static ../shim/entry.o ../shim/shim.o ../shim/ds3_report.o ../shim/ds3_output.o ../shim/sixaxis.o \
 	    ../shim/ds_body.o -o ../shim/shim.elf
 	$(SHIM_PY) -I ../tools/shim_pack.py ../shim/shim.elf shim_blob.h
 
