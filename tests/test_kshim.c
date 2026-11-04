@@ -55,6 +55,9 @@
 #define PAD_VTABLE   0x800000000038CDC8ULL
 #define PAD_MGR      0x80000000004A1CB8ULL
 #define CONN_TBL     0x8000000000432690ULL
+/* The code address of the kernel's Bluetooth output sender (0x10283C on DEX
+ * 4.92), which the output hook will tail-call; here only carried into the block. */
+#define OUTPUT_ORIG  0x800000000010283CULL
 
 /* The product-ID WORD rows, shaped like the DEX 4.92 row: the patched
  * instruction is the LOW half of its qword (addr & 4 set) and the high half is a
@@ -73,6 +76,16 @@
 #define PID1_Q       0x3C3C3C3C4D4D4D4DULL
 #define PID1_WORD    0x4BFFFC48u
 #define HI32         0xFFFFFFFF00000000ULL
+
+/* Product-ID sites 3-6 (the output call site, the cap word and the two TOC
+ * slots) exist in the layout but are not enabled yet: a row's output_patches
+ * must never be applied, recorded or adopted. These are made-up qwords with a
+ * WORD row each, planted so that a site wrongly selected would be patched. */
+#define OUT_PATCHES_N 4
+#define OUT_QA(i)    (B + 0x7100 + 8 * (i))
+#define OUT_SITE(i)  (OUT_QA(i) + 4)
+#define OUT_Q(i)     (0x7171717100000000ULL + (uint64_t)(i) * 0x0101010101ULL)
+#define OUT_WORD(i)  (0x60000000u + (uint32_t)(i))
 
 /* The fixed executable base the blob is placed at (design Amendment 2): an
  * in-window address clear of every table-entry address above, standing in for
@@ -361,6 +374,7 @@ static void setup(void)
 	g_ent.pad_vtable = PAD_VTABLE;
 	g_ent.pad_mgr = PAD_MGR;
 	g_ent.conn_tbl = CONN_TBL;
+	g_ent.orig_output = OUTPUT_ORIG;
 	g_ent.info_tmpl = g_tmpl;
 	g_ent.pid_patches[0].kind = DS45_KPATCH_WORD;
 	g_ent.pid_patches[0].addr = HELPER_SITE;
@@ -472,7 +486,7 @@ static int check_blob_image(void)
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 7 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 8 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
 	          EVENT_ORIG ? 0 : __LINE__);
@@ -490,6 +504,20 @@ static int check_blob_image(void)
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_id_bd)) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_id_fallback)) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_last_handle)) == 0 ? 0 : __LINE__);
+	/* the DS3-route output fields: the sender's address from the row, the mode
+	 * from the config (setup leaves it 0), everything else cleared */
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_output)) ==
+	          OUTPUT_ORIG ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, out_mode)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, out_seq)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_calls)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_cap_len)) == 0 ? 0 : __LINE__);
+	for (i = 0; i < 64; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_out_cap) + i] == 0 ? 0 : __LINE__);
+	for (i = 0; i < 80; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, out_buf) + i] == 0 ? 0 : __LINE__);
+	for (i = 0; i < 96; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, pktbuf) + i] == 0 ? 0 : __LINE__);
 
 	cfg = db + offsetof(ds45_shim_data_t, cfg);
 	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, deadzone)] == 12 ? 0 : __LINE__);
@@ -523,6 +551,8 @@ static int check_blob_image(void)
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig)) == HELPER_Q ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 8) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 16) == 0 ? 0 : __LINE__);
+	for (i = 3; i < DS45_SHIM_PID_SITES; i++)       /* the output sites: not enabled */
+		CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * i) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, pid_applied)) == 1 ? 0 : __LINE__);
 
 	/* flush OPD placed just past the blob: { entry, kernel TOC } */
@@ -972,6 +1002,89 @@ static int test_stable_id_switch(void)
 	CHECK((rd(db + offsetof(ds45_shim_data_t, stable_id)) >> 32) == 1);
 	kshim_remove();
 	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* SHIM_OUTPUT_MODE reaches the blob as out_mode, only for 0..2 (the parser
+ * clamps; the block builder must not trust it), and the sender's address comes
+ * from the firmware row. */
+static int test_output_fields(void)
+{
+	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	static const int modes[] = { 0, 1, 2, 3, -1, 99 };
+	static const uint32_t want[] = { 0, 1, 2, 0, 0, 0 };
+	size_t m;
+
+	for (m = 0; m < sizeof modes / sizeof modes[0]; m++) {
+		setup();
+		g_cfg.shim_output_mode = modes[m];
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		CHECK((rd(db + offsetof(ds45_shim_data_t, out_mode)) >> 32) == want[m]);
+		CHECK(rd(db + offsetof(ds45_shim_data_t, orig_output)) == OUTPUT_ORIG);
+		kshim_remove();
+	}
+
+	/* a row without the output sender (the built-in row until it is filled)
+	 * writes a zero there */
+	setup();
+	g_ent.orig_output = 0;
+	g_cfg.shim_output_mode = 2;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(rd(db + offsetof(ds45_shim_data_t, orig_output)) == 0);
+	CHECK((rd(db + offsetof(ds45_shim_data_t, out_mode)) >> 32) == 2);
+	kshim_remove();
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* Sites 3-6 map to the row's output_patches but this task never selects them: a
+ * row full of output patches installs exactly like one without, in both
+ * SHIM_INLINE_PID settings - same pid_applied, zero pid_orig past site 2, the
+ * output qwords never written - and an adopted install never journals a forged
+ * "applied" bit for them either. */
+static int test_output_sites_not_selected(void)
+{
+	const uint64_t orig_at = BLOB_BASE + DS45_SHIM_OFF_DATA +
+	                         offsetof(ds45_shim_data_t, pid_orig);
+	const uint64_t applied_at = BLOB_BASE + DS45_SHIM_OFF_DATA +
+	                            offsetof(ds45_shim_data_t, pid_applied);
+	int g, i, pokes;
+
+	for (g = 0; g < 2; g++) {
+		setup();
+		g_cfg.shim_inline_pid = g;
+		for (i = 0; i < OUT_PATCHES_N; i++) {
+			g_ent.output_patches[i].kind = DS45_KPATCH_WORD;
+			g_ent.output_patches[i].addr = OUT_SITE(i);
+			g_ent.output_patches[i].expect = qhash(OUT_Q(i));
+			g_ent.output_patches[i].value = OUT_WORD(i);
+			put_q(OUT_QA(i), OUT_Q(i));
+		}
+		wlog_start();
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		for (i = 0; i < OUT_PATCHES_N; i++) {
+			CHECK(rd(OUT_QA(i)) == OUT_Q(i));
+			CHECK(!wlog_has(OUT_QA(i)));
+			CHECK(rd(orig_at + 8 * (3 + i)) == 0);
+		}
+		CHECK((rd(applied_at) >> 32) == (g ? 7u : 1u));
+
+		/* a forged applied bit for site 3 (with an original and the row's word
+		 * in place, so a selecting adopter would accept it) is ignored */
+		put_q(applied_at, (uint64_t)((g ? 7u : 1u) | 8u) << 32);
+		put_q(orig_at + 8 * 3, OUT_Q(0));
+		put_q(OUT_QA(0), (OUT_Q(0) & HI32) | OUT_WORD(0));
+		pokes = fake_lv2_poke_count;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+		CHECK(fake_lv2_poke_count == pokes);
+		/* the adopted journal is what version 7 rebuilt: the helper, the inline
+		 * words when on, and the three redirects - one qword write each */
+		kshim_unhook();
+		CHECK(fake_lv2_poke_count - pokes == (g ? 6 : 4));
+		kshim_scrub();
+		CHECK(rd(OUT_QA(0)) == ((OUT_Q(0) & HI32) | OUT_WORD(0)));  /* left as found */
+		CHECK(fake_lv2_out_of_bounds == 0);
+	}
 	return 0;
 }
 
@@ -1546,6 +1659,18 @@ static int test_builtin_table(void)
 	CHECK(k->inline_patches[1].addr == 0x800000000011B5ECULL);
 	CHECK(k->inline_patches[1].expect == 0xF86140C9C3D7FB8DULL);
 	CHECK(k->inline_patches[1].value == 0x4BFFFC48ULL);
+
+	/* the output rows are not filled in yet (the installer does not select
+	 * them): an empty slot per patch and no sender address */
+	CHECK(DS45_SHIM_OUTPUT_PATCHES == 4);
+	CHECK(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES ==
+	      DS45_SHIM_PID_SITES);
+	CHECK(k->orig_output == 0);
+	for (i = 0; i < DS45_SHIM_OUTPUT_PATCHES; i++) {
+		CHECK(k->output_patches[i].addr == 0);
+		CHECK(k->output_patches[i].expect == 0);
+		CHECK(k->output_patches[i].value == 0);
+	}
 	return 0;
 }
 
@@ -1625,7 +1750,10 @@ static int test_builtin_row_on_pristine_image(void)
 {
 	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
 	uint64_t spare = k->syscall_table + (uint64_t)k->spare_syscall * 8;
-	uint64_t q[DS45_SHIM_PID_SITES], qa[DS45_SHIM_PID_SITES];
+	/* the sites the installer applies today: the helper and the two inline words
+	 * (the output sites 3-6 have no built-in rows yet) */
+	enum { NSITES = DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES };
+	uint64_t q[NSITES], qa[NSITES];
 	long n;
 	int inl, i;
 
@@ -1642,7 +1770,7 @@ static int test_builtin_row_on_pristine_image(void)
 		CHECK(in_image(k->fp_addr, n) && k->fp_addr + DS45_FP_LEN <= B + (uint64_t)n);
 		CHECK(in_image(k->event_code_addr & ~7ULL, n));
 		CHECK(in_image(k->enable_code_addr & ~7ULL, n));
-		for (i = 0; i < DS45_SHIM_PID_SITES; i++) {
+		for (i = 0; i < NSITES; i++) {
 			qa[i] = (i < DS45_SHIM_PID_PATCHES ? k->pid_patches[i].addr
 			         : k->inline_patches[i - DS45_SHIM_PID_PATCHES].addr) & ~7ULL;
 			CHECK(in_image(qa[i], n));
@@ -1673,7 +1801,7 @@ static int test_builtin_row_on_pristine_image(void)
 		CHECK((rd(qa[2]) != q[2]) == (inl != 0));
 
 		kshim_remove();
-		for (i = 0; i < DS45_SHIM_PID_SITES; i++)
+		for (i = 0; i < NSITES; i++)
 			CHECK(rd(qa[i]) == q[i]);
 		CHECK(rd(k->event_slot) == k->event_expect);
 		CHECK(rd(k->enable_slot) == k->enable_expect);
@@ -1696,6 +1824,8 @@ int run_tests(void)
 		test_inline_rows_gated,
 		test_input_hook_gated,
 		test_stable_id_switch,
+		test_output_fields,
+		test_output_sites_not_selected,
 		test_event_code_hash_mismatch,
 		test_enable_code_hash_mismatch,
 		test_code_hash_is_of_the_aligned_qword,

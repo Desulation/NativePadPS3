@@ -24,14 +24,20 @@
  * an earlier load only if its version matches, since the plugin reaches into the
  * data block by these offsets - so any change to this struct bumps the number.
  * 7: the helper product-ID row became a branch to shim_pid_ok (same layout), so a
- * build that applied the old word edit is not adopted. */
-#define DS45_SHIM_VERSION 7
+ * build that applied the old word edit is not adopted.
+ * 8: the DS3-route output state (rumble, player LEDs, light bar) appended, and
+ * pid_orig grown from 3 to 7 sites, which moves every field after it by 24 bytes:
+ * 272 -> 584. */
+#define DS45_SHIM_VERSION 8
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56
-/* Product-ID sites a row can edit: the helper word and the two inline words
- * (src/kshim.h: DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES, checked there). */
-#define DS45_SHIM_PID_SITES 3
+/* Product-ID sites a row can edit, in data-block order: 0 the helper branch, 1-2
+ * the inline words, then the output sites - 3 the output call site, 4 the sender's
+ * payload-cap word, 5 the TOC slot holding the packet buffer's address, 6 the TOC
+ * slot holding that address plus one (src/kshim.h: DS45_SHIM_PID_PATCHES +
+ * DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES, checked there). */
+#define DS45_SHIM_PID_SITES 7
 
 typedef struct {
 	uint8_t deadzone;              /* STICK_DEADZONE, percent of half travel */
@@ -92,6 +98,25 @@ typedef struct {
 	uint64_t conn_tbl;
 	uint32_t stable_id;
 	uint32_t dbg_id_bd, dbg_id_fallback, dbg_last_handle;
+	/* DS3-route output (rumble, player LEDs, light bar). orig_output is the code
+	 * address of the kernel's Bluetooth output sender (0x10283C on DEX 4.92), which
+	 * the output hook tail-calls; written by the plugin from the firmware row, 0 =
+	 * none. out_mode (the SHIM_OUTPUT_MODE config key, 0..2: observe, probe, full)
+	 * is written by the plugin. out_seq is the DualSense report sequence counter,
+	 * written by the blob. The dbg_out_* counters are written by the blob, debug
+	 * only: how often the hook was entered, how many calls were for a DualSense,
+	 * how many it rewrote, how many it passed through unchanged, the length of the
+	 * last call and the length of the payload captured into dbg_out_cap. out_buf is
+	 * the 78-byte DualSense report the hook builds and pktbuf the moved Bluetooth
+	 * packet buffer (8-aligned; zero at install); neither is read by the plugin.
+	 * The size is kept a multiple of 8. */
+	uint64_t orig_output;
+	uint32_t out_mode, out_seq;
+	uint32_t dbg_out_calls, dbg_out_ds, dbg_out_translated, dbg_out_passed;
+	uint32_t dbg_out_last_len, dbg_out_cap_len;
+	uint8_t  dbg_out_cap[64];
+	uint8_t  out_buf[80];
+	uint8_t  pktbuf[96];
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */

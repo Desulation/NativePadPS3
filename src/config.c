@@ -83,6 +83,8 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->shim_event_hook = 1;
 	c->shim_enable_hook = 1;
 	c->shim_stable_id = 1;    /* on by default; the counter identity is the fallback */
+	c->shim_output_hook = 1;  /* on by default; the mode below decides what it does */
+	c->shim_output_mode = 0;  /* observe only */
 #ifdef DS45_LV2DUMP
 	c->dump_lv2 = 0;
 	c->capture_off = 0;
@@ -277,6 +279,16 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		 * address (stage 1b). On by default; 0 = the per-boot counter identity,
 		 * any other number = on, anything that is not a number keeps the default. */
 		if (parse_int(val, &n)) c->shim_stable_id = n != 0;
+	} else if (match(key, "SHIM_OUTPUT_HOOK")) {
+		/* VSH builds only: the DS3-route output hook (rumble, player LEDs, light
+		 * bar). On by default; 0 = off, any other number = on, anything that is
+		 * not a number keeps the default. */
+		if (parse_int(val, &n)) c->shim_output_hook = n != 0;
+	} else if (match(key, "SHIM_OUTPUT_MODE")) {
+		/* VSH builds only: 0 observe, 1 probe, 2 full. A number outside 0..2 is
+		 * clamped to the nearest end; anything that is not a number keeps the
+		 * default (0). */
+		if (parse_int(val, &n)) c->shim_output_mode = n < 0 ? 0 : (n > 2 ? 2 : n);
 #endif
 #ifdef DS45_LV2DUMP
 	} else if (match(key, "DUMP_LV2")) {
@@ -393,6 +405,8 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	ds45_boot_mark_hex("cfg_shim_event_hook", (uint32_t)c->shim_event_hook);
 	ds45_boot_mark_hex("cfg_shim_enable_hook", (uint32_t)c->shim_enable_hook);
 	ds45_boot_mark_hex("cfg_shim_stable_id", (uint32_t)c->shim_stable_id);
+	ds45_boot_mark_hex("cfg_shim_output_hook", (uint32_t)c->shim_output_hook);
+	ds45_boot_mark_hex("cfg_shim_output_mode", (uint32_t)c->shim_output_mode);
 #endif
 
 	return 0;

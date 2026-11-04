@@ -30,6 +30,7 @@
 
 #define DS45_SHIM_PID_PATCHES     1   /* helper branch, always */
 #define DS45_SHIM_INLINE_PATCHES  2   /* inline words, only with SHIM_INLINE_PID = 1 */
+#define DS45_SHIM_OUTPUT_PATCHES  4   /* output call site, cap word, two TOC slots (not applied yet) */
 
 /* One firmware. The fingerprint is the same (fp_addr, fp_hash) scheme
  * ds45_kernel_t uses, so a row is only ever applied to the kernel it was
@@ -66,6 +67,12 @@ typedef struct {
 	const uint8_t *info_tmpl;                  /* DS45_SHIM_INFO_LEN bytes (facts note C1.5) */
 	ds45_kpatch_t pid_patches[DS45_SHIM_PID_PATCHES];
 	ds45_kpatch_t inline_patches[DS45_SHIM_INLINE_PATCHES];
+	/* The DS3-route output sites (data-block product-ID sites 3-6; empty in the
+	 * built-in row until the installer applies them) and the code address of the
+	 * kernel's Bluetooth output sender they lead to (0x10283C on DEX 4.92; 0 =
+	 * none), which the output hook tail-calls. */
+	ds45_kpatch_t output_patches[DS45_SHIM_OUTPUT_PATCHES];
+	uint64_t orig_output;
 } ds45_shim_kernel_t;
 extern const ds45_shim_kernel_t ds45_shim_table[];
 extern const int ds45_shim_table_count;

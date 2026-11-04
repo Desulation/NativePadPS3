@@ -54,10 +54,11 @@
 #define KSHIM_FLUSH_OPD_LEN 16
 
 /* The final transactional apply: the helper word, the inline words (when
- * enabled), then the event, enable and input redirects. The journal holds one
- * entry for each. */
+ * enabled), the output sites (when a later task enables them), then the event,
+ * enable and input redirects. The journal holds one entry for each. */
 #define KSHIM_REDIRECTS 3
-#define KSHIM_FINAL_MAX (DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + KSHIM_REDIRECTS)
+#define KSHIM_FINAL_MAX (DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + \
+                         DS45_SHIM_OUTPUT_PATCHES + KSHIM_REDIRECTS)
 typedef char kshim_final_fits_kpatch[(KSHIM_FINAL_MAX <= DS45_KPATCH_MAX) ? 1 : -1];
 
 /* The data block exactly fills the blob's tail (OFF_DATA .. BLOB_LEN); it is
@@ -72,8 +73,8 @@ typedef char kshim_tmpl_fits[(sizeof(((ds45_shim_data_t *)0)->info_tmpl) >=
 
 /* The data block records one original qword per product-ID site a row can
  * edit, and an adopted install journals those sites plus the redirects. */
-typedef char kshim_pid_sites_match[(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES ==
-                                    DS45_SHIM_PID_SITES) ? 1 : -1];
+typedef char kshim_pid_sites_match[(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES +
+                                    DS45_SHIM_OUTPUT_PATCHES == DS45_SHIM_PID_SITES) ? 1 : -1];
 typedef char kshim_adopt_fits_journal[(DS45_SHIM_PID_SITES + KSHIM_REDIRECTS <=
                                        DS45_KPATCH_MAX) ? 1 : -1];
 typedef char kshim_pid_words_aligned[(offsetof(ds45_shim_data_t, pid_orig) % 8 == 0 &&
@@ -170,11 +171,23 @@ static int hash_ok(uint64_t addr, uint64_t expect)
 }
 
 /* Product-ID site i of a row, in data-block order: the helper rows, then the
- * inline rows. */
+ * inline rows, then the output rows (sites 3-6). */
 static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
 {
-	return i < DS45_SHIM_PID_PATCHES ? &k->pid_patches[i]
-	                                 : &k->inline_patches[i - DS45_SHIM_PID_PATCHES];
+	if (i < DS45_SHIM_PID_PATCHES)
+		return &k->pid_patches[i];
+	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES)
+		return &k->inline_patches[i - DS45_SHIM_PID_PATCHES];
+	return &k->output_patches[i - DS45_SHIM_PID_PATCHES - DS45_SHIM_INLINE_PATCHES];
+}
+
+/* Whether the installer may select site i at all. The output sites (3-6) have a
+ * place in the layout and the row, but nothing applies, records or adopts them
+ * yet, so an install is exactly what data-block version 7 produced; the output
+ * task that adds the hook turns them on here. */
+static int site_enabled(int i)
+{
+	return i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES;
 }
 
 /* The product-ID rows this install applies - the helper always, the inline
@@ -196,6 +209,8 @@ static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int *n,
 	*applied = 0;
 	for (i = 0; i < DS45_SHIM_PID_SITES; i++) {
 		orig[i] = 0;
+		if (!site_enabled(i))
+			continue;
 		if (i >= DS45_SHIM_PID_PATCHES && !g_cfg.shim_inline_pid)
 			continue;
 		p = pid_site(k, i);
@@ -260,6 +275,10 @@ static void adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
 	for (i = 0; i < DS45_SHIM_PID_SITES; i++) {
 		if (!(applied & (1u << i)))
 			continue;
+		if (!site_enabled(i)) {             /* never ours to restore: left as found */
+			DS45_TRACE_HEX("kshim_adopt_pid_skipped", (uint64_t)i);
+			continue;
+		}
 		p = pid_site(k, i);
 		if (ds45_lv2_read(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * (uint64_t)i,
 		                  &orig) ||
@@ -328,6 +347,12 @@ static void build_data_block(const ds45_shim_kernel_t *k,
 	put_be64(buf + offsetof(ds45_shim_data_t, pad_mgr), k->pad_mgr);
 	put_be64(buf + offsetof(ds45_shim_data_t, conn_tbl), k->conn_tbl);
 	put_be32(buf + offsetof(ds45_shim_data_t, stable_id), g_cfg.shim_stable_id ? 1 : 0);
+	/* the output hook's stage (0..2; anything else is observe) and the sender it
+	 * tail-calls */
+	put_be32(buf + offsetof(ds45_shim_data_t, out_mode),
+	         (g_cfg.shim_output_mode >= 0 && g_cfg.shim_output_mode <= 2)
+	             ? (uint32_t)g_cfg.shim_output_mode : 0);
+	put_be64(buf + offsetof(ds45_shim_data_t, orig_output), k->orig_output);
 
 	cfg = buf + offsetof(ds45_shim_data_t, cfg);
 	cfg[offsetof(ds45_shim_cfg_t, deadzone)]     = (uint8_t)g_cfg.stick_deadzone;

@@ -353,10 +353,45 @@ static char *shim_dbg_hex(char *p, uint32_t v)
 	return p;
 }
 
+/* DS3-route output capture: the payload the output hook saw, as hex on its own
+ * line, written only when it differs from the one last written (the pad's
+ * output reports repeat, so the trace shows each distinct payload once). */
+static void shim_dbg_outcap(uint64_t base)
+{
+	static uint8_t last[64];
+	static uint32_t last_len;
+	static const char hex[] = "0123456789ABCDEF";
+	uint8_t cap[64];
+	char line[160];   /* "outcap len=0x" + 8 + ' ' + 128 hex digits + '\n' = 151 */
+	char *p = line;
+	uint32_t len = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_cap_len));
+	uint32_t i;
+
+	if (len > sizeof cap)
+		len = sizeof cap;
+	if (ds45_lv2_read_bytes(base + offsetof(ds45_shim_data_t, dbg_out_cap), cap,
+	                        (int)sizeof cap))
+		return;
+	if (len == last_len && memcmp(cap, last, len) == 0)
+		return;
+	last_len = len;
+	memcpy(last, cap, sizeof cap);
+
+	p = shim_dbg_tag(p, "outcap len=");
+	p = shim_dbg_hex(p, len);
+	*p++ = ' ';
+	for (i = 0; i < len; i++) {
+		*p++ = hex[cap[i] >> 4];
+		*p++ = hex[cap[i] & 0xF];
+	}
+	*p++ = '\n';
+	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+}
+
 static void shim_dbg_trace(void)
 {
 	uint64_t base = 0, vt = 0;
-	char line[320];   /* the longest line is ~235 bytes */
+	char line[384];   /* the longest line is ~320 bytes */
 	char *p = line;
 
 	if (!kshim_dbg_data_base(&base))
@@ -394,9 +429,22 @@ static void shim_dbg_trace(void)
 	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_id_fallback)));
 	p = shim_dbg_tag(p, " hnd=");
 	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_last_handle)));
+	/* DS3-route output hook: calls entered, calls for a DualSense, calls rewritten,
+	 * calls passed through unchanged, and the last call's payload length */
+	p = shim_dbg_tag(p, " outc=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_calls)));
+	p = shim_dbg_tag(p, " outds=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_ds)));
+	p = shim_dbg_tag(p, " outxl=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_translated)));
+	p = shim_dbg_tag(p, " outps=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_passed)));
+	p = shim_dbg_tag(p, " outlen=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_last_len)));
 	*p++ = '\n';
 
 	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+	shim_dbg_outcap(base);
 }
 #endif /* DS45_DEBUG */
 

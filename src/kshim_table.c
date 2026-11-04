@@ -124,6 +124,13 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 			{ DS45_KPATCH_WORD, 0x800000000011B5E4ULL, 0xE8ADD0EDF3B2B3C1ULL, 0x2F800CE6ULL },
 			{ DS45_KPATCH_WORD, 0x800000000011B5ECULL, 0xF86140C9C3D7FB8DULL, 0x4BFFFC48ULL },
 		},
+
+		/* DS3-route output (rumble, player LEDs, light bar): the four output
+		 * sites (data-block product-ID sites 3-6) and the kernel's Bluetooth
+		 * output sender they lead to. Empty until the installer applies them;
+		 * the rows are filled in then. */
+		{ { 0 }, { 0 }, { 0 }, { 0 } },
+		0ULL,
 	},
 };
 const int ds45_shim_table_count =
