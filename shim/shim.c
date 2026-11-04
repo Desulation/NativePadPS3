@@ -24,6 +24,7 @@
 
 #include "shim.h"
 #include "ds3_report.h"
+#include "ds3_output.h"
 
 /* Sony USB identity. */
 #define VID_SONY        0x054C
@@ -34,6 +35,10 @@
 /* DualSense Bluetooth full report id (the same value as DS_IN_BT; redefined
  * here because the freestanding shim must not pull in ds45_state.h). */
 #define DS_BT_INPUT_ID  0x31
+
+/* The DualSense Bluetooth output report id the rewritten call carries (the id
+ * byte of the report ds3_output.c builds, which the sender takes separately). */
+#define DS_BT_OUTPUT_ID 0x31
 
 /* The fixed identity bytes after the counter: info+0x0C..+0x0F. 0xD5 keeps the
  * check's alternate branch (+0x8C == 0x18 with +0x8E == 0x000D) out of reach,
@@ -293,12 +298,7 @@ int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
                        uint8_t *rid, const uint8_t **out_buf, uint16_t *out_len)
 {
 	uint16_t n, i;
-
-	/* Observe mode: nothing is rewritten yet, so the out-parameters are never
-	 * written. */
-	(void)rid;
-	(void)out_buf;
-	(void)out_len;
+	int is_ds;
 
 	if (!d)
 		return 0;
@@ -338,8 +338,35 @@ int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
 	}
 
 	/* The call's pad object sits SHIM_PAD_OUT_BUF_OFF below its payload. */
-	if (shim_pad_is_dualsense(d, buf - SHIM_PAD_OUT_BUF_OFF))
+	is_ds = shim_pad_is_dualsense(d, buf - SHIM_PAD_OUT_BUF_OFF);
+	if (is_ds)
 		d->dbg_out_ds++;
+
+	/* Rewrite, for a DualSense only, in mode 1 (probe: the fixed probe report) or
+	 * mode 2 (full: the translation of this payload). The report is built whole in
+	 * d->out_buf (78 bytes, id first); the kernel sender takes the id separately,
+	 * so the call carries d->out_buf + 1 and 77 bytes. A payload the translator
+	 * refuses (wrong length or shape) is passed through, out_seq not advanced. */
+	if (is_ds && rid && out_buf && out_len &&
+	    (d->out_mode == 1 || d->out_mode == 2)) {
+		uint8_t seq = (uint8_t)(d->out_seq & 0x0F);
+		int ok;
+
+		if (d->out_mode == 1) {
+			ds3_output_probe(seq, d->out_buf);
+			ok = 1;
+		} else {
+			ok = ds3_output_to_dualsense(buf, len, seq, d->out_buf) == 0;
+		}
+		if (ok) {
+			d->out_seq = (d->out_seq + 1) & 0x0F;
+			*rid = DS_BT_OUTPUT_ID;
+			*out_buf = d->out_buf + 1;
+			*out_len = DS_OUT_LEN - 1;
+			d->dbg_out_translated++;
+			return 1;
+		}
+	}
 	d->dbg_out_passed++;
 	return 0;
 }

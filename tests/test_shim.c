@@ -1,4 +1,4 @@
-/* SOURCES: ds_body.c sixaxis.c ../shim/ds3_report.c ../shim/shim.c ../shim/entry.c */
+/* SOURCES: ds_body.c sixaxis.c ../shim/ds3_report.c ../shim/ds3_output.c ../shim/shim.c ../shim/entry.c */
 /*
  * Host tests for the kernel shim (data block v3): the decision logic in
  * shim/shim.c - the product-ID helper, the start-up and enable completions,
@@ -19,6 +19,7 @@
 #include "ds45_state.h"
 #include "../shim/shim_abi.h"
 #include "../shim/ds3_report.h"
+#include "../shim/ds3_output.h"
 #include "../shim/shim.h"
 
 /* shim/entry.c: the one data object the plugin and the blob share, and the
@@ -1583,6 +1584,373 @@ static int test_output_motor_short_payload(void)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* DS3-route output hook, rewriting modes (1 probe, 2 full)                   */
+/* ------------------------------------------------------------------------ */
+
+/* A real DS3 output payload (48 bytes) at the pad's output buffer: durations
+ * 0x96, the two motors, the LED bitmap, four non-zero LED timing blocks (they
+ * are ignored), the rest zero. */
+static void out_ds3_payload(fake_pad_t *pad, uint8_t small, uint8_t large, uint8_t leds)
+{
+	uint8_t *p = pad->b + SHIM_PAD_OUT_BUF_OFF;
+	int i;
+
+	memset(p, 0, 48);
+	p[1] = 0x96;
+	p[2] = small;
+	p[3] = 0x96;
+	p[4] = large;
+	p[5] = 0x01;
+	p[9] = leds;
+	for (i = 0; i < 4; i++) {
+		p[10 + 5 * i + 0] = 0xFF;
+		p[10 + 5 * i + 1] = 0x27;
+		p[10 + 5 * i + 2] = 0x10;
+		p[10 + 5 * i + 3] = 0x00;
+		p[10 + 5 * i + 4] = 0x32;
+	}
+}
+
+/* The test's own reflected CRC-32 (0xEDB88320) of the byte 0xA2 followed by
+ * report bytes 0..73, bit by bit. */
+static uint32_t ref_crc_a2(const uint8_t *r)
+{
+	uint32_t crc = 0xFFFFFFFFu;
+	int i, b;
+
+	for (i = -1; i < 74; i++) {
+		crc ^= (i < 0) ? 0xA2u : r[i];
+		for (b = 0; b < 8; b++)
+			crc = (crc & 1) ? (crc >> 1) ^ 0xEDB88320u : crc >> 1;
+	}
+	return ~crc;
+}
+
+static int crc_bytes_ok(const uint8_t *r)
+{
+	uint32_t c = ref_crc_a2(r);
+
+	return r[74] == (uint8_t)c && r[75] == (uint8_t)(c >> 8) &&
+	       r[76] == (uint8_t)(c >> 16) && r[77] == (uint8_t)(c >> 24);
+}
+
+/* The data block for a rewriting mode, with the report buffer pre-filled so an
+ * untouched buffer is visible. */
+static ds45_shim_data_t data_out_mode(uint32_t mode, uint32_t seq)
+{
+	ds45_shim_data_t d = data_enabled();
+
+	d.out_mode = mode;
+	d.out_seq = seq;
+	memset(d.out_buf, 0xEE, sizeof(d.out_buf));
+	return d;
+}
+
+static int test_output_probe_rewrites(void)
+{
+	ds45_shim_data_t d = data_out_mode(1, 3);
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL, exp[DS_OUT_LEN];
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+
+	/* any payload at all: the probe does not read it */
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	out_payload(&pad, 48, 0x10);
+	ds3_output_probe(3, exp);
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 1);
+	CHECK(rid == 0x31);
+	CHECK(ob == d.out_buf + 1);
+	CHECK(ol == 77);
+	CHECK(memcmp(d.out_buf, exp, DS_OUT_LEN) == 0);
+	CHECK(d.out_buf[0] == 0x31 && d.out_buf[1] == 0x30);     /* sequence 3 */
+	CHECK(crc_bytes_ok(d.out_buf));
+	CHECK(d.out_buf[78] == 0xEE && d.out_buf[79] == 0xEE);   /* nothing past the report */
+	CHECK(d.out_seq == 4);
+	CHECK(d.dbg_out_translated == 1);
+	CHECK(d.dbg_out_passed == 0);
+	CHECK(d.dbg_out_calls == 1 && d.dbg_out_ds == 1);
+	CHECK(d.dbg_out_cap_len == 48);                          /* the capture still runs */
+	CHECK(memcmp(d.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(pad.b[SHIM_PAD_OUT_BUF_OFF + 5] == (uint8_t)(0x10 + 15));   /* payload intact */
+
+	/* the probe does not care about the shape: a short payload is rewritten too */
+	rid = RID_SENTINEL;
+	ob = (const uint8_t *)&pad;
+	ol = OLEN_SENTINEL;
+	ds3_output_probe(4, exp);
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 7, &rid, &ob, &ol) == 1);
+	CHECK(rid == 0x31 && ob == d.out_buf + 1 && ol == 77);
+	CHECK(memcmp(d.out_buf, exp, DS_OUT_LEN) == 0);
+	CHECK(d.out_seq == 5 && d.dbg_out_translated == 2 && d.dbg_out_passed == 0);
+	return 0;
+}
+
+static int test_output_full_rewrites_exact_bytes(void)
+{
+	ds45_shim_data_t d = data_out_mode(2, 5);
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL, exp[DS_OUT_LEN];
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+	const uint8_t *pl = pad.b + SHIM_PAD_OUT_BUF_OFF;
+	int i;
+
+	/* player 2, the small motor on, the large motor off: the console's payload
+	 * 00 96 01 96 00 00 00 00 00 04 | timing blocks | zeros */
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	memset(pad.b + SHIM_PAD_OUT_BUF_OFF, 0, 48);
+	{
+		static const uint8_t head[10] = { 0x00, 0x96, 0x01, 0x96, 0x00,
+		                                  0x00, 0x00, 0x00, 0x00, 0x04 };
+		memcpy(pad.b + SHIM_PAD_OUT_BUF_OFF, head, sizeof(head));
+	}
+	for (i = 10; i < 30; i++)
+		pad.b[SHIM_PAD_OUT_BUF_OFF + i] = (uint8_t)(0xC0 + i);
+
+	/* the report built by hand: id, seq 5 in the high nibble, tag, flags, right
+	 * motor full, left motor off, player LEDs 0x0A, light bar red, zeros, CRC */
+	memset(exp, 0, sizeof(exp));
+	exp[0] = 0x31; exp[1] = 0x50; exp[2] = 0x10; exp[3] = 0x01; exp[4] = 0x14;
+	exp[5] = 0xFF; exp[6] = 0x00;
+	exp[46] = 0x0A;
+	exp[47] = 0xFF; exp[48] = 0x00; exp[49] = 0x00;
+	exp[74] = 0x21; exp[75] = 0xA8; exp[76] = 0xEC; exp[77] = 0x9F;   /* hard-coded CRC */
+
+	CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 1);
+	CHECK(rid == 0x31 && ob == d.out_buf + 1 && ol == 77);
+	CHECK(memcmp(d.out_buf, exp, DS_OUT_LEN) == 0);
+	CHECK(crc_bytes_ok(d.out_buf));                         /* and the test's own CRC agrees */
+	CHECK(d.out_buf[78] == 0xEE && d.out_buf[79] == 0xEE);
+	CHECK(d.out_seq == 6);
+	CHECK(d.dbg_out_translated == 1 && d.dbg_out_passed == 0);
+	CHECK(d.dbg_out_calls == 1 && d.dbg_out_ds == 1);
+	CHECK(memcmp(d.dbg_out_cap, pl, 48) == 0);
+
+	/* both motors, player 1 (bitmap 0x02, extra non-LED bits ignored), sequence
+	 * 6 now: the large motor is passed through as it is */
+	out_ds3_payload(&pad, 0x00, 0x80, 0x02 | 0x01 | 0x80);
+	CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 1);
+	CHECK(d.out_buf[1] == 0x60);
+	CHECK(d.out_buf[5] == 0x00 && d.out_buf[6] == 0x80);
+	CHECK(d.out_buf[46] == 0x04);
+	CHECK(d.out_buf[47] == 0x00 && d.out_buf[48] == 0x00 && d.out_buf[49] == 0xFF);
+	CHECK(crc_bytes_ok(d.out_buf));
+	CHECK(d.out_seq == 7 && d.dbg_out_translated == 2 && d.dbg_out_passed == 0);
+
+	/* no LED bit: LEDs and light bar off */
+	out_ds3_payload(&pad, 0x00, 0x00, 0x00);
+	CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 1);
+	CHECK(d.out_buf[46] == 0 && d.out_buf[47] == 0 && d.out_buf[48] == 0 && d.out_buf[49] == 0);
+	CHECK(d.out_buf[5] == 0 && d.out_buf[6] == 0);
+	CHECK(crc_bytes_ok(d.out_buf));
+	return 0;
+}
+
+static int test_output_two_pads_use_own_leds(void)
+{
+	ds45_shim_data_t d = data_out_mode(2, 0);
+	fake_pad_t a, b;
+	uint8_t rid = 0, saved[DS_OUT_LEN];
+	const uint8_t *ob = NULL;
+	uint16_t ol = 0;
+	int i;
+
+	pad_make(&a, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	pad_make(&b, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	out_ds3_payload(&a, 0x00, 0x00, 0x02);   /* player 1: blue */
+	out_ds3_payload(&b, 0x01, 0x40, 0x04);   /* player 2: red  */
+
+	/* alternate the two pads: one counter 0,1,2,... wrapping 15 -> 0, each report
+	 * carrying its own pad's LEDs and colour */
+	for (i = 0; i < 20; i++) {
+		fake_pad_t *p = (i & 1) ? &b : &a;
+
+		rid = 0; ob = NULL; ol = 0;
+		CHECK(shim_output_filter(&d, p->b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 1);
+		CHECK(rid == 0x31 && ob == d.out_buf + 1 && ol == 77);
+		memcpy(saved, d.out_buf, sizeof(saved));
+		CHECK(saved[0] == 0x31);
+		CHECK((saved[1] >> 4) == (i & 0x0F));            /* 0..15, then back to 0 */
+		CHECK((saved[1] & 0x0F) == 0);
+		CHECK(saved[2] == 0x10 && saved[3] == 0x01 && saved[4] == 0x14);
+		if (i & 1) {
+			CHECK(saved[5] == 0xFF && saved[6] == 0x40);
+			CHECK(saved[46] == 0x0A);
+			CHECK(saved[47] == 0xFF && saved[48] == 0x00 && saved[49] == 0x00);
+		} else {
+			CHECK(saved[5] == 0x00 && saved[6] == 0x00);
+			CHECK(saved[46] == 0x04);
+			CHECK(saved[47] == 0x00 && saved[48] == 0x00 && saved[49] == 0xFF);
+		}
+		CHECK(crc_bytes_ok(saved));
+		CHECK(d.out_seq == (uint32_t)((i + 1) & 0x0F));
+	}
+	CHECK(d.dbg_out_translated == 20 && d.dbg_out_passed == 0);
+	CHECK(d.dbg_out_calls == 20 && d.dbg_out_ds == 20);
+	return 0;
+}
+
+static int test_output_malformed_dualsense_passes(void)
+{
+	ds45_shim_data_t d = data_out_mode(2, 7);
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+	const uint8_t *pl = pad.b + SHIM_PAD_OUT_BUF_OFF;
+	uint16_t lens[] = { 1, 5, 47, 49, 64 };
+	unsigned i, calls = 0;
+	static const int bad[] = { 7, 8, 30, 47 };
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+
+	/* wrong length */
+	out_ds3_payload(&pad, 0x01, 0x40, 0x02);
+	for (i = 0; i < sizeof(lens) / sizeof(lens[0]); i++) {
+		CHECK(shim_output_filter(&d, pl, lens[i], &rid, &ob, &ol) == 0);
+		calls++;
+	}
+	/* right length, wrong shape: a byte that must be zero is not */
+	for (i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+		out_ds3_payload(&pad, 0x01, 0x40, 0x02);
+		pad.b[SHIM_PAD_OUT_BUF_OFF + bad[i]] = 0x01;
+		CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 0);
+		calls++;
+	}
+
+	CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+	CHECK(d.out_seq == 7);
+	{
+		uint8_t ee[sizeof(d.out_buf)];
+
+		memset(ee, 0xEE, sizeof(ee));
+		CHECK(memcmp(d.out_buf, ee, sizeof(ee)) == 0);
+	}
+	CHECK(d.dbg_out_translated == 0);
+	CHECK(d.dbg_out_passed == calls);
+	CHECK(d.dbg_out_calls == calls && d.dbg_out_ds == calls);
+
+	/* a good payload right after still goes through, with the unadvanced counter */
+	out_ds3_payload(&pad, 0x01, 0x40, 0x02);
+	CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 1);
+	CHECK(d.out_buf[1] == 0x70 && d.out_seq == 8);
+	return 0;
+}
+
+static int test_output_ds3_never_rewritten_all_modes(void)
+{
+	uint32_t mode;
+	int kind;
+
+	/* kind 0: a DualShock 3 (the Sony pad class, PID 0x0268); 1: a pad of another
+	 * class; 2: a Sony class pad with another PID; 3: a pad with a wrong vendor */
+	for (kind = 0; kind < 4; kind++) {
+		for (mode = 0; mode <= 3; mode++) {
+			ds45_shim_data_t d = data_out_mode(mode, 9), before;
+			fake_pad_t pad, pad_before;
+			uint8_t rid = RID_SENTINEL;
+			const uint8_t *ob = (const uint8_t *)&pad;
+			uint16_t ol = OLEN_SENTINEL;
+
+			if (kind == 0)
+				pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DS3);
+			else if (kind == 1)
+				pad_make(&pad, PAD_VTABLE + 8, VID_SONY, PID_DUALSENSE);
+			else if (kind == 2)
+				pad_make(&pad, PAD_VTABLE, VID_SONY, 0x042F);
+			else
+				pad_make(&pad, PAD_VTABLE, 0x1234, PID_DUALSENSE);
+			out_ds3_payload(&pad, 0x01, 0x40, 0x04);
+			pad_before = pad;
+			before = d;
+			CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+			CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+			CHECK(memcmp(pad.b, pad_before.b, sizeof(pad.b)) == 0);
+			CHECK(d.out_seq == 9 && d.dbg_out_translated == 0);
+			CHECK(memcmp(d.out_buf, before.out_buf, sizeof(d.out_buf)) == 0);
+			CHECK(d.dbg_out_calls == 1 && d.dbg_out_ds == 0 && d.dbg_out_passed == 1);
+			CHECK(d.dbg_out_cap_len == 48);
+			CHECK(memcmp(d.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+		}
+	}
+	return 0;
+}
+
+static int test_output_mode0_never_rewrites(void)
+{
+	static const uint32_t modes[] = { 0, 3, 4, 7, 16, 255, 0x80000000u, 0xFFFFFFFFu };
+	unsigned i;
+
+	for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+		ds45_shim_data_t d = data_out_mode(modes[i], 2), before;
+		fake_pad_t pad, pad_before;
+		uint8_t rid = RID_SENTINEL;
+		const uint8_t *ob = (const uint8_t *)&pad;
+		uint16_t ol = OLEN_SENTINEL;
+
+		pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+		out_ds3_payload(&pad, 0x01, 0x40, 0x04);
+		pad_before = pad;
+		before = d;
+		CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+		CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+		CHECK(memcmp(pad.b, pad_before.b, sizeof(pad.b)) == 0);
+		CHECK(d.out_seq == 2 && d.dbg_out_translated == 0);
+		CHECK(memcmp(d.out_buf, before.out_buf, sizeof(d.out_buf)) == 0);
+		/* observed exactly as before: a DualSense, passed */
+		CHECK(d.dbg_out_calls == 1 && d.dbg_out_ds == 1 && d.dbg_out_passed == 1);
+		CHECK(d.dbg_out_cap_len == 48);
+	}
+	return 0;
+}
+
+static int test_output_bad_arguments_in_modes(void)
+{
+	uint32_t mode;
+
+	for (mode = 1; mode <= 2; mode++) {
+		ds45_shim_data_t d = data_out_mode(mode, 4), zero;
+		fake_pad_t pad;
+		uint8_t rid = RID_SENTINEL;
+		const uint8_t *ob = (const uint8_t *)&pad;
+		uint16_t ol = OLEN_SENTINEL;
+		const uint8_t *buf;
+
+		pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+		out_ds3_payload(&pad, 0x01, 0x40, 0x04);
+		buf = pad.b + SHIM_PAD_OUT_BUF_OFF;
+
+		/* NULL data block */
+		CHECK(shim_output_filter(NULL, buf, 48, &rid, &ob, &ol) == 0);
+
+		/* NULL buffer, length 0, length 65: counted as calls, nothing else */
+		zero = d;
+		CHECK(shim_output_filter(&d, NULL, 48, &rid, &ob, &ol) == 0);
+		zero.dbg_out_calls = 1;
+		CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+		CHECK(shim_output_filter(&d, buf, 0, &rid, &ob, &ol) == 0);
+		zero.dbg_out_calls = 2;
+		CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+		CHECK(shim_output_filter(&d, buf, 65, &rid, &ob, &ol) == 0);
+		zero.dbg_out_calls = 3;
+		CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+		/* shim disabled */
+		d = data_out_mode(mode, 4);
+		d.enabled = 0;
+		zero = d;
+		CHECK(shim_output_filter(&d, buf, 48, &rid, &ob, &ol) == 0);
+		zero.dbg_out_calls = 1;
+		CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+		CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+		CHECK(d.out_seq == 4 && d.dbg_out_translated == 0);
+	}
+	return 0;
+}
+
 /* The glue: on the host shim_output is the C body itself (entry.c), and it
  * decides on the one shared data object. */
 static int test_glue_output(void)
@@ -1615,6 +1983,13 @@ int run_tests(void)
 		test_output_motor_on_capture,
 		test_output_motor_off_after_on_same_pad,
 		test_output_motor_short_payload,
+		test_output_probe_rewrites,
+		test_output_full_rewrites_exact_bytes,
+		test_output_two_pads_use_own_leds,
+		test_output_malformed_dualsense_passes,
+		test_output_ds3_never_rewritten_all_modes,
+		test_output_mode0_never_rewrites,
+		test_output_bad_arguments_in_modes,
 		test_glue_output,
 		test_stable_identity_from_connection,
 		test_stable_identity_survives_reconnect,

@@ -17,8 +17,8 @@
  * locks, no allocation, no calls into the kernel, bounded straight-line code.
  *
  * It compiles INTO the freestanding kernel blob as well as the host tests, so
- * like ds3_report.c it includes only <stdint.h>, shim_abi.h, ds3_report.h and
- * shim.h, uses no libc and declares no static data.
+ * like ds3_report.c it includes only <stdint.h>, shim_abi.h, ds3_report.h,
+ * ds3_output.h and shim.h, uses no libc and declares no static data.
  *
  * Licensed under GPLv2 - see LICENSE.
  */
@@ -116,13 +116,24 @@ const uint8_t *shim_pad_from_xport(const ds45_shim_data_t *d, const void *xport)
 int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
                       uint8_t *buf, uint16_t *len);
 
-/* Output decision (DS3-route output, observe mode), run from the stub on the
- * kernel's output call (the Bluetooth sender 0x10283C): buf is the payload
- * (pad + 0x22B, SHIM_PAD_OUT_BUF_OFF), len its length (the kernel caps it at
- * 64). Returns 1 when the call must be rewritten, in which case *rid, *out_buf
- * and *out_len carry the replacement report id, payload pointer and length; 0
- * to pass the call through unchanged. It never rewrites yet: it returns 0 and
- * writes none of the three out-parameters.
+/* Output decision (DS3-route output), run from the stub on the kernel's output
+ * call (the Bluetooth sender 0x10283C): buf is the payload (pad + 0x22B,
+ * SHIM_PAD_OUT_BUF_OFF), len its length (the kernel caps it at 64). Returns 1
+ * when the call must be rewritten, in which case *rid, *out_buf and *out_len
+ * carry the replacement report id, payload pointer and length; 0 to pass the
+ * call through unchanged, and then none of the three out-parameters is written.
+ *
+ * Rewriting (after the counting and capture below, which never change): only
+ * when d->out_mode is 1 or 2 and the pad (buf - 0x22B) is a DualSense, and the
+ * three out-parameters are non-NULL. The 78-byte DualSense report is built in
+ * d->out_buf with sequence number d->out_seq - mode 1 (probe):
+ * ds3_output_probe, mode 2 (full): ds3_output_to_dualsense of the payload (a
+ * refusal, -1, passes the call through, out_seq not advanced). On success
+ * out_seq = (out_seq + 1) & 0x0F, *rid = 0x31, *out_buf = d->out_buf + 1 (the
+ * report without its id, which the sender takes separately), *out_len = 77,
+ * dbg_out_translated++ (dbg_out_passed is not bumped), return 1. Mode 0, any
+ * other mode, a DS3, a non-Sony or unknown pad and a disabled shim never
+ * rewrite.
  *
  * It always counts and records, for any pad (the capture of what the console
  * really sends a DualShock 3 is the ground truth the rewrite is built on):

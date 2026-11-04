@@ -65,6 +65,7 @@ function Build-ShimBlob([string]$Repo) {
         @{ src = (Join-Path $shim 'entry.c');      obj = (Join-Path $shim 'entry.o') },
         @{ src = (Join-Path $shim 'shim.c');       obj = (Join-Path $shim 'shim.o') },
         @{ src = (Join-Path $shim 'ds3_report.c'); obj = (Join-Path $shim 'ds3_report.o') },
+        @{ src = (Join-Path $shim 'ds3_output.c'); obj = (Join-Path $shim 'ds3_output.o') },
         @{ src = (Join-Path $src  'sixaxis.c');    obj = (Join-Path $shim 'sixaxis.o') },
         @{ src = (Join-Path $src  'ds_body.c');    obj = (Join-Path $shim 'ds_body.o') }
     )

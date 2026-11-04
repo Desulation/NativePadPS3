@@ -2,7 +2,7 @@
  * DS45PAD kernel shim - blob entry points (kernel-ABI glue).
  *
  * This is the one translation unit unique to the blob (shim.c, ds3_report.c,
- * src/sixaxis.c and src/ds_body.c are shared with the host tests). It defines
+ * ds3_output.c, src/sixaxis.c and src/ds_body.c are shared with the host tests). It defines
  * the single data object the plugin fills in, and the three wrappers the plugin
  * points the kernel's DS3 driver at: the start-up driver's event handler, the
  * enable (0xF4) driver's event handler and the Bluetooth transport's input read.
