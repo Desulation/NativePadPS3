@@ -261,6 +261,38 @@ and the tail call to `0x10283C` must restore `lr` and the kernel `r2` (adopt the
 frame, restore both, pop the frame, branch). The branch distance from `0x2A2DE8` to the blob entry must be within
 +-32 MiB. The stub may use stack below `r1`; it must not touch the frame above it.
 
+## F7 - Console observe run (2026-11-03, plan task 6) [console]
+
+Build: observe mode (`SHIM_OUTPUT_HOOK = 1`, `SHIM_OUTPUT_MODE = 0`), data block v9. Pads: a DS3 over Bluetooth only
+(player 1) and one DualSense (player 2) in a split-screen game; also earlier runs with two DualSense.
+
+**Safety (passed).** The `bl` entry stub and the moved packet buffer ran live: no freeze or disconnect across several
+reboots and reconnects, `padmiss` 0, pad input still translated (`xl` rising) through the buffer at `pktbuf`, the DS3
+fully usable. Read back after install: the call at `0x2A2DE8` is a `bl` into the blob (stub at blob offset `0x90`), the
+slots `0x372650` and `0x372660` hold `pktbuf` and `pktbuf + 1`, the cap word is unchanged in observe mode.
+
+**Report stream.** The kernel sends a DS3-format output report for every pad object continuously, even idle: about 55
+per second across three pad objects (17,370 calls in roughly 5 minutes). Every payload is 48 bytes. A sustained rumble
+therefore always ends with a zero-motor report within milliseconds, and the once-a-second sample of the first runs
+(latest payload, random pad) simply missed the rumble; the rumble-aware capture (task 6b) did not.
+
+**Captured payloads** (48 bytes, report id not included; offsets confirm F4):
+- idle, player 1 (DS3): `00 96 00 96 00 00 00 00 00 02 00 ...`, LED block 1 at bytes 25-29 (`FF 00 01 00 01`);
+- idle, player 2 (DualSense): bitmap `04`, block at bytes 20-24; player 3: bitmap `08`, block at bytes 15-19;
+- **rumble on** (game rumble on the DS3 and on the DualSense): `00 96 01 96 00 00 00 00 00 <bitmap> ...`, i.e. byte 1 =
+  right duration `0x96`, byte 2 = small motor `01`, byte 3 = left duration `0x96`, byte 4 = large motor (0 in the last
+  captured on-report; the strength is a plain 0..255 byte), byte 9 = the LED bitmap;
+- **rumble off**: the first report from the same pad afterwards is the idle report with bytes 2 and 4 zero.
+Counters at the end of the run: 192 motor-on reports, 24 captured stops, 15,413 output calls.
+
+**Decisions this settles.**
+- The rumble is stateless on the kernel side: every report carries the full current motor state, durations are always
+  the constant `0x96`, and the kernel sends a zero-motor report when a rumble ends. The translation can ignore the
+  durations and copy the motor bytes (small: nonzero means on; large: the strength).
+- The spec's open question about a stop timer is closed: none is needed.
+- Not yet seen: a captured large-motor value above 0 (the games used the small motor in the last captured reports); the
+  translation copies the byte as planned.
+
 ## Method (commands)
 
 All from the scratchpad, never from the repo root (`dis.py` there shadows the stdlib), `python -I`:
