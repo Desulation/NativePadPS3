@@ -298,6 +298,7 @@ int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
                       uint16_t len_in, int rc)
 {
 	uint16_t n, i;
+	int ds;
 
 	if (!d || !dst)
 		return rc < 0 ? rc : 0;
@@ -319,7 +320,8 @@ int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
 	/* Translate in place in the bounce buffer: both translators read the whole
 	 * report before writing, and on a refusal write nothing, leaving n = rc. */
 	n = (uint16_t)rc;
-	shim_input_filter(d, 0x054C, 0x0CE6, d->inbuf, &n);
+	ds = shim_pad_is_dualsense(d, pad);
+	shim_input_filter(d, ds ? 0x054C : 0, ds ? 0x0CE6 : 0, d->inbuf, &n);
 
 	/* n is at most 0x4F here (the buffer holds 96), and only n <= len_in bytes
 	 * ever reach the caller. */

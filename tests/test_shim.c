@@ -987,11 +987,13 @@ static int test_input_mode0_unchanged(void)
 	return 0;
 }
 
-/* A DS3 is never bounced, in either bounce mode: the original reads straight
- * into the caller's buffer and nothing is copied by the hook. */
-static int test_input_ds3_never_bounced(void)
+/* In modes 1 and 2 a DS3's read is bounced like every other (the raised limit is
+ * shared, nothing may reach the caller's 64-byte buffer unbounded), but its
+ * bytes and return value arrive in the caller's buffer exactly as the original
+ * produced them, and nothing is translated. */
+static int test_input_ds3_bounced_unchanged(void)
 {
-	uint8_t dst[64], want[64];
+	uint8_t dst[96], want[96];
 	int mode, i;
 
 	for (mode = 1; mode <= 2; mode++) {
@@ -1005,19 +1007,32 @@ static int test_input_ds3_never_bounced(void)
 		memset(want, 0xCC, sizeof(want));
 		memcpy(want, g_oi_report, DS3_REPORT_LEN);
 
-		CHECK(shim_input(&g_x_ds3, dst, sizeof(dst), 5) == DS3_REPORT_LEN);
+		CHECK(shim_input(&g_x_ds3, dst, 64, 5) == DS3_REPORT_LEN);
 		CHECK(g_oi_calls == 1);
-		CHECK(g_oi_xport == (void *)&g_x_ds3 && g_oi_dst == dst);
-		CHECK(g_oi_len_in == sizeof(dst) && g_oi_flag == 5);
-		CHECK(memcmp(dst, want, sizeof(dst)) == 0);
+		CHECK(g_oi_xport == (void *)&g_x_ds3);
+		CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);   /* bounced */
+		CHECK(g_oi_flag == 5);
+		CHECK(memcmp(dst, want, sizeof(dst)) == 0);       /* byte-identical, no extra */
 		CHECK(ds45_shim_data.stat_passed == 1 && ds45_shim_data.stat_translated == 0);
-		CHECK(bounce_counters_zero() && inbuf_clean());
+		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 0);
+		CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
+		CHECK(ds45_shim_data.dbg_input_calls == 1 && ds45_shim_data.dbg_input_ds == 0);
+		CHECK(ds45_shim_data.dbg_input_padmiss == 0);
 
-		/* even a long read goes to the caller's buffer, as before */
+		/* a 0x41-byte read fits a 65-byte caller, byte for byte, but is dropped
+		 * for a 64-byte one (and counted); more than 0x41 is "big" */
 		g_oi_len = 0x41;
-		CHECK(shim_input(&g_x_ds3, dst, sizeof(dst), 5) == 0x41);
-		CHECK(g_oi_dst == dst && g_oi_len_in == sizeof(dst));
-		CHECK(bounce_counters_zero() && inbuf_clean());
+		memset(dst, 0xCC, sizeof(dst));
+		memset(want, 0xCC, sizeof(want));
+		memcpy(want, g_oi_report, 0x41);
+		CHECK(shim_input(&g_x_ds3, dst, 0x41, 5) == 0x41);
+		CHECK(memcmp(dst, want, sizeof(dst)) == 0);
+		CHECK(ds45_shim_data.dbg_in_big == 0 && ds45_shim_data.dbg_in_drop == 0);
+		memset(dst, 0xCC, sizeof(dst));
+		CHECK(shim_input(&g_x_ds3, dst, 64, 5) == 0);
+		CHECK(dst[0] == 0xCC && dst[63] == 0xCC);
+		CHECK(ds45_shim_data.dbg_in_bounce == 3 && ds45_shim_data.dbg_in_drop == 1);
+		CHECK(ds45_shim_data.stat_translated == 0);
 	}
 	return 0;
 }
@@ -1099,40 +1114,65 @@ static int test_input_bounce_basic_report(void)
 	return 0;
 }
 
-/* Whatever the original reports (1..79 bytes of any content) and however small
- * the caller's buffer, dst is written for at most min(n, len_in) bytes and the
- * return value never exceeds len_in. */
+/* Whatever the original reports (1..79 bytes of any content), whichever pad it
+ * is (a DualSense, a DS3, a transport no pad owns, a missing pad manager, a pad
+ * class that is not set) and however small the caller's buffer, dst is written
+ * for at most min(n, len_in) bytes and the return value never exceeds len_in.
+ * For every pad but a DualSense the bytes and the count are the original's. */
 static int test_input_bounce_never_overruns_dst(void)
 {
 	uint8_t buf[160];
-	int kind, rc, len_in, ret, i;
+	void *xport;
+	int who, kind, rc, len_in, ret, i, ds;
 
-	for (kind = 0; kind < 3; kind++) {
-		for (rc = 1; rc <= 0x4F; rc++) {
-			for (len_in = 0; len_in <= 64; len_in++) {
-				glue_reset();
-				ds45_shim_data.out_mode = 2;
-				record_make(g_oi_report, 96);
-				if (kind == 1)
-					report_basic(g_oi_report);
-				else if (kind == 2)
-					report_neutral(g_oi_report);
-				g_oi_len = rc;
-				memset(buf, 0xA5, sizeof(buf));
+	for (who = 0; who < 5; who++) {
+		for (kind = 0; kind < 3; kind++) {
+			for (rc = 1; rc <= 0x4F; rc++) {
+				for (len_in = 0; len_in <= 64; len_in++) {
+					glue_reset();
+					ds45_shim_data.out_mode = (uint32_t)(1 + (rc & 1));
+					xport = &g_x_ds;
+					ds = who == 0;
+					if (who == 1)
+						xport = &g_x_ds3;
+					else if (who == 2)
+						xport = &g_x_other;           /* no pad owns it */
+					else if (who == 3)
+						ds45_shim_data.pad_mgr = 0;
+					else if (who == 4)
+						ds45_shim_data.pad_vtable = 0;
+					record_make(g_oi_report, 96);
+					if (kind == 1)
+						report_basic(g_oi_report);
+					else if (kind == 2)
+						report_neutral(g_oi_report);
+					g_oi_len = rc;
+					memset(buf, 0xA5, sizeof(buf));
 
-				ret = shim_input(&g_x_ds, buf + 16, (uint16_t)len_in, 0);
+					ret = shim_input(xport, buf + 16, (uint16_t)len_in, 0);
 
-				CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
-				CHECK(ret >= 0 && ret <= len_in);
-				CHECK(ret == 0 || ret == rc || ret == DS3_REPORT_LEN);
-				for (i = 0; i < 160; i++) {
-					if (i < 16 || i >= 16 + ret)
-						CHECK(buf[i] == 0xA5);
+					CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
+					CHECK(ret >= 0 && ret <= len_in);
+					for (i = 0; i < 160; i++) {
+						if (i < 16 || i >= 16 + ret)
+							CHECK(buf[i] == 0xA5);
+					}
+					if (ds) {
+						CHECK(ret == 0 || ret == rc || ret == DS3_REPORT_LEN);
+						if (kind == 0 && ret != 0)
+							CHECK(memcmp(buf + 16, g_oi_report, (size_t)ret) == 0);
+						if (rc > len_in && rc != DS3_REPORT_LEN && ret != 0)
+							CHECK(ret == DS3_REPORT_LEN);   /* only a translation shrinks */
+					} else {
+						/* no translation, ever: the original's bytes and count, or a drop */
+						CHECK(ret == (rc <= len_in ? rc : 0));
+						CHECK(memcmp(buf + 16, g_oi_report, (size_t)ret) == 0);
+						CHECK(ds45_shim_data.stat_translated == 0);
+						CHECK(ds45_shim_data.dbg_in_drop == (uint32_t)(rc > len_in));
+					}
+					CHECK(ds45_shim_data.dbg_in_bounce == 1);
+					CHECK(ds45_shim_data.dbg_in_big == (uint32_t)(rc > 0x41));
 				}
-				if (kind == 0 && ret != 0)
-					CHECK(memcmp(buf + 16, g_oi_report, (size_t)ret) == 0);
-				if (rc > len_in && rc != DS3_REPORT_LEN && ret != 0)
-					CHECK(ret == DS3_REPORT_LEN);   /* only a translation shrinks */
 			}
 		}
 	}
@@ -1175,25 +1215,71 @@ static int test_input_bounce_error_and_zero(void)
 }
 
 /* A 70-byte record that does not translate cannot fit the caller's 64 bytes:
- * dropped (0), dst untouched. */
+ * dropped (0), dst untouched - from a DualSense, a DS3 and a pad nobody owns. */
 static int test_input_bounce_drop_oversize(void)
 {
+	fake_xport_t *const xp[3] = { &g_x_ds, &g_x_ds3, &g_x_other };
 	uint8_t buf[96];
-	int i;
+	int i, w;
+
+	for (w = 0; w < 3; w++) {
+		glue_reset();
+		ds45_shim_data.out_mode = 1;
+		record_make(g_oi_report, 70);
+		g_oi_len = 70;
+		memset(buf, 0xCC, sizeof(buf));
+
+		CHECK(shim_input(xp[w], buf, 64, 0) == 0);
+		CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
+		for (i = 0; i < 96; i++)
+			CHECK(buf[i] == 0xCC);
+		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 1);
+		CHECK(ds45_shim_data.dbg_in_drop == 1 && ds45_shim_data.dbg_in_err == 0);
+		CHECK(ds45_shim_data.stat_passed == 1 && ds45_shim_data.stat_translated == 0);
+	}
+	return 0;
+}
+
+/* The same counters from a DS3: every bounce read counts, whichever pad. */
+static int test_input_bounce_counters_other_pad(void)
+{
+	static uint8_t dst[128];
+	const ds45_shim_data_t *d = &ds45_shim_data;
 
 	glue_reset();
 	ds45_shim_data.out_mode = 1;
-	record_make(g_oi_report, 70);
-	g_oi_len = 70;
-	memset(buf, 0xCC, sizeof(buf));
 
-	CHECK(shim_input(&g_x_ds, buf, 64, 0) == 0);
-	CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
-	for (i = 0; i < 96; i++)
-		CHECK(buf[i] == 0xCC);
-	CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 1);
-	CHECK(ds45_shim_data.dbg_in_drop == 1 && ds45_shim_data.dbg_in_err == 0);
-	CHECK(ds45_shim_data.stat_passed == 1 && ds45_shim_data.stat_translated == 0);
+#define DS3_READ(len_in) shim_input(&g_x_ds3, dst, (uint16_t)(len_in), 0)
+
+	record_make(g_oi_report, 96);
+	g_oi_len = DS3_REPORT_LEN;                   /* 1: a DS3 report */
+	CHECK(DS3_READ(64) == 49);
+	CHECK(memcmp(dst, g_oi_report, 49) == 0);
+	CHECK(d->dbg_in_bounce == 1 && d->dbg_in_big == 0 && d->dbg_in_drop == 0 && d->dbg_in_err == 0);
+
+	g_oi_len = 70;                               /* 2: long, too long for 64 */
+	CHECK(DS3_READ(64) == 0);
+	CHECK(d->dbg_in_bounce == 2 && d->dbg_in_big == 1 && d->dbg_in_drop == 1 && d->dbg_in_err == 0);
+
+	g_oi_len = -2;                               /* 3: error */
+	CHECK(DS3_READ(64) == -2);
+	CHECK(d->dbg_in_bounce == 3 && d->dbg_in_big == 1 && d->dbg_in_drop == 1 && d->dbg_in_err == 1);
+
+	g_oi_len = 0;                                /* 4: nothing */
+	CHECK(DS3_READ(64) == 0);
+	CHECK(d->dbg_in_bounce == 4 && d->dbg_in_big == 1 && d->dbg_in_drop == 1 && d->dbg_in_err == 1);
+
+	g_oi_len = 0x41;                             /* 5: 65 fits a 100-byte caller, not "big" */
+	CHECK(DS3_READ(100) == 0x41);
+	CHECK(d->dbg_in_bounce == 5 && d->dbg_in_big == 1 && d->dbg_in_drop == 1 && d->dbg_in_err == 1);
+
+	g_oi_len = 0x42;                             /* 6: 66 is big and fits 100 */
+	CHECK(DS3_READ(100) == 0x42);
+	CHECK(d->dbg_in_bounce == 6 && d->dbg_in_big == 2 && d->dbg_in_drop == 1 && d->dbg_in_err == 1);
+
+	CHECK(d->stat_translated == 0 && d->stat_passed == 4);   /* 1, 2, 5, 6 */
+	CHECK(d->dbg_input_calls == 5 && d->dbg_input_ds == 0);  /* the error was not noted */
+#undef DS3_READ
 	return 0;
 }
 
@@ -1258,16 +1344,18 @@ static int test_input_bounce_counters(void)
 	return 0;
 }
 
-/* The pad is looked up before the read: a transport no pad owns, a pad that is
- * not a DualSense, an unreachable manager and NULL arguments all take the
- * normal path with the caller's own buffer. */
+/* The pad is looked up AFTER the bounce read. A lookup miss (a transport no pad
+ * owns), a pad that is not a DualSense, an unreachable pad manager and an unset
+ * pad class all take the bounded pass-through: the read is bounced, the bytes
+ * reach the caller untranslated and counted exactly, never an overrun. NULL
+ * arguments keep the normal path with the caller's own buffer. */
 static int test_input_bounce_pad_lookup(void)
 {
 	uint8_t dst[64], want[64];
 	fake_pad_t pad4;
 	int what;
 
-	for (what = 0; what < 5; what++) {
+	for (what = 0; what < 6; what++) {
 		glue_reset();
 		ds45_shim_data.out_mode = 2;
 		pad_make(&pad4, PAD_VTABLE, VID_SONY, PID_DS4);
@@ -1279,32 +1367,53 @@ static int test_input_bounce_pad_lookup(void)
 		memset(want, 0xCC, sizeof(want));
 		memcpy(want, g_oi_report, DS_BASIC_LEN);
 
-		if (what == 0) {                         /* no pad owns this transport */
-			put_native(g_mgr.b + SHIM_MGR_OBJS + 7 * 8, NULL);
-			CHECK(shim_input(&g_x_other, dst, sizeof(dst), 9) == DS_BASIC_LEN);
-			CHECK(g_oi_xport == (void *)&g_x_other && g_oi_dst == dst);
-			CHECK(ds45_shim_data.dbg_input_padmiss == 1);
-		} else if (what == 1) {                  /* a pad that is not a DualSense */
-			CHECK(shim_input(&g_x_other, dst, sizeof(dst), 9) == DS_BASIC_LEN);
-			CHECK(g_oi_xport == (void *)&g_x_other && g_oi_dst == dst);
-			CHECK(ds45_shim_data.dbg_input_padmiss == 0);
-			CHECK(ds45_shim_data.dbg_last_pid == 0x054C05C4u);
-		} else if (what == 2) {                  /* no pad manager */
-			ds45_shim_data.pad_mgr = 0;
-			CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 9) == DS_BASIC_LEN);
-			CHECK(g_oi_xport == (void *)&g_x_ds && g_oi_dst == dst);
-		} else if (what == 3) {                  /* NULL transport */
+		if (what <= 3) {
+			void *xport = &g_x_other;
+
+			if (what == 0)                       /* no pad owns this transport */
+				put_native(g_mgr.b + SHIM_MGR_OBJS + 7 * 8, NULL);
+			else if (what == 2) {                /* no pad manager */
+				ds45_shim_data.pad_mgr = 0;
+				xport = &g_x_ds;
+			} else if (what == 3) {              /* the pad class is not set */
+				ds45_shim_data.pad_vtable = 0;
+				xport = &g_x_ds;
+			}                                    /* what == 1: a pad that is a DS4 */
+
+			CHECK(shim_input(xport, dst, sizeof(dst), 9) == DS_BASIC_LEN);
+			CHECK(g_oi_calls == 1 && g_oi_xport == xport);
+			CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);   /* bounced */
+			CHECK(g_oi_flag == 9);
+			CHECK(memcmp(dst, want, sizeof(dst)) == 0);   /* untranslated, as read */
+			CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 0);
+			CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
+			CHECK(ds45_shim_data.stat_translated == 0 && ds45_shim_data.stat_passed == 1);
+			CHECK(ds45_shim_data.dbg_input_calls == 1 && ds45_shim_data.dbg_input_ds == 0);
+			CHECK(ds45_shim_data.dbg_input_padmiss == (what == 1 ? 0u : (what == 3 ? 0u : 1u)));
+			if (what == 1)
+				CHECK(ds45_shim_data.dbg_last_pid == 0x054C05C4u);
+
+			/* a long record from the same pad cannot fit 64 bytes: dropped, counted */
+			g_oi_len = 0x4F;
+			record_make(g_oi_report, 0x4F);
+			memset(dst, 0xCC, sizeof(dst));
+			CHECK(shim_input(xport, dst, sizeof(dst), 9) == 0);
+			CHECK(dst[0] == 0xCC && dst[63] == 0xCC);
+			CHECK(ds45_shim_data.dbg_in_bounce == 2 && ds45_shim_data.dbg_in_big == 1);
+			CHECK(ds45_shim_data.dbg_in_drop == 1 && ds45_shim_data.dbg_in_err == 0);
+		} else if (what == 4) {                  /* NULL transport: the normal path */
 			CHECK(shim_input(NULL, dst, sizeof(dst), 9) == DS_BASIC_LEN);
 			CHECK(g_oi_xport == NULL && g_oi_dst == dst);
-		} else {                                 /* NULL destination */
+			CHECK(g_oi_calls == 1 && g_oi_len_in == sizeof(dst) && g_oi_flag == 9);
+			CHECK(memcmp(dst, want, sizeof(dst)) == 0);
+			CHECK(ds45_shim_data.stat_translated == 0);
+			CHECK(bounce_counters_zero() && inbuf_clean());
+		} else {                                 /* NULL destination: the normal path */
 			CHECK(shim_input(&g_x_ds, NULL, sizeof(dst), 9) == DS_BASIC_LEN);
 			CHECK(g_oi_xport == (void *)&g_x_ds && g_oi_dst == NULL);
+			CHECK(g_oi_calls == 1 && g_oi_len_in == sizeof(dst) && g_oi_flag == 9);
+			CHECK(bounce_counters_zero() && inbuf_clean());
 		}
-		CHECK(g_oi_calls == 1 && g_oi_len_in == sizeof(dst) && g_oi_flag == 9);
-		if (what < 3)
-			CHECK(memcmp(dst, want, sizeof(dst)) == 0);   /* untranslated, as read */
-		CHECK(ds45_shim_data.stat_translated == 0);
-		CHECK(bounce_counters_zero() && inbuf_clean());
 	}
 	return 0;
 }
@@ -2432,13 +2541,14 @@ int run_tests(void)
 		test_dbg_counts_enable,
 		test_input_note,
 		test_input_mode0_unchanged,
-		test_input_ds3_never_bounced,
+		test_input_ds3_bounced_unchanged,
 		test_input_bounce_translates_full_report,
 		test_input_bounce_basic_report,
 		test_input_bounce_never_overruns_dst,
 		test_input_bounce_error_and_zero,
 		test_input_bounce_drop_oversize,
 		test_input_bounce_counters,
+		test_input_bounce_counters_other_pad,
 		test_input_bounce_pad_lookup,
 	};
 	unsigned i;

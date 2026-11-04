@@ -84,21 +84,24 @@ int SHIM_HOOK(shim_enable)(void *drv, long status, long len)
 
 /* Bluetooth transport input read (method 4, slot 0x37CE38).
  *
- * Bounce path: the shim is enabled, output mode is 1 or 2 (the modes that raise
- * the read limit to 0x50, so a DualSense's full 0x31 report arrives whole) and
- * the pad that owns this transport is a DualSense. The pad is looked up BEFORE
- * the read (the transport has no pointer back to its pad). The transport read
- * copies the whole packet into its destination with no bound and the pad
- * driver's buffer is 64 bytes, so the original is given the shim's own 96-byte
- * buffer (d->inbuf) and 0x50 as its length instead (the original only tests the
- * length for non-zero; the pad manager lock serialises reads, so one buffer is
- * enough), and shim_input_bounce translates there and copies only what fits the
- * caller's buffer.
+ * Bounce path, EVERY read in modes 1 and 2 (the modes that raise the read limit
+ * to 0x50, so a DualSense's full 0x31 report arrives whole), when the shim is
+ * enabled and xport and dst are non-NULL, whichever pad it is. The transport
+ * read copies the whole packet into its destination with no bound, the limit is
+ * shared by every device on the channel and the pad driver's buffer is 64
+ * bytes, so no read may go to the caller's buffer directly (and which pad it is
+ * cannot be decided before the read: the transport has no pointer back to its
+ * pad, and a lookup that misses must not mean an overrun). The original is given
+ * the shim's own 96-byte buffer (d->inbuf) and 0x50 as its length instead (it
+ * only tests the length for non-zero; the pad manager lock serialises reads, so
+ * one buffer is enough). After the read the pad is looked up and
+ * shim_input_bounce translates a DualSense's report in the bounce buffer, passes
+ * any other pad's bytes through unchanged, and copies at most len_in bytes to the
+ * caller's buffer (anything longer is dropped).
  *
  * Normal path - every other case (mode 0 or any other mode value, a disabled
- * shim, NULL arguments, a DS3 or other non-DualSense pad, no pad found): run
- * the original first with the caller's own dst and length to fill dst and get
- * the byte count. Then find the pad that owns this transport in the pad manager
+ * shim, NULL arguments): run the original first with the caller's own dst and
+ * length to fill dst and get the byte count. Then find the pad that owns this transport in the pad manager
  * and, for an enabled DualSense, let the filter rewrite its report in dst into a
  * DS3 report. An error or implausible count from the original, or a buffer too
  * small for a DS3 report, returns the original result untouched. Every such
@@ -114,11 +117,9 @@ int SHIM_HOOK(shim_input)(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 
 	if (ds45_shim_data.enabled && xport && dst &&
 	    (ds45_shim_data.out_mode == 1 || ds45_shim_data.out_mode == 2)) {
-		pad = shim_pad_from_xport(&ds45_shim_data, xport);
-		if (shim_pad_is_dualsense(&ds45_shim_data, pad)) {
-			rc = orig(xport, ds45_shim_data.inbuf, SHIM_IN_BOUNCE_LEN, flag);
-			return shim_input_bounce(&ds45_shim_data, pad, dst, len_in, rc);
-		}
+		rc = orig(xport, ds45_shim_data.inbuf, SHIM_IN_BOUNCE_LEN, flag);
+		pad = rc >= 0 ? shim_pad_from_xport(&ds45_shim_data, xport) : 0;
+		return shim_input_bounce(&ds45_shim_data, pad, dst, len_in, rc);
 	}
 
 	rc = orig(xport, dst, len_in, flag);

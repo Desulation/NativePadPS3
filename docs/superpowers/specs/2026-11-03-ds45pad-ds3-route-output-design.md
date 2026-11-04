@@ -287,13 +287,21 @@ alone would overflow the stack buffer by about 14 bytes.
   reverted like the other rows, and applied only when the output hook rewrites
   (`SHIM_OUTPUT_MODE` 1 or 2), because only a rewritten output report makes the
   pad send the long report.
-- The input hook (`shim_input`), for a DualSense pad only, calls the original
-  read with a shim-owned **bounce buffer** (`inbuf`, 96 bytes, in the data
-  block) and the larger length, translates the report there, and copies at most
-  the caller's `len_in` bytes into the caller's buffer. A result that is not
-  translatable and does not fit is dropped (the facts task states what the
-  callers do with a zero return). Every other pad, the DS3 included, is read
-  exactly as today, into the caller's buffer.
+- The input hook (`shim_input`), in those modes (1 and 2, shim enabled, transport
+  and destination non-NULL), bounces EVERY read, whichever pad it is: it calls
+  the original read with a shim-owned **bounce buffer** (`inbuf`, 96 bytes, in
+  the data block) and the larger length, then looks the pad up. Only a
+  DualSense's report is translated, there; for every other pad (the DS3
+  included, and a pad the lookup misses) the bytes are passed through
+  unchanged. Either way at most the caller's `len_in` bytes are copied into the
+  caller's buffer. A result that is not translatable and does not fit is
+  dropped (the facts task states what the callers do with a zero return). The
+  reason for bouncing every read: the raised limit is shared by the whole
+  channel, and a read whose pad lookup misses (or whose pad manager or class is
+  not yet known) must not overrun the caller's 64-byte buffer either, so the
+  decision which pad it is cannot be taken before the read. Mode 0, any other
+  mode value, a disabled shim and NULL arguments read exactly as today, into the
+  caller's buffer.
 - The input filter and the translator are unchanged: they already translate a
   `0x31` report (motion, touchpad flags, battery level), so those come with it.
 
