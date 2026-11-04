@@ -14,7 +14,7 @@ Bluetooth at pad `0x661000`, a DualSense at pad `0x650800` in the first), `twodu
 Conventions: a bare `0xNNNN` is an LV2 offset (kernel address = `0x8000000000000000` + offset); `pad+0xNN` is a byte
 offset in the pad object (vtable `0x38CDC8`); `TOC-0xNNNN` is a slot relative to the kernel TOC `0x3759C0`. Hashes
 are FNV-1a 64 of the 8-aligned qword, bytes in memory order. No kernel code bytes are reproduced: instructions are
-described in prose, apart from the two single instruction words that the cap patch needs (section F5). Each fact is
+described in prose, apart from the single instruction words that the patches need (sections F5 and F9). Each fact is
 marked **[code]** (read in the kernel image), **[dump]** (read in a RAM dump) or **[assumed]**.
 
 ## GATE: FAILED - the shared packet buffer has room for 72 bytes, the design needs 79
@@ -40,6 +40,7 @@ length below 77 (F2), so this is the only blocker found.
 | F4 DS3 payload | 48 bytes (`0x30`), standard DS3 layout without the report id: rumble payload bytes 1-4, LED bitmap at payload byte 9, four 5-byte LED blocks at 10-29, zero to 47. A real DS3's idle report was read from a dump. | Offsets for the translator. Durations are finite (`0x96`) in the periodic path. |
 | F5 hashes | Output call qword `0x2A2DE8`: `0x2A29E6BB7BA10D5E`. Cap qword `0xF8D70`: `0xBF27C253F5228E13`, original compare word `0x2B9F0040`, new word `0x2B9F004D`, patched qword `0xBF27CD53F522A0C4`. Three independent computations agree. | Rows for the installer. |
 | F6 stub contract | `r3` = pad+0x20 byte, `r4` = 2, `r5` = 1, `r6` = pad+0x22B, `r7` = 0x30, `r2` = kernel TOC, `r28..r31` live, `r3` afterwards is stored as the function's return value. | Contract for the `bl` entry. |
+| F9 receive path (task 11) | **GATE FAILED for a bare limit raise.** The HID receive function copies `read - 1` bytes into the caller's `dst` with no bound by `len_in`; the pad driver's `dst` is a 64-byte stack local (72 bytes in one caller) followed by saved registers, so a 78-byte copy overruns the frame. The ring (134 bytes) holds the 81-byte record and the over-long record is NOT merely left queued: the failed read swallows the length prefix and desynchronises the ring. | The three `li r7,0x41` immediates of the interrupt-in channel can be raised only together with a bounce buffer in the input hook (the original is called with a shim-owned buffer of 80+ bytes, the result copied into `dst` bounded by `len_in`). See F9.7. User decision needed. |
 
 ## F1 - The shared packet buffer `0x4326C8`
 
@@ -317,6 +318,211 @@ alone: it needs the receive side to take 79-byte packets, which is the stage 2 f
 **Not yet checked.** The raw reads the input hook sees after the switch (no instrumentation records the read result or
 the first bytes), and the capacity of the interrupt-in ring.
 
+## F9 - The receive path of a DualSense input report (read-only, plan task 11)
+
+Static analysis of `ds45pad_lv2.bin` (code identical to the pristine image at every site named here, checked for the
+four immediates) plus the connection tables of the connected-pad dumps. Nothing was sent to a console.
+
+### GATE: FAILED - raising the read limit alone would overflow the pad driver's stack buffer
+
+**The copy into the caller's buffer is not bounded by the caller's length.** The HID receive function `0xF8FE0` (the
+`0xF9060` block is its interrupt-in body) only tests that the length cell is non-zero, then copies `read - 1` bytes to
+`dst` with the kernel `memcpy` (call at `0xF91A8`). The only bound is the `0x41` read limit. The pad driver's `dst` is a
+**stack local of 64 bytes** (`len_in` = `0x40`), directly followed by saved registers (F9.4). With the limit raised to
+`0x50`, a 79-byte `0x31` record is copied as 78 bytes: **14 bytes past the 64-byte local, into the saved
+registers of the pad driver's frame** (in one caller 6 bytes past a 72-byte slot into saved `r27`; in the other the
+saved `r28` and 6 bytes of `r29`). That corrupts the caller's registers on return: a crash or hang class of fault.
+
+The ring itself is fine (it holds the 81-byte record, F9.3), and no other layer rejects a 79-byte packet (F9.2). The
+**safe shape** is therefore not "raise four immediates" but "raise the interrupt-in immediates **and** make the input
+hook call the original with a shim-owned buffer of at least 80 bytes, then copy at most `len_in` translated bytes to
+`dst`" (F9.6, F9.7). That changes the design (Amendment 2 assumed the hook only needed its guard relaxed), so the
+decision belongs to the user. Not decided here.
+
+| Question | Answer |
+|---|---|
+| Is the copy into `dst` bounded by `len_in`? | **No** (F9.1). Bounded only by the read limit `0x41` today. |
+| Does the pad driver's `dst` hold more than 64 bytes? | **No**: 64 bytes (72 in one caller before a saved register). Needs 55 only for the translator, 78 for the raw report (F9.4). |
+| Does the interrupt-in ring hold a 79-byte packet? | Yes: capacity 134, the record needs 81 (F9.3). |
+| What does an over-long record do today? | `0x1169E4` returns `0x80010028` **after having consumed the 2-byte length prefix** and leaves the body in the ring: the ring is then out of frame until the writer overflows it (F9.2). Worse than "left queued". |
+| Is raising the limit safe for the DS3? | Yes for the DS3 and the basic-mode DualSense (records of 50 and 11 bytes, below 65); it only changes the outcome for records of 66 to 80 bytes (F9.5). |
+
+### F9.1 The path of one received interrupt-in packet [code]
+
+1. **ACL data and L2CAP.** The HCI ACL data handler (frame start `0x10BC4C`; the reassembly and dispatch code read is
+   `0x10BDC4..0x10BE90`, the rest of the handler was not traced) reassembles the L2CAP frame in the
+   connection (area at connection `+0xEA6`, running length at `+0xEA4`, expected length at `+0xEA0`). A frame whose
+   running length would exceed `0x400` (1024) is dropped (compare at `0x10BDD4`), so 79 bytes pass. It looks the
+   channel up by CID (`0x1127B8`) and calls the channel's callback through the descriptor stored at channel `+0x1F8`,
+   with the connection, the channel, a pointer to the L2CAP payload and its length (payload length = frame length - 8).
+2. **HID data callback `0x114DC0`** (descriptor `0x3426C8`; it is referenced by that descriptor only, so the L2CAP layer
+   is its only caller). Channel PSM `0x13` (interrupt) writes one record into the connection's **channel 1 ring**
+   (ring struct at connection `+0x1310`, the `+0x1308` base at `0x114F04`); PSM `0x11` (control) goes to channel 3
+   (`+0x13A0`). A record is `[16-bit big-endian length][payload]`, where the payload includes the HID header byte
+   (`0xA1` for a DATA input transaction): 2 + length bytes in the ring. No length test other than free space: if
+   `capacity - used < length + 2` the ring is **reset** (indices and used set to zero, a drop counter at ring `+0x10`
+   incremented, `0x114E7C..0x114EAC`) and the write is retried; if it still does not fit the record is dropped. After
+   the write it signals the HID layer through `0x115524(connection, 1)` for the connected states.
+3. **Reader.** The pad driver input caller `0x2A4E00` loads the pad's transport (`pad+0x4F0`) and calls vtable slot `+0x20`
+   (slot `0x37CE38`, descriptor `0x33A010`) with `r3` = transport, `r4` = `dst`, `r5` = `len_in` (passed through from its
+   own caller), `r6` = 0. The descriptor is the method at `0xC9D60`: it stores `len_in` in a local halfword and calls
+   `0x101E20(handle byte at transport+8, dst, &len, flag XOR 1)`; on success the method returns the updated halfword
+   (the byte count), on failure the negative error code. `0x101E20` takes the
+   Bluetooth lock (variable `0x4325D0`), finds the HID client for the handle (`0x1010B8`) and calls `0xF8FE0(client, dst,
+   &len, flag)`.
+4. **`0xF8FE0`** returns `0x80010002` for a null `dst`; its interrupt-in body (`0xF9060`) returns the same if `*len` is 0,
+   clears 65 bytes of the shared buffer, calls `0x116EF0(addr, channel 1, mode 2, buffer, 0x41)` (mode 2 on the
+   receive channels is the read: `0x1170F0` rejects a closed connection (bit `0x04000000`) and calls
+   `0x1169E4(conn, 1, buffer, 0x41, 0)`). With the flag non-zero (the pad driver passes 0, which `0xC9D60` turns into 1
+   by the XOR) it reads **a second time** into the same buffer; a second record wins, otherwise the first stays. Then it copies
+   `read - 1` bytes from `buffer+1` (slot `TOC-0x3360`) to `dst`, stores that count in `*len` and returns 0.
+5. **Return values.** `0xC9D60` returns `read - 1` (the packet length without the `0xA1` header): **49 for a DS3 record
+   (50 bytes in the ring), 10 for a basic-mode DualSense (11 bytes), 78 for a `0x31` record (79 bytes)**; `dst[0]` is
+   the report id. Today a `0x31` record gives the hook the negative `0x80010028` (the guard passes it through
+   unchanged) and, until the ring is rewritten, a 0 (F9.2). After a limit raise the hook would see 78, which the
+   existing `rc > 0x41` guard rejects (it would hand the raw report to the pad driver).
+
+**[dump]** The `navpid_connected` and `type01_connected` dumps show the ring contents of a DualSense in basic mode:
+13 bytes per record (length `0x000B`, then `A1 01` and nine bytes), 9 records queued in the first.
+
+### F9.2 What `0x1169E4` does with an over-long record [code]
+
+Receive branch (channels 1 and 3): if the ring holds at most 1 byte it returns 0 (nothing). Otherwise it reads the
+2-byte length prefix with `0x11E440` (a **consuming** read: read index and used count are updated) and compares the
+remaining used bytes with the record length; if the record is incomplete it **gives the 2 bytes back** with `0x11DC5C`
+and returns 0. If complete, it compares the caller's maximum with the record length (compare at `0x116D2C`): if the
+maximum is **smaller**, it returns **`0x80010028`** (`lis`/`ori` at `0x116D34`) and **does not give the prefix back**.
+Otherwise it copies the record and returns its length.
+
+Effects of the over-long case (a `0x31` record against the limit `0x41`):
+- The record body stays in the ring, **two bytes later in frame**. The next read takes the first two body bytes
+  (`A1 31`, = 41265) as the length, finds fewer bytes than that, restores the 2 bytes and returns 0, and keeps doing
+  so (the hook sees `rc` 0 and a length of 0, and the translator refuses it).
+- The ring recovers only when the writer overflows it: a 134-byte ring holding a 79-byte stale body cannot take the
+  next 81-byte record, so `0x114DC0` resets the ring and writes the new record in frame, and the next read fails with
+  `0x80010028` again. So at most one error per incoming record, and **no report is ever delivered**. This matches F8
+  (`xl` frozen at 1 from the first rewritten report on).
+- No packet is lost on the wire, and nothing else is changed (no event, no disconnect). The rate of about 1-2 hook
+  entries per second seen on the console is not explained by this code; the entries show the pad driver keeps
+  polling the transport. **[assumed]** the poll is driven by the HID layer's notification and by a timer, not
+  traced.
+
+No other reason to reject a 79-byte packet exists on this path: `0x116EF0` and `0x1170F0` test the channel index, the
+connection and the "closed" flag only; the HID layer tests `dst` non-null and `*len` non-zero (F9.1).
+
+### F9.3 Capacity of the interrupt-in ring [code][dump]
+
+- **[code]** The HID client open function (`0xF9284`) opens the four channels with `0x116EF0` mode 0 and a buffer
+  inside the client object: channel 0 `0x86` bytes at client `+0x18`, channel 1 `0x86` at `+0x9E` (call at `0xF93F0`,
+  immediate `li r7,0x86` at `0xF939C`), channels 2 and 3 `0x43` each, **both on the same buffer** at `+0x124`
+  (`0xF9424` and `0xF9494`). The capacity is the size handed to the connection open (`0x1170D8` stores it at ring
+  `+0xC`). The ring buffers lie back to back in the client object, so **raising a capacity immediate would run
+  into the next buffer**; it is not needed.
+- **[dump]** Measured in `navpid_connected`, `type01_connected`, `twopads`, `twodualsense_snap`: channel 1 capacity `0x86`
+  (134), channel 3 `0x43` (67), for the DualSense's connection and the DS3's alike.
+- A `0x31` record needs `2 + 79 = 81` bytes of 134: **fits** when the ring is empty or holds at most 53 bytes of other
+  records. A second record arriving before the first is read overflows the ring and resets it (the unread one is dropped,
+  the newest is kept), so a slow reader sees the newest report only. The DS3's 52-byte records fit twice (104).
+
+### F9.4 `len_in` and `dst` as the pad driver passes them [code]
+
+`0x2A4E00` has two callers, both stack-local readers of the pad object:
+- `0x2A50FC` (frame `0xE0`, call at `0x2A51E8`): `dst` = `r1+0x70`, `len_in` = `0x40` (`li r5,0x40` at `0x2A51E4`). The
+  first saved register (`r27`) is at `r1+0xB8`: **72 bytes** of local space.
+- `0x2A521C` (frame `0xD0`, call at `0x2A528C`): `dst` = `r1+0x70`, `len_in` = `0x40` (`li r5,0x40` at `0x2A5280`). The
+  first saved register (`r28`) is at `r1+0xB0`: **exactly 64 bytes**.
+Both pass the returned count to the DS3 converter `0x2A4678` (with `dst` and that count). So `dst` holds 64 bytes: the
+translator's 55-byte minimum fits, the 78-byte raw report does not. The DS3's own 49-byte reports use 49 of the 64
+and are unaffected. The translator output is 49 bytes (`DS3_REPORT_LEN`), written in place of the input.
+After the read `0x2A4E00` returns the count; a negative value ends the poll early. A non-zero count with `dst[0]`
+= 1 and `dst[1]` != `0xFF` goes on to `0x2A26A8` with that count.
+
+### F9.5 Users of the receive functions and the effect of a limit raise [code]
+
+| Function | Channel | Callers | Effect of `0x41` -> `0x50` |
+|---|---|---|---|
+| `0xF8FE0` (interrupt-in body `0xF9060`: reads at `0xF9094`, `0xF9134`) | 1 | `0x101E20` (reached only from `0xC9D60`, i.e. the pad transport), `0x100130` and `0x1007B8` (inferred: a generic asynchronous read with a caller-supplied buffer and length, vtable client API; their callers were not enumerated) | DS3 (49-byte result), basic DualSense (10) and every record up to 65 bytes: **unchanged**. Records of 66-80 bytes: delivered instead of failing. The two generic callers get the same unbounded copy; their buffers are sized by their callers and were not checked. |
+| `0xF91C0` (drain, read at `0xF91F4`) | 1 | `0x101DF0`, from the wrapper `0x101D98` (descriptor `0x340790`) | Reads up to two records and discards them into the shared buffer (no `dst`). Safe to raise; unraised, a pending `0x31` record would be swallowed with the prefix and desync the ring. |
+| `0xF840C` (control in, read at `0xF8484`) | 3 | callback, not enumerated | Leave as is: the channel-3 ring is 67 bytes and cannot hold a record above 65 anyway. |
+
+The 65-byte clears in these functions (`li r5,0x41` before the memset) only pre-clear the shared buffer; the copy that
+follows is exact (`read - 1` bytes), so no stale bytes are delivered and they need no change. The moved shared buffer
+(96 bytes, Amendment 1) holds an 80-byte read plus the `buffer+1` view.
+
+### F9.6 Recommended patch set [code]
+
+Limit change only for the interrupt-in channel. `li r7,0x41` is the word `0x38E00041`; the new word is
+`li r7,0x50` = `0x38E00050` (80 >= the 79-byte record; 0x4F would be the minimum). All three instructions are the
+**low half** of their 8-aligned qword. FNV-1a 64 over the qword (offset basis `0xCBF29CE484222325`, prime
+`0x100000001B3`, bytes in memory order), computed three ways (byte-order loop on the dump and on the pristine image,
+which agree; a loop that works from the qword value most significant byte first; PowerShell `BigInteger`):
+
+| Site | Function / role | Aligned qword | Original hash | Patched hash (word `0x38E00050`) |
+|---|---|---|---|---|
+| `0xF9094` | `0xF8FE0` first read, channel 1 | `0xF9090` | **`0x069BC077D72F4325`** | `0x069BCF77D72F5CA2` |
+| `0xF9134` | `0xF8FE0` second read (flag set), channel 1 | `0xF9130` | **`0x57006EC0FDB88DBC`** | `0x57005FC0FDB8743F` |
+| `0xF91F4` | `0xF91C0` drain, channel 1 | `0xF91F0` | **`0x995A6CDC70F64A38`** | `0x995A7DDC70F6671B` |
+| `0xF8484` | `0xF840C` control in, channel 3 | `0xF8480` | `0x069BC077D72F4325` | **not recommended** (would be `0x069BCF77D72F5CA2`) |
+
+The qwords at `0xF9090` and `0xF8480` have the same bytes (the high half is the load of a word from `8(r9)`), so they
+share both hashes; the installer keys the check by address. Required: the first two rows (without them the packet is
+refused or the second read desyncs it). Recommended: the drain row. Nothing else changes: ring capacity, the shared
+buffer size and the 65-byte clears stay.
+
+**Safer or smaller options.**
+- Channel 3 stays untouched (above), so the change is already limited to the interrupt-in channel.
+- **A bare limit raise is not acceptable** (GATE). It must be paired with the bounce buffer in the hook (F9.7). The
+  bounce also covers the DS3 and every other pad read through the transport, with no change in what they see.
+- Truncating at the kernel instead (deliver the first 64 bytes of the record and drop the rest) would need new code in
+  `0x1169E4` (a clamp plus a discard of the remainder), not a word patch, and would touch every user of the ring; the
+  translator needs only 55 bytes, so it would work, but it is a larger and riskier change than the hook bounce.
+- **[assumed]** The generic read callers (`0x100130`, `0x1007B8`) are not used on a pad's connection; if one were, a
+  `0x31` record could overrun its buffer. They are unreachable for the pad driver's own read, which is the only reader
+  the shim wraps.
+
+### F9.7 What the hook and the filter must change [code]
+
+`shim/entry.c` `shim_input`:
+1. Call the original with a **bounce buffer of at least 80 bytes** on the hook's own stack (a static buffer in the blob
+   would be shared; the original runs under the Bluetooth lock but the hook's tail does not), with the caller's
+   `len_in` unchanged (the HID layer only tests it for non-zero). Always, whether or not the shim is enabled, as
+   long as the limit patch is installed: the bounce is what keeps `dst` safe.
+2. Relax `rc > 0x41` to the real maximum (`rc > 0x4F` = 79, the most the raised limit can return), keeping `rc < 0` as is.
+3. For a DualSense run the filter on the bounce buffer (length `rc`; it translates 0x01 or 0x31 in place and sets the
+   length to 49), then **copy at most `len_in` bytes to `dst`**: 49 bytes for a translated report. For any other
+   result copy `min(rc, len_in)` bytes, which is exactly what the original used to deliver (a DS3's 49 bytes). An
+   untranslatable result longer than `len_in` (a `0x31` report the translator refuses) should return 0 (no data) rather
+   than a clipped raw report.
+4. The existing check `len_in < DS3_REPORT_LEN` stays meaningful: it now guards the 49 translated bytes written to `dst`
+   (the pad driver passes 64).
+
+`shim/shim.c` `shim_input_filter`: **no change needed.** For a `0x31` report it is called with `buf[0]` = `0x31` and
+`*len` = 78 (the bounce copy), above `DS_BT_BODY_MIN` (55); `ds3_report_from_dualsense` reads through the status byte
+only and writes 49 bytes, then the filter sets `*len` = 49. Its behaviour on the basic 0x01 report (length 10) and on
+refusals is unchanged.
+
+### F9.8 What makes the pad switch to the `0x31` input report [code][assumed]
+
+- **[code]** The kernel never sends a Bluetooth HID GET_REPORT. A scan of `0xF4000..0x105000` for the GET transaction
+  headers (`ori` with `0x40`/`0x43`) finds only the sample-rate code (`0xF7BE0`, `0xF7C0C`, a flag bit, not a header);
+  together with the earlier full scan (`2026-10-30-ds3-route-facts.md` F3) the one sender of control transactions,
+  `0xF8BD8`, ORs `0x50` (SET_REPORT) into the header. So the feature report `0x05` that Linux uses to switch a
+  DualSense is never requested by this kernel; its host traffic is SET_REPORTs (the `0xF4` enable, the zero DS3
+  output report) and interrupt-channel output reports.
+- **[dump][console]** In the F8 probe run the input stalled from the first rewritten output report `0x31`, with nothing
+  else new sent: the output report is the switch trigger in practice. **[assumed]** the DualSense switches to `0x31` on
+  receiving an output report `0x31` while in basic mode; the pad side is not determinable from the kernel image.
+- Consequence: once any rewritten output report is sent, the pad stays in `0x31` mode until it reconnects; there is
+  no kernel-side way back.
+
+### F9.9 Open
+
+- The generic read callers `0x100130` and `0x1007B8`: buffer sizes not enumerated (F9.5).
+- Whether the `0xF840C` callback copies unbounded as well (irrelevant while its limit stays `0x41`).
+- The low hook entry rate after the stall (F9.2).
+- The negotiated L2CAP MTU and the dongle's ACL size for 79-byte frames: not statically verifiable (as F2); the
+  console probe proves the pad's output path, the input side is unproven until a console run.
+
 ## Method (commands)
 
 All from the scratchpad, never from the repo root (`dis.py` there shadows the stdlib), `python -I`:
@@ -326,3 +532,10 @@ All from the scratchpad, never from the repo root (`dis.py` there shadows the st
 in `0x4325xx..0x4329xx`; a scan of the whole dump for qwords pointing into `0x4326C8..0x432717`; a connection-table
 reader (table `TOC-0x2848`, 7 entries of `0x14E8` bytes, rings at `+0x12C8 + channel*0x48`) over five dumps; a pad
 object reader (vtable qword `0x800000000038CDC8`) for the rumble and LED requests; the hash script.
+
+F9 (task 11) used the same helpers plus three small scratchpad scripts: a connection-ring reader (rings at
+`+0x12C8 + channel*0x48`, and the contents of channel 1), a call-site register tracker for `0x116EF0` (which channel,
+mode and size each caller passes) and the hash script for the four immediates; disassembly with `lst.py` over
+`0xF8FE0..0xF9280`, `0xC9D60`, `0x101E20`, `0x1169E4..0x116EF0`, `0x1170F0`, `0x11E440`, `0x11E640`, `0x11DC5C`,
+`0x114DC0`, `0x10BDC4..0x10BEF8`, `0xF9284..0xF9560`, `0x2A4E00`, `0x2A50FC..0x2A5330`; `callers.py` for `0x2A4E00`,
+`0xF8FE0`, `0xF91C0`, `0x101E20`.
