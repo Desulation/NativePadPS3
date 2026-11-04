@@ -29,17 +29,23 @@
  * pid_orig grown from 3 to 7 sites, which moves every field after it by 24 bytes:
  * 272 -> 584.
  * 9: the rumble-aware output capture (debug only) appended after pktbuf:
- * 584 -> 744. */
-#define DS45_SHIM_VERSION 9
+ * 584 -> 744.
+ * 10: the receive-limit words (sites 7-9) grow pid_orig from 7 to 10 sites, which
+ * moves every field after it by 24 bytes (744 -> 768), and the input bounce buffer
+ * (inbuf, 96 bytes) and its four debug counters are appended last: 768 -> 880. */
+#define DS45_SHIM_VERSION 10
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56
 /* Product-ID sites a row can edit, in data-block order: 0 the helper branch, 1-2
  * the inline words, then the output sites - 3 the output call site, 4 the sender's
  * payload-cap word, 5 the TOC slot holding the packet buffer's address, 6 the TOC
- * slot holding that address plus one (src/kshim.h: DS45_SHIM_PID_PATCHES +
- * DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES, checked there). */
-#define DS45_SHIM_PID_SITES 7
+ * slot holding that address plus one, then the receive-limit words - 7, 8 and 9,
+ * the three `li r7,0x40` immediates (the kernel's read limit of 0x41 bytes) that
+ * become `li r7,0x50`, so the DualSense's 79-byte full report fits (src/kshim.h:
+ * DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES +
+ * DS45_SHIM_RECV_PATCHES, checked there). */
+#define DS45_SHIM_PID_SITES 10
 
 typedef struct {
 	uint8_t deadzone;              /* STICK_DEADZONE, percent of half travel */
@@ -132,6 +138,15 @@ typedef struct {
 	uint32_t dbg_out_off_armed, dbg_out_rsvd9;
 	uint8_t  dbg_out_on_cap[64];
 	uint8_t  dbg_out_off_cap[64];
+	/* The input bounce buffer (version 10): with the receive-limit words raised, a
+	 * DualSense sends 79-byte full reports, which the input hook reads into inbuf
+	 * (8-aligned; zero at install) and translates for the caller. The dbg_in_*
+	 * counters are written by the blob, debug only: bounce reads of a DualSense,
+	 * reads of 66-79 bytes, results dropped for not fitting the caller's buffer,
+	 * and errors. Nothing writes them yet (the input hook is a later piece); the
+	 * installer leaves them zero. The size is kept a multiple of 8. */
+	uint8_t  inbuf[96];
+	uint32_t dbg_in_bounce, dbg_in_big, dbg_in_drop, dbg_in_err;
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */

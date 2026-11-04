@@ -408,7 +408,10 @@ static void shim_dbg_outcap(uint64_t base)
 static void shim_dbg_trace(void)
 {
 	uint64_t base = 0, vt = 0;
-	char line[384];   /* the longest line is 347 bytes */
+	/* The longest line is 425 bytes: 25 tags (164 bytes with their spaces and
+	 * '='), 26 values of "0x" and 8 hex digits (260 bytes; lastvt is two of them)
+	 * and the newline. 448 leaves margin. */
+	char line[448];
 	char *p = line;
 
 	if (!kshim_dbg_data_base(&base))
@@ -464,6 +467,17 @@ static void shim_dbg_trace(void)
 	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_on_count)));
 	p = shim_dbg_tag(p, " outoff=");
 	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_off_count)));
+	/* DS3-route input (the full report): reads of a DualSense through the bounce
+	 * buffer, reads of 66-79 bytes, results dropped for not fitting the caller's
+	 * buffer, and errors */
+	p = shim_dbg_tag(p, " inb=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_bounce)));
+	p = shim_dbg_tag(p, " inbig=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_big)));
+	p = shim_dbg_tag(p, " indrop=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_drop)));
+	p = shim_dbg_tag(p, " inerr=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_err)));
 	*p++ = '\n';
 
 	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));

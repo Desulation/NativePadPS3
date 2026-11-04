@@ -142,12 +142,29 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		 *       one): PTR rows, verified by their exact current value, redirected at
 		 *       install to the 96-byte packet buffer in the blob (and that plus one).
 		 * orig_output is the sender 0x10283C the output hook tail-calls; 0 would
-		 * switch every output site off. */
+		 * switch every output site off (the receive-limit words below included). */
 		{
 			{ DS45_KPATCH_BRANCHL, 0x80000000002A2DE8ULL, 0x2A29E6BB7BA10D5EULL, 0ULL },
 			{ DS45_KPATCH_WORD,    0x80000000000F8D74ULL, 0xBF27C253F5228E13ULL, 0x2B9F004DULL },
 			{ DS45_KPATCH_PTR,     0x8000000000372650ULL, 0x80000000004326C8ULL, 0ULL },
 			{ DS45_KPATCH_PTR,     0x8000000000372660ULL, 0x80000000004326C9ULL, 0ULL },
+		},
+
+		/* DS3-route input (the full report): the three receive-limit words,
+		 * data-block product-ID sites 7-9 (note 2026-11-03-ds3-route-output-
+		 * facts.md, F9 section 4). Once the output hook rewrites to a DualSense
+		 * it answers with 79-byte full reports, which the kernel's channel-1
+		 * receive functions refuse at their read limit of 0x41; each row turns
+		 * the limit's `li r7,0x40` into `li r7,0x50` (0x38E00050), so the limit
+		 * becomes 0x51. Every instruction is the LOW half of its qword; expect
+		 * is the FNV of that aligned qword. Applied with the cap word (SHIM_
+		 * OUTPUT_HOOK, mode 1 or 2, orig_output non-zero) and only together
+		 * with the two packet-buffer slots above. The channel-3 limit at
+		 * 0xF8484 is a different channel's and is deliberately not touched. */
+		{
+			{ DS45_KPATCH_WORD, 0x80000000000F9094ULL, 0x069BC077D72F4325ULL, 0x38E00050ULL },
+			{ DS45_KPATCH_WORD, 0x80000000000F9134ULL, 0x57006EC0FDB88DBCULL, 0x38E00050ULL },
+			{ DS45_KPATCH_WORD, 0x80000000000F91F4ULL, 0x995A6CDC70F64A38ULL, 0x38E00050ULL },
 		},
 		0x800000000010283CULL,
 	},

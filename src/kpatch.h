@@ -33,9 +33,10 @@ typedef struct {
 	                     * BRANCHL: absolute call target (encoded as `bl target`) */
 } ds45_kpatch_t;
 
-/* One install transaction grows to 10 entries (the output patches included),
- * so 12 leaves some headroom. The journal arrays below follow it. */
-#define DS45_KPATCH_MAX 12
+/* One install transaction grows to 13 entries (the output and receive-limit
+ * patches included), so 16 leaves some headroom. The journal arrays below follow
+ * it. */
+#define DS45_KPATCH_MAX 16
 
 /* One entry per written qword, in write order. A WORD/BRANCH/BRANCHL replaces
  * the high half of its qword when (addr & 4) == 0 and the low half otherwise, so

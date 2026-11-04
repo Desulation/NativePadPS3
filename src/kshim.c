@@ -28,9 +28,9 @@
  *   8. apply, transactionally, the helper word, the inline words (only with
  *      SHIM_INLINE_PID), the output sites (only with SHIM_OUTPUT_HOOK and a row
  *      that names the output sender: the two packet-buffer TOC slots back to
- *      back, the call site, then - in probe and full mode only - the cap word),
- *      the event redirect, the enable redirect and the input redirect, in that
- *      order.
+ *      back, the call site, then - in probe and full mode only - the cap word
+ *      and the three receive-limit words), the event redirect, the enable
+ *      redirect and the input redirect, in that order.
  *
  * Every write is read back. Any failure restores the borrowed spare slot (when
  * it was borrowed) and leaves every pre-existing kernel structure byte-identical
@@ -58,14 +58,15 @@
 #define KSHIM_FLUSH_OPD_LEN 16
 
 /* The final transactional apply: the helper word, the inline words (when
- * enabled), the output sites (when enabled), then the event, enable and input
- * redirects. The journal holds one entry for each: at most 10, within the
- * patcher's 12. */
+ * enabled), the output sites and the receive-limit words (when enabled), then the
+ * event, enable and input redirects. The journal holds one entry for each: at most
+ * 13, within the patcher's 16. */
 #define KSHIM_REDIRECTS 3
 #define KSHIM_FINAL_MAX (DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + \
-                         DS45_SHIM_OUTPUT_PATCHES + KSHIM_REDIRECTS)
+                         DS45_SHIM_OUTPUT_PATCHES + DS45_SHIM_RECV_PATCHES + \
+                         KSHIM_REDIRECTS)
 typedef char kshim_final_fits_kpatch[(KSHIM_FINAL_MAX <= DS45_KPATCH_MAX) ? 1 : -1];
-typedef char kshim_final_is_ten[(KSHIM_FINAL_MAX == 10) ? 1 : -1];
+typedef char kshim_final_is_thirteen[(KSHIM_FINAL_MAX == 13) ? 1 : -1];
 
 /* The data block exactly fills the blob's tail (OFF_DATA .. BLOB_LEN); it is
  * written qword by qword, so its size must be a multiple of 8. */
@@ -80,7 +81,8 @@ typedef char kshim_tmpl_fits[(sizeof(((ds45_shim_data_t *)0)->info_tmpl) >=
 /* The data block records one original qword per product-ID site a row can
  * edit, and an adopted install journals those sites plus the redirects. */
 typedef char kshim_pid_sites_match[(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES +
-                                    DS45_SHIM_OUTPUT_PATCHES == DS45_SHIM_PID_SITES) ? 1 : -1];
+                                    DS45_SHIM_OUTPUT_PATCHES + DS45_SHIM_RECV_PATCHES ==
+                                    DS45_SHIM_PID_SITES) ? 1 : -1];
 typedef char kshim_adopt_fits_journal[(DS45_SHIM_PID_SITES + KSHIM_REDIRECTS <=
                                        DS45_KPATCH_MAX) ? 1 : -1];
 typedef char kshim_pid_words_aligned[(offsetof(ds45_shim_data_t, pid_orig) % 8 == 0 &&
@@ -177,14 +179,18 @@ static int hash_ok(uint64_t addr, uint64_t expect)
 }
 
 /* Product-ID site i of a row, in data-block order: the helper rows, then the
- * inline rows, then the output rows (sites 3-6 = output_patches[0..3]). */
+ * inline rows, then the output rows (sites 3-6 = output_patches[0..3]), then the
+ * receive-limit rows (sites 7-9 = recv_patches[0..2]). */
 static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
 {
 	if (i < DS45_SHIM_PID_PATCHES)
 		return &k->pid_patches[i];
 	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES)
 		return &k->inline_patches[i - DS45_SHIM_PID_PATCHES];
-	return &k->output_patches[i - DS45_SHIM_PID_PATCHES - DS45_SHIM_INLINE_PATCHES];
+	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES)
+		return &k->output_patches[i - DS45_SHIM_PID_PATCHES - DS45_SHIM_INLINE_PATCHES];
+	return &k->recv_patches[i - DS45_SHIM_PID_PATCHES - DS45_SHIM_INLINE_PATCHES -
+	                        DS45_SHIM_OUTPUT_PATCHES];
 }
 
 /* The output sites by index (the data-block site numbers, shim_abi.h). */
@@ -192,14 +198,17 @@ static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
 #define SITE_OUT_CAP  4   /* the send-length cap compare */
 #define SITE_BUF      5   /* TOC slot holding the packet buffer's address */
 #define SITE_BUF1     6   /* TOC slot holding that address plus one */
+#define SITE_RECV0    7   /* the receive-limit words are sites 7, 8 and 9 */
 
 /* The order the sites go into the final transaction (and, mirrored by the
  * journal, come out of it): the helper and inline rows as before, then the two
- * buffer slots back to back, then the call site, then the cap word - so the
- * buffer is in the blob before anything can send into it, and the longer cap goes
- * in last. The redirects follow them. Data-block order stays site order. */
+ * buffer slots back to back, then the call site, then the cap word, then the three
+ * receive-limit words - so the buffer is in the blob before anything can send into
+ * it, and the longer cap and the larger read limits go in last. The redirects
+ * follow them. Data-block order stays site order. */
 static const uint8_t PID_ORDER[DS45_SHIM_PID_SITES] = {
-	0, 1, 2, SITE_BUF, SITE_BUF1, SITE_OUT_CALL, SITE_OUT_CAP
+	0, 1, 2, SITE_BUF, SITE_BUF1, SITE_OUT_CALL, SITE_OUT_CAP,
+	SITE_RECV0, SITE_RECV0 + 1, SITE_RECV0 + 2
 };
 
 /* Whether this install applies site i. The helper always; the inline words with
@@ -208,14 +217,22 @@ static const uint8_t PID_ORDER[DS45_SHIM_PID_SITES] = {
  * patched with orig_output 0 would jump to address 0) - the call site and the
  * buffer slots in any output mode, the cap word only in probe (1) and full (2)
  * mode, matching the out_mode the block carries (anything else is observe, where
- * nothing the kernel sends may change). With the hook off the install is exactly
- * what data-block version 7 produced. */
+ * nothing the kernel sends may change). The receive-limit words (sites 7-9) are
+ * selected exactly with the cap word, and STRUCTURALLY only together with both
+ * buffer slots: an 80-byte read into the kernel's packet buffer, left where it
+ * was, would run into the HID client pointer behind it (0x432710). So they are
+ * defined as the conjunction of the three sites they depend on, never from the
+ * config on its own. With the hook off the install is exactly what data-block
+ * version 7 produced. */
 static int site_selected(const ds45_shim_kernel_t *k, int i)
 {
 	if (i < DS45_SHIM_PID_PATCHES)
 		return 1;
 	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES)
 		return g_cfg.shim_inline_pid != 0;
+	if (i >= SITE_RECV0)
+		return site_selected(k, SITE_BUF) && site_selected(k, SITE_BUF1) &&
+		       site_selected(k, SITE_OUT_CAP);
 	if (!g_cfg.shim_output_hook || k->orig_output == 0)
 		return 0;
 	if (i == SITE_OUT_CAP)
@@ -268,6 +285,11 @@ static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int site
 		if (!site_selected(k, i))
 			continue;
 		p = pid_site(k, i);
+		/* a selected site the row does not populate fails the install (closed), it
+		 * is never skipped: a receive row skipped would leave the buffer moved and
+		 * the DualSense unable to report, an output row skipped a half-applied hook */
+		if (p->kind == 0)
+			return 0;
 		/* a PTR slot is read at its own (8-aligned) address, an instruction row
 		 * by the qword holding it */
 		if (ds45_lv2_read(p->kind == DS45_KPATCH_PTR ? p->addr : (p->addr & ~7ULL),
@@ -360,7 +382,8 @@ static void adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
 	}
 	applied = (uint32_t)(q >> 32);          /* the high word of its big-endian qword */
 	/* which edits the adopted install recorded as live (bit 0 helper, bits 1-2
-	 * inline, bits 3-6 output); kshim_adopt_pid_skipped names any not restorable */
+	 * inline, bits 3-6 output, bits 7-9 receive limits); kshim_adopt_pid_skipped
+	 * names any not restorable */
 	DS45_TRACE_HEX("kshim_adopt_applied", applied);
 	for (jj = 0; jj < DS45_SHIM_PID_SITES; jj++) {
 		i = PID_ORDER[jj];

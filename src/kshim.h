@@ -31,6 +31,7 @@
 #define DS45_SHIM_PID_PATCHES     1   /* helper branch, always */
 #define DS45_SHIM_INLINE_PATCHES  2   /* inline words, only with SHIM_INLINE_PID = 1 */
 #define DS45_SHIM_OUTPUT_PATCHES  4   /* output call site, cap word, two TOC slots (SHIM_OUTPUT_HOOK) */
+#define DS45_SHIM_RECV_PATCHES    3   /* receive-limit words (SHIM_OUTPUT_HOOK, probe and full mode) */
 
 /* One firmware. The fingerprint is the same (fp_addr, fp_hash) scheme
  * ds45_kernel_t uses, so a row is only ever applied to the kernel it was
@@ -76,6 +77,16 @@ typedef struct {
 	 * Bluetooth output sender they lead to (0x10283C on DEX 4.92; 0 = none, every
 	 * output site off), which the output hook tail-calls. */
 	ds45_kpatch_t output_patches[DS45_SHIM_OUTPUT_PATCHES];
+	/* The receive-limit words (data-block product-ID sites 7-9): three WORD rows,
+	 * each the `li r7,0x40` that sets the read limit (0x41) of a channel-1 receive
+	 * function of the Bluetooth transport, rewritten to `li r7,0x50` so the
+	 * DualSense's 79-byte full report is accepted (the limit becomes 0x51). Applied
+	 * exactly when the cap word is - SHIM_OUTPUT_HOOK with SHIM_OUTPUT_MODE 1 or 2
+	 * and a non-zero orig_output - and only together with the two packet-buffer
+	 * slots (sites 5 and 6): the larger read would otherwise run past the kernel's
+	 * packet buffer. All three must be populated for such an install, or it is
+	 * refused. */
+	ds45_kpatch_t recv_patches[DS45_SHIM_RECV_PATCHES];
 	uint64_t orig_output;
 } ds45_shim_kernel_t;
 extern const ds45_shim_kernel_t ds45_shim_table[];
