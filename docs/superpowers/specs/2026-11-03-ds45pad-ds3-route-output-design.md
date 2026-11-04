@@ -107,7 +107,12 @@ with the motors on (observe stage) confirms it.
   wraps at 16, tag `0x10`. Bytes 50-73 are zero. CRC as above, computed with a
   bitwise loop (no table).
 - Valid flags are set on every report (full state each time, no tracking):
-  flag0 bit0, flag1 bits 2 and 4.
+  flag0 bit0, flag1 bits 2 and 4, and the light bar setup: valid_flag2 (byte 41)
+  = `0x02` (light bar setup control enable) and light bar setup (byte 44) =
+  `0x02` (fade light out). A DualSense plays a Bluetooth start-up animation on
+  its light bar until the host sends the setup, and ignores the colour meanwhile
+  (the Linux driver's `dualsense_reset_leds` does the same before programming
+  the colours); the setup is sent with every report, so it stays stateless.
 - Large motor 0-255 is copied to motor_left. The small on/off motor becomes
   motor_right 255 or 0.
 - The DS3 LED bitmap gives the player number (lowest set bit among LED1-LED4):

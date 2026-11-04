@@ -64,7 +64,8 @@ static const uint8_t k_rgb[5][3]   = {
 static int named_byte(int i)
 {
 	return i == 0 || i == 1 || i == 2 || i == 3 || i == 4 || i == 5 || i == 6 ||
-	       i == 46 || i == 47 || i == 48 || i == 49 || i >= 74;
+	       i == 41 || i == 44 || i == 46 || i == 47 || i == 48 || i == 49 ||
+	       i >= 74;
 }
 
 /* Translate p (48 bytes) with seq into r, requiring success. */
@@ -90,7 +91,9 @@ static int report_ok(const uint8_t *p, uint8_t seq, const uint8_t *r)
 		return 0;
 	if (r[3] != 0x01 || r[4] != 0x14)
 		return 0;
-	if (r[5] != (p[2] ? 255 : 0) || r[6] != p[4])
+	if (r[41] != 0x02 || r[44] != 0x02)
+		return 0;
+	if (r[5] !=(p[2] ? 255 : 0) || r[6] != p[4])
 		return 0;
 	if (r[46] != k_led[port])
 		return 0;
@@ -121,16 +124,17 @@ static int test_header_and_flags(void)
 	CHECK(r[3] == 0x01);                 /* valid_flag0: compatible vibration */
 	CHECK(r[4] == 0x14);                 /* valid_flag1: light bar colour | player LEDs */
 	CHECK(r[11] == 0x00);                /* mute LED */
-	CHECK(r[41] == 0x00);                /* valid_flag2 */
-	CHECK(r[44] == 0x00);                /* light bar setup */
+	CHECK(r[41] == 0x02);                /* valid_flag2: light bar setup enable */
+	CHECK(r[44] == 0x02);                /* light bar setup: LIGHT_OUT */
 	CHECK(r[45] == 0x00);                /* brightness */
 
-	/* the flags are set whatever the payload says, every report */
+	/* the flags and the setup are set whatever the payload says, every report */
 	p[2] = 1;
 	p[4] = 0xFF;
 	p[9] = 0x1E;
 	CHECK(translate(p, 7, r) == 0);
 	CHECK(r[3] == 0x01 && r[4] == 0x14);
+	CHECK(r[41] == 0x02 && r[44] == 0x02);
 	return 0;
 }
 
@@ -277,8 +281,10 @@ static int test_padding_is_zero(void)
 		if (!named_byte(i))
 			CHECK(r[i] == 0);
 	/* spot checks on the ones the spec names */
-	CHECK(r[7] == 0 && r[10] == 0 && r[11] == 0 && r[41] == 0);
-	CHECK(r[44] == 0 && r[45] == 0 && r[50] == 0 && r[73] == 0);
+	CHECK(r[7] == 0 && r[10] == 0 && r[11] == 0 && r[40] == 0 && r[42] == 0);
+	CHECK(r[43] == 0 && r[45] == 0 && r[50] == 0 && r[73] == 0);
+	/* 41 and 44 are the light bar setup, not padding */
+	CHECK(r[41] == 0x02 && r[44] == 0x02);
 
 	/* and over a few hundred random payloads */
 	g_rng = 0x0DDBA11u;
@@ -291,6 +297,7 @@ static int test_padding_is_zero(void)
 		for (i = 0; i < 74; i++)
 			if (!named_byte(i))
 				CHECK(r[i] == 0);
+		CHECK(r[41] == 0x02 && r[44] == 0x02);
 	}
 	return 0;
 }
@@ -300,8 +307,8 @@ static int test_crc_matches_reference(void)
 	/* The same two reports as a literal, with CRCs computed outside this
 	 * program (zlib over 0xA2 + report[0..73]): a bug that is in both bitwise
 	 * loops would still fail here. */
-	static const uint8_t k_crc_a[4] = { 0x8D, 0xA6, 0xDB, 0x54 };
-	static const uint8_t k_crc_b[4] = { 0xAC, 0x6E, 0xFB, 0x4A };
+	static const uint8_t k_crc_a[4] = { 0x7B, 0x41, 0xFF, 0x41 };
+	static const uint8_t k_crc_b[4] = { 0x5A, 0x89, 0xDF, 0x5F };
 	uint8_t p[DS3_OUT_PAYLOAD_LEN], r[DS_OUT_LEN], want[DS_OUT_LEN];
 	int n, i;
 
@@ -313,6 +320,7 @@ static int test_crc_matches_reference(void)
 	CHECK(translate(p, 0, r) == 0);
 	memset(want, 0, sizeof(want));
 	want[0] = 0x31; want[2] = 0x10; want[3] = 0x01; want[4] = 0x14;
+	want[41] = 0x02; want[44] = 0x02;
 	want[5] = 255;  want[6] = 0x80; want[46] = 0x04; want[49] = 255;
 	memcpy(want + 74, k_crc_a, 4);
 	CHECK(memcmp(r, want, DS_OUT_LEN) == 0);
@@ -324,6 +332,7 @@ static int test_crc_matches_reference(void)
 	CHECK(translate(p, 5, r) == 0);
 	memset(want, 0, sizeof(want));
 	want[0] = 0x31; want[1] = 0x50; want[2] = 0x10; want[3] = 0x01; want[4] = 0x14;
+	want[41] = 0x02; want[44] = 0x02;
 	want[6] = 0xFF; want[46] = 0x15; want[48] = 255;
 	memcpy(want + 74, k_crc_b, 4);
 	CHECK(memcmp(r, want, DS_OUT_LEN) == 0);
@@ -513,6 +522,7 @@ static int test_probe_report(void)
 		ds3_output_probe((uint8_t)s, got);
 		CHECK(memcmp(got, want, DS_OUT_LEN) == 0);
 		CHECK(got[5] == 0 && got[6] == 0);          /* no rumble */
+		CHECK(got[41] == 0x02 && got[44] == 0x02);  /* light bar setup */
 		CHECK(got[46] == 0x04);
 		CHECK(got[47] == 0 && got[48] == 0 && got[49] == 255);
 		CHECK(report_crc(got) == ref_crc_output(got));
@@ -522,11 +532,12 @@ static int test_probe_report(void)
 
 	/* a hard-coded report: seq 0, the CRC computed outside this program */
 	{
-		static const uint8_t k_crc[4] = { 0x54, 0xF5, 0x43, 0xCB };
+		static const uint8_t k_crc[4] = { 0xA2, 0x12, 0x67, 0xDE };
 		uint8_t lit[DS_OUT_LEN];
 
 		memset(lit, 0, sizeof(lit));
 		lit[0] = 0x31; lit[2] = 0x10; lit[3] = 0x01; lit[4] = 0x14;
+		lit[41] = 0x02; lit[44] = 0x02;
 		lit[46] = 0x04; lit[49] = 255;
 		memcpy(lit + 74, k_crc, 4);
 		ds3_output_probe(0, got);

@@ -29,6 +29,8 @@
 #define OUT_FLAG1           4
 #define OUT_MOTOR_RIGHT     5
 #define OUT_MOTOR_LEFT      6
+#define OUT_FLAG2           41
+#define OUT_LIGHTBAR_SETUP  44
 #define OUT_PLAYER_LEDS     46
 #define OUT_RGB             47    /* R, G, B */
 #define OUT_CRC             74    /* the CRC covers bytes 0..73 */
@@ -38,6 +40,10 @@
 #define FLAG0_VIBRATION     0x01  /* compatible vibration */
 #define FLAG1_LIGHTBAR      0x04  /* light bar colour enable */
 #define FLAG1_PLAYER_LEDS   0x10  /* player indicator enable */
+/* Until the host sends the light bar setup, a DualSense on Bluetooth keeps
+ * playing its start-up animation on the light bar and ignores the colour. */
+#define FLAG2_LIGHTBAR_SETUP 0x02 /* light bar setup control enable */
+#define LIGHTBAR_LIGHT_OUT  0x02  /* setup: fade the animation light out */
 #define MOTOR_ON            255
 
 #define CRC_PREFIX          0xA2  /* DATA | OUTPUT header byte, not sent */
@@ -102,6 +108,8 @@ static void build(uint8_t seq, uint8_t small, uint8_t large, uint8_t leds,
 	out[OUT_FLAG1] = FLAG1_LIGHTBAR | FLAG1_PLAYER_LEDS;
 	out[OUT_MOTOR_RIGHT] = small ? MOTOR_ON : 0;
 	out[OUT_MOTOR_LEFT] = large;
+	out[OUT_FLAG2] = FLAG2_LIGHTBAR_SETUP;
+	out[OUT_LIGHTBAR_SETUP] = LIGHTBAR_LIGHT_OUT;
 
 	if (port) {
 		out[OUT_PLAYER_LEDS] = pack_byte(PLAYER_LED_PACK, port);

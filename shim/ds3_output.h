@@ -27,8 +27,12 @@
  *   [0] 0x31   [1] sequence in the high nibble   [2] tag 0x10
  *   [3] valid_flag0 0x01 (compatible vibration)
  *   [4] valid_flag1 0x14 (light bar colour | player indicator)
- *   [5] motor_right 255 or 0   [6] motor_left   [46] player LEDs
- *   [47..49] light bar R, G, B   [74..77] CRC-32, little-endian
+ *   [5] motor_right 255 or 0   [6] motor_left
+ *   [41] valid_flag2 0x02 (light bar setup control enable)
+ *   [44] light bar setup 0x02 (fade light out): without it a DualSense on
+ *        Bluetooth keeps its start-up animation on the light bar and ignores
+ *        the colour, so every report carries it (as the Linux driver does)
+ *   [46] player LEDs   [47..49] light bar R, G, B   [74..77] CRC-32, little-endian
  *   every other byte up to [73] is 0.
  * The CRC is the reflected CRC-32 (0xEDB88320, init and final XOR 0xFFFFFFFF)
  * over the byte 0xA2 followed by report bytes 0..73.
