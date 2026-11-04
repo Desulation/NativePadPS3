@@ -414,6 +414,28 @@ static int adopt_site_ours(const ds45_shim_kernel_t *k, uint64_t base, int i,
 	       !ds45_lv2_read(p->addr & ~7ULL, &cur) && cur == want;
 }
 
+/* The receive-limit sites (7-9) the adopted install recorded as applied that are
+ * NOT ours now (adopt_site_ours fails: not exactly the patched value, a corrupt
+ * recorded original, an unpopulated row, no sender address), as a mask of site
+ * bits. A non-zero mask makes the adoption unsafe, and it is REFUSED as a whole
+ * (KSHIM_FAILED, nothing written or journalled, the earlier blob left live): the
+ * redirects (the input bounce) can only be taken away together with the raised
+ * limits, and a limit we cannot lower must keep its bounce - restoring the input
+ * slot to the original transport read under a limit of 0x50 lets a 79-byte
+ * DualSense report overrun the pad driver's 64-byte stack buffer. Reads only. */
+static uint32_t adopt_recv_unsafe(const ds45_shim_kernel_t *k, uint64_t base,
+                                  uint32_t applied)
+{
+	uint64_t orig;
+	uint32_t bad = 0;
+	int i;
+
+	for (i = SITE_RECV0; i < DS45_SHIM_PID_SITES; i++)
+		if ((applied & (1u << i)) && !adopt_site_ours(k, base, i, &orig))
+			bad |= 1u << i;
+	return bad;
+}
+
 /* Adoption: journal the product-ID sites the adopted install recorded as applied
  * (`applied`), from the originals it kept in the data block - but only a site that
  * is provably ours (adopt_site_ours). The current config plays no part: what the
@@ -422,27 +444,20 @@ static int adopt_site_ours(const ds45_shim_kernel_t *k, uint64_t base, int i,
  *
  * Two calls, mirroring an install's transaction: recv == 0 journals sites 0..6
  * (before the redirects), recv == 1 the receive-limit words (after them), so unload
- * undoes the limits first, then the redirects, then the rest. If any receive word
- * is recorded as applied but is NOT restorable, the two buffer slots (sites 5 and
- * 6) are skipped as well: restoring the moved packet buffer while a limit stays
- * raised would let the kernel read 80 bytes into the original 72-byte buffer.
- * Reads only. Appends to j. */
+ * undoes the limits first, then the redirects, then the rest. The receive words are
+ * never skipped here: adopt_recv_unsafe has already refused the whole adoption if
+ * any of them is not ours (see there). Reads only. Appends to j. */
 static void adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
                             uint32_t applied, int recv, ds45_kjournal_t *j)
 {
 	uint64_t orig;
-	uint32_t recv_bad = 0;
 	int i, jj;
 
-	for (i = SITE_RECV0; i < DS45_SHIM_PID_SITES; i++)
-		if ((applied & (1u << i)) && !adopt_site_ours(k, base, i, &orig))
-			recv_bad |= 1u << i;
 	for (jj = 0; jj < DS45_SHIM_PID_SITES; jj++) {
 		i = PID_ORDER[jj];
 		if (!(applied & (1u << i)) || (i >= SITE_RECV0) != (recv != 0))
 			continue;
-		if ((recv_bad && (i == SITE_BUF || i == SITE_BUF1)) ||
-		    !adopt_site_ours(k, base, i, &orig)) {   /* not ours to restore: as found */
+		if (!adopt_site_ours(k, base, i, &orig)) {   /* not ours to restore: as found */
 			DS45_TRACE_HEX("kshim_adopt_pid_skipped", (uint64_t)i);
 			continue;
 		}
@@ -621,7 +636,20 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 		 * the limits first. */
 		if (already_installed(k, &base)) {
 			const uint32_t applied = adopt_applied(base);
+			const uint32_t unsafe = adopt_recv_unsafe(k, base, applied);
 
+			/* Refuse BEFORE any journal entry or state is touched: the earlier
+			 * blob stays live as it is, with its bounce and its limits consistent;
+			 * g_state stays KSHIM_OFF, so neither the unload nor the scrub acts on
+			 * it (adopt_recv_unsafe). */
+			if (unsafe) {
+				DS45_TRACE_HEX("kshim_adopt_refused", unsafe);
+				g_journal.n = 0;
+				g_base = 0;
+				g_zero_size = 0;
+				g_scrub_armed = 0;
+				return KSHIM_FAILED;
+			}
 			g_journal.n = 0;
 			adopt_pid_sites(k, base, applied, 0, &g_journal);
 			g_journal.qaddr[g_journal.n] = k->event_slot;
@@ -750,12 +778,13 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	/* 8. the product-ID words and output sites, then the event, enable and input
 	 * redirects, then the three receive-limit words - one transactional apply
 	 * (verify all, write in order, revert on any failure; the revert, like an
-	 * unload, goes last first, so the limits drop before the input bounce goes). The data block (orig_output included) was written in step 6,
-	 * so it is complete before the first of these lands. A WORD row goes in
-	 * exactly as the table gives it; the BRANCH helper is aimed at shim_pid_ok,
-	 * the BRANCHL call site at the output entry, the PTR slots at the packet
-	 * buffer in the blob (pid_value). A site or a slot that changed since step 2 fails
-	 * this verify, so nothing is written. */
+	 * unload, goes last first, so the limits drop before the input bounce goes).
+	 * The data block (orig_output included) was written in step 6, so it is
+	 * complete before the first of these lands. A WORD row goes in exactly as the
+	 * table gives it; the BRANCH helper is aimed at shim_pid_ok, the BRANCHL call
+	 * site at the output entry, the PTR slots at the packet buffer in the blob
+	 * (pid_value). A site or a slot that changed since step 2 fails this verify,
+	 * so nothing is written. */
 	for (i = 0; i < npid; i++)
 		final[i].value = pid_value(pid_site_of[i], &final[i], base);
 	/* The receive-limit words (sites 7-9, the PID_ORDER tail) are set aside and

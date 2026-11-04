@@ -206,6 +206,7 @@ ds45_config_t g_cfg;
 static int      g_tr_applied_n;
 static uint32_t g_tr_applied;
 static uint32_t g_tr_skipped;      /* the sites kshim_adopt_pid_skipped named, as a mask */
+static uint32_t g_tr_refused;      /* the mask kshim_adopt_refused carried (0: not emitted) */
 
 void ds45_boot_mark_hex(const char *stage, uint32_t value)
 {
@@ -214,6 +215,8 @@ void ds45_boot_mark_hex(const char *stage, uint32_t value)
 		g_tr_applied = value;
 	} else if (strcmp(stage, "kshim_adopt_pid_skipped") == 0 && value < 32) {
 		g_tr_skipped |= 1u << value;
+	} else if (strcmp(stage, "kshim_adopt_refused") == 0) {
+		g_tr_refused = value;
 	}
 }
 
@@ -500,6 +503,60 @@ static void take_snap(struct snap *s)
 static int snap_eq(const struct snap *a, const struct snap *b)
 {
 	return memcmp(a, b, sizeof(*a)) == 0;
+}
+
+/* The overrun hazard (review C1/R19): the input slot back on the original transport
+ * read (no bounce) while a receive-limit word is still raised to 0x50. Sampled at
+ * every kernel read while installed as fake_lv2_on_peek, so it sees the state after
+ * each write; g_haz_bad counts the samples that showed the hazard. */
+static int g_haz_in_cb, g_haz_bad, g_haz_checks, g_haz_chain;
+static void haz_on_peek(uint64_t addr)
+{
+	int i, raised = 0;
+
+	if (g_haz_in_cb)
+		return;
+	if (g_haz_chain)                 /* also keep the write log (wlog_start was called) */
+		wlog_on_peek(addr);
+	g_haz_in_cb = 1;
+	g_haz_checks++;
+	for (i = 0; i < RECV_PATCHES_N; i++)
+		if ((uint32_t)rd(RECV_QA(i)) == RECV_WORD)
+			raised = 1;
+	if (raised && rd(INPUT_SLOT) == INPUT_ORIG)
+		g_haz_bad++;
+	g_haz_in_cb = 0;
+}
+
+/* An adoption that must be REFUSED as a whole (a receive word recorded as applied
+ * is not ours): the call fails, no poke and no spare-slot borrow, the refusal is
+ * traced with the offending receive sites' mask (bits 7-9), the image is
+ * byte-identical (the redirects, the buffer slots and all words as found, the input
+ * bounce and the raised limits therefore still consistent), and a later unhook and
+ * scrub find nothing to undo (no journal, no armed scrub): zero pokes, still the
+ * same image. Returns 0 or a line number. */
+static int adopt_refused_check(uint32_t want_mask)
+{
+	struct snap before, after;
+	int pokes;
+
+	take_snap(&before);
+	pokes = fake_lv2_poke_count;
+	g_spare_calls = 0;
+	g_tr_refused = 0;
+	g_haz_checks = g_haz_bad = g_haz_in_cb = 0;
+	fake_lv2_on_peek = haz_on_peek;
+	CHECK_SUB(kshim_install_from(&g_ent, 1) == KSHIM_FAILED ? 0 : __LINE__);
+	fake_lv2_on_peek = NULL;
+	CHECK_SUB(fake_lv2_poke_count == pokes && g_spare_calls == 0 ? 0 : __LINE__);
+	CHECK_SUB(g_tr_refused == want_mask ? 0 : __LINE__);
+	CHECK_SUB(g_haz_bad == 0 ? 0 : __LINE__);
+	kshim_unhook();
+	kshim_scrub();
+	CHECK_SUB(fake_lv2_poke_count == pokes ? 0 : __LINE__);
+	take_snap(&after);
+	CHECK_SUB(snap_eq(&before, &after) ? 0 : __LINE__);
+	return 0;
 }
 
 /* A refusal before anything is written, borrowed or allocated (defined below,
@@ -1538,11 +1595,13 @@ static int test_adopt_skips_corrupt_orig(void)
 	CHECK(rd(PID1_QA) == pid1_changed);                      /* left as found */
 
 	/* a bit for a site the install did not apply, with garbage behind it, is
-	 * not trusted either: nothing beyond the redirects is restored */
+	 * not trusted either: nothing beyond the redirects is restored. (Bits 7-9, the
+	 * receive limits, are left out here: a forged receive bit refuses the whole
+	 * adoption, see test_recv_adopt_v10.) */
 	setup();
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED); /* helper only */
 	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_applied),
-	      (uint64_t)0xFFFFFFFFu << 32);
+	      (uint64_t)0xFFFFFC7Fu << 32);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_remove();
 	CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
@@ -2129,9 +2188,9 @@ static int test_output_rollback_each_step(void)
  * back, then the call site, then the cap word, then the event, enable and input
  * redirects, and last the three receive-limit words (so an unload, last first,
  * lowers the limits before the input bounce goes away). At each of those writes
- * the block already carries the magic, the
- * version, the sender's address (orig_output: the stub tail-branches to it the
- * moment the call site is patched) and the recorded originals. */
+ * the block already carries the magic, the version, the sender's address
+ * (orig_output: the stub tail-branches to it the moment the call site is patched)
+ * and the recorded originals. */
 static int g_ord_in_cb, g_ord_checks, g_ord_bad;
 static void order_on_peek(uint64_t addr)
 {
@@ -2289,7 +2348,11 @@ static int test_output_adopt_v8(void)
 			CHECK(check_out_sites(BLOB_BASE, 1, mode != 0, 1, mode != 0) == 0);
 
 			n = 1 + (g ? 2 : 0) + 1 + (mode != 0) + 2 + 3 + 3 * (mode != 0);
+			g_haz_checks = g_haz_bad = g_haz_in_cb = 0;
+			fake_lv2_on_peek = haz_on_peek;   /* never the original read under a raised limit */
 			kshim_unhook();
+			fake_lv2_on_peek = NULL;
+			CHECK(g_haz_checks > 0 && g_haz_bad == 0);
 			CHECK(fake_lv2_poke_count - pokes == n);
 			kshim_scrub();
 			take_snap(&after);
@@ -2355,12 +2418,27 @@ static int test_output_adopt_v8(void)
 	g_cfg.shim_output_mode = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	g_ent.orig_output = 0;
+	/* the receive words recorded as applied are then not restorable: the adoption is
+	 * refused as a whole (R19), nothing is written and nothing is left to undo */
+	CHECK(adopt_refused_check(0x380u) == 0);
+	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);          /* all left as found */
+	CHECK(fake_lv2_out_of_bounds == 0);
+
+	/* the same row without receive words applied (observe mode): still adopted;
+	 * with no sender address no output site is restorable, so only the helper and
+	 * the redirects are undone */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 0;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	g_ent.orig_output = 0;
 	pokes = fake_lv2_poke_count;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_unhook();
 	CHECK(fake_lv2_poke_count - pokes == 1 + 3);              /* helper + redirects */
 	kshim_scrub();
-	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);          /* all left as found */
+	CHECK(rd(OUT_CALL_QA) != OUT_Q(0) && rd(OUT_SLOT5) != OLD_BUF);   /* left as found */
 	CHECK(fake_lv2_out_of_bounds == 0);
 
 	/* 4. a version-7 block is not adopted (its layout is not ours) */
@@ -2723,8 +2801,13 @@ static int unload_order_check(int adopt, int inl)
 		CHECK_SUB(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY ? 0 : __LINE__);
 
 	wlog_start();
+	g_haz_checks = g_haz_bad = g_haz_in_cb = 0;
+	g_haz_chain = 1;
+	fake_lv2_on_peek = haz_on_peek;
 	kshim_unhook();
+	g_haz_chain = 0;
 	fake_lv2_on_peek = NULL;
+	CHECK_SUB(g_haz_checks > 0 && g_haz_bad == 0 ? 0 : __LINE__);   /* no overrun state, ever */
 	CHECK_SUB(g_wlog_n == 10 + 1 + (inl ? 2 : 0) ? 0 : __LINE__);   /* every journalled qword */
 	for (m = 0; m < sizeof mirror / sizeof mirror[0]; m++) {
 		idx[m] = wlog_index(mirror[m]);
@@ -2754,9 +2837,11 @@ static int test_unload_order_recv_before_input(void)
  * other output sites. A forged bit (the word is not there), a corrupt recorded
  * original, a row the adopter does not populate and a row without the sender
  * address are all skipped, never written - and when any receive word is not
- * restorable the two buffer slots are skipped too, so the moved buffer is never put
- * back under a raised limit; a version-9 block (no receive support, a layout that
- * stops short of the new fields) is not adopted at all. */
+ * restorable the adoption is refused as a whole (R19: KSHIM_FAILED, nothing written
+ * or journalled, the previous blob left live and consistent), because journalling
+ * the redirects while a limit stays raised would put the original, unbounced read
+ * back in front of a 0x50 limit; a version-9 block (no receive support, a layout
+ * that stops short of the new fields) is not adopted at all. */
 static int test_recv_adopt_v10(void)
 {
 	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
@@ -2781,13 +2866,19 @@ static int test_recv_adopt_v10(void)
 		g_cfg.shim_output_mode = 0;
 		pokes = fake_lv2_poke_count;
 		g_tr_applied_n = 0;
+		g_tr_skipped = g_tr_refused = 0;
 		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 		CHECK(fake_lv2_poke_count == pokes);      /* zero pokes */
 		CHECK(g_tr_applied_n == 1 && (g_tr_applied & 0x380u) == 0x380u);
+		CHECK(g_tr_skipped == 0 && g_tr_refused == 0);
 		for (i = 0; i < RECV_PATCHES_N; i++)
 			CHECK(rd(RECV_QA(i)) == ((RECV_Q(i) & HI32) | RECV_WORD));
 
+		g_haz_checks = g_haz_bad = g_haz_in_cb = 0;
+		fake_lv2_on_peek = haz_on_peek;       /* no original read under a raised word */
 		kshim_unhook();
+		fake_lv2_on_peek = NULL;
+		CHECK(g_haz_checks > 0 && g_haz_bad == 0);
 		CHECK(fake_lv2_poke_count - pokes == 11 + (g ? 2 : 0));  /* the whole journal */
 		kshim_scrub();
 		take_snap(&after);
@@ -2798,9 +2889,7 @@ static int test_recv_adopt_v10(void)
 	}
 
 	/* 2. forged bits in a block that never applied the words (observe mode): the
-	 * qwords do not carry our word, so all three are skipped and left as found - and
-	 * with them the two buffer slots (a receive word that stays raised needs the
-	 * moved buffer): helper, call site and redirects only */
+	 * qwords do not carry our word, so the adoption is REFUSED as a whole (R19) */
 	setup();
 	plant_output_rows();
 	g_cfg.shim_output_hook = 1;
@@ -2811,85 +2900,35 @@ static int test_recv_adopt_v10(void)
 	      (uint64_t)(1u | 8u | 96u | 0x380u) << 32);
 	for (i = 0; i < RECV_PATCHES_N; i++)
 		put_q(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * (7 + i), RECV_Q(i));
-	pokes = fake_lv2_poke_count;
-	g_tr_skipped = 0;
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
-	CHECK(fake_lv2_poke_count == pokes);
-	CHECK(g_tr_skipped == (0x380u | 0x60u));
-	kshim_unhook();
-	CHECK(fake_lv2_poke_count - pokes == 1 + 1 + 3);       /* helper, call, redirects */
-	kshim_scrub();
+	CHECK(adopt_refused_check(0x380u) == 0);
 	for (i = 0; i < RECV_PATCHES_N; i++)
 		CHECK(rd(RECV_QA(i)) == RECV_Q(i));                /* never written */
-	CHECK(rd(OUT_SLOT5) == pktbuf_at(BLOB_BASE) &&
-	      rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);      /* left as found */
 
-	/* 3. one recorded original that no longer hashes to its row is left as found;
-	 * the other two words and everything else are restored - except the two buffer
-	 * slots, which stay as found with the word that may still be raised */
+	/* 3. one recorded original that no longer hashes to its row (word 8): refused
+	 * as a whole; every word, both slots and all redirects exactly as found */
 	setup();
 	plant_output_rows();
 	g_cfg.shim_output_hook = 1;
 	g_cfg.shim_output_mode = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	put_q(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 8, RECV_Q(1) ^ 0x10);
-	pokes = fake_lv2_poke_count;
-	g_tr_skipped = 0;
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
-	CHECK(g_tr_skipped == (0x100u | 0x60u));
-	kshim_unhook();
-	CHECK(fake_lv2_poke_count - pokes == 11 - 1 - 2);      /* all but the corrupt one and the slots */
-	kshim_scrub();
-	CHECK(rd(RECV_QA(0)) == RECV_Q(0) && rd(RECV_QA(2)) == RECV_Q(2));
-	CHECK(rd(RECV_QA(1)) == ((RECV_Q(1) & HI32) | RECV_WORD));   /* left as found */
+	CHECK(adopt_refused_check(0x100u) == 0);
+	for (i = 0; i < RECV_PATCHES_N; i++)
+		CHECK(rd(RECV_QA(i)) == ((RECV_Q(i) & HI32) | RECV_WORD));   /* still raised */
 	CHECK(rd(OUT_SLOT5) == pktbuf_at(BLOB_BASE) &&
-	      rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);            /* left as found */
+	      rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);                /* still the blob's */
 
-	/* 4. a row the adopter does not populate is not restored (nor, then, the
-	 * buffer slots); nor is any receive word when the adopter's row has no sender
-	 * address */
+	/* 4. a row the adopter does not populate (receive row 2): refused as a whole,
+	 * and so is an adopter whose row has no sender address (every receive word is
+	 * then not restorable) */
 	setup();
 	plant_output_rows();
 	g_cfg.shim_output_hook = 1;
 	g_cfg.shim_output_mode = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	memset(&g_ent.recv_patches[2], 0, sizeof g_ent.recv_patches[2]);
-	pokes = fake_lv2_poke_count;
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
-	kshim_unhook();
-	CHECK(fake_lv2_poke_count - pokes == 11 - 1 - 2);
-	kshim_scrub();
-	CHECK(rd(RECV_QA(2)) == ((RECV_Q(2) & HI32) | RECV_WORD));   /* left as found */
-	CHECK(rd(RECV_QA(0)) == RECV_Q(0) && rd(RECV_QA(1)) == RECV_Q(1));
-	CHECK(rd(OUT_SLOT5) == pktbuf_at(BLOB_BASE) &&
-	      rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);            /* left as found */
-
-	/* 4b. a receive word recorded as applied whose qword has since changed (no
-	 * longer exactly our patched value): that word is left as found AND the two
-	 * buffer slots are not restored (the kernel would otherwise read 80 bytes into
-	 * the original 72-byte buffer); the intact words and everything else are */
-	for (i = 0; i < RECV_PATCHES_N; i++) {
-		setup();
-		plant_output_rows();
-		g_cfg.shim_output_hook = 1;
-		g_cfg.shim_output_mode = 1;
-		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-		put_q(RECV_QA(i), rd(RECV_QA(i)) ^ 0x1);             /* someone else's edit */
-		pokes = fake_lv2_poke_count;
-		g_tr_skipped = 0;
-		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
-		CHECK(g_tr_skipped == ((0x80u << i) | 0x60u));
-		kshim_unhook();
-		CHECK(fake_lv2_poke_count - pokes == 11 - 1 - 2);
-		kshim_scrub();
-		CHECK(rd(RECV_QA(i)) == (((RECV_Q(i) & HI32) | RECV_WORD) ^ 0x1));   /* as found */
-		CHECK(rd(OUT_SLOT5) == pktbuf_at(BLOB_BASE) &&
-		      rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);                    /* as found */
-		CHECK(rd(OUT_CAP_QA) == OUT_Q(1) && rd(OUT_CALL_QA) == OUT_Q(0));    /* restored */
-		CHECK(rd(HELPER_QA) == HELPER_Q);
-		CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
-		CHECK(fake_lv2_out_of_bounds == 0);
-	}
+	CHECK(adopt_refused_check(0x200u) == 0);
+	CHECK(rd(RECV_QA(2)) == ((RECV_Q(2) & HI32) | RECV_WORD));       /* still raised */
 
 	setup();
 	plant_output_rows();
@@ -2897,12 +2936,56 @@ static int test_recv_adopt_v10(void)
 	g_cfg.shim_output_mode = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	g_ent.orig_output = 0;
-	pokes = fake_lv2_poke_count;
-	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
-	kshim_unhook();
-	CHECK(fake_lv2_poke_count - pokes == 1 + 3);           /* helper + redirects */
-	kshim_scrub();
+	CHECK(adopt_refused_check(0x380u) == 0);
 	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);    /* all left as found */
+
+	/* 4b. a receive word recorded as applied whose qword has since changed (no
+	 * longer exactly our patched value), for each of the three words in turn:
+	 * refused as a whole - nothing written, the journal empty, the input slot, both
+	 * buffer slots and every word (the changed one included) as found, so the
+	 * bounce and the raised limits stay consistent with each other - and a later
+	 * unload does nothing */
+	for (i = 0; i < RECV_PATCHES_N; i++) {
+		setup();
+		plant_output_rows();
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = 1;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		put_q(RECV_QA(i), rd(RECV_QA(i)) ^ 0x1);             /* someone else's edit */
+		CHECK(adopt_refused_check(0x80u << i) == 0);
+		CHECK(rd(RECV_QA(i)) == (((RECV_Q(i) & HI32) | RECV_WORD) ^ 0x1));   /* as found */
+		CHECK(rd(OUT_SLOT5) == pktbuf_at(BLOB_BASE) &&
+		      rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);                    /* as found */
+		CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);            /* bounce stays */
+		CHECK(fake_lv2_out_of_bounds == 0);
+	}
+
+	/* 4c. the refused adoption leaves the blob adoptable once the word is whole
+	 * again (nothing was armed or journalled by the refusal), and that adoption's
+	 * unload is the full, ordered, hazard-free revert of a fresh install's */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	g_cfg.shim_inline_pid = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	put_q(RECV_QA(1), rd(RECV_QA(1)) ^ 0x1);
+	CHECK(adopt_refused_check(0x100u) == 0);
+	put_q(RECV_QA(1), rd(RECV_QA(1)) ^ 0x1);                 /* whole again */
+	pokes = fake_lv2_poke_count;
+	g_tr_skipped = 0;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	CHECK(fake_lv2_poke_count == pokes && g_tr_skipped == 0);
+	g_haz_checks = g_haz_bad = g_haz_in_cb = 0;
+	fake_lv2_on_peek = haz_on_peek;
+	kshim_unhook();
+	fake_lv2_on_peek = NULL;
+	CHECK(fake_lv2_poke_count - pokes == 13);                /* the 13-entry journal */
+	CHECK(g_haz_checks > 0 && g_haz_bad == 0);
+	kshim_scrub();
+	for (i = 0; i < RECV_PATCHES_N; i++)
+		CHECK(rd(RECV_QA(i)) == RECV_Q(i));
+	CHECK(rd(INPUT_SLOT) == INPUT_ORIG && rd(HELPER_QA) == HELPER_Q);
 
 	/* 5. a version-9 block is not adopted: it has no receive support and a shorter
 	 * layout. Nothing is written or borrowed, everything is left as found */

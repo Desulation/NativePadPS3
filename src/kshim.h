@@ -108,7 +108,12 @@ typedef enum { KSHIM_OFF = 0, KSHIM_INSTALLED, KSHIM_ALREADY, KSHIM_NO_ENTRY, KS
  *   KSHIM_FAILED    a target was not as expected, the fixed exec region did not
  *                   read zero or did not fit under exec_bound, or a write did not
  *                   read back; everything already written is undone and the kernel
- *                   image is byte-identical to before.
+ *                   image is byte-identical to before. Also returned, with nothing
+ *                   written, journalled or armed (a later unload does nothing), when
+ *                   an install that would be adopted recorded a receive-limit word
+ *                   as applied that is no longer exactly our patched value: the
+ *                   earlier blob stays live as it is, because its input bounce and
+ *                   its raised limits can only be taken away together.
  * The two inline product-ID words are applied only when g_cfg.shim_inline_pid is
  * set (config key SHIM_INLINE_PID). Debug builds trace the failing step. */
 kshim_result_t kshim_install(void);
@@ -124,7 +129,9 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n);
  * qword (pid_orig) and which sites it applied (pid_applied), and adoption
  * journals a site only if that original hashes to the row's expected value and
  * the site still holds it with the row's instruction applied; any other site is
- * left as found.
+ * left as found - except the receive-limit words (sites 7-9): if one of those
+ * recorded as applied is not provably ours the whole adoption is refused
+ * (KSHIM_FAILED).
  *
  * Unload is two steps, because the fixed blob region cannot be freed and a driver
  * thread may still be executing inside it:
