@@ -45,16 +45,17 @@ The newer direction in this project makes a DualSense behave as a **native DualS
 * The battery indicator follows the pad's own status byte (see the output section below); the charging and full indications have not been verified on hardware.
 * **"Turn Off the controller"** from the PS button menu disconnects the pad but does not power it off (no power-off path yet).
 * No touchpad and no USB-cable pairing yet.
-* PlayStation Move device handling is not restored in this mode.
+* The Move navigation controller is accepted again but unproven on hardware (no navigation controller was available); the Move motion controller is untouched.
 
 **Output: rumble, player LEDs and light bar.** With the shim on, each DualSense gets what the PS3 asks of a DualShock 3, translated in the kernel's Bluetooth output path. What you see on a DualSense:
-* **Rumble** from games and the XMB vibration test, which stops when the game stops it.
-* **Player LEDs** that show the controller number (one dot for port 1, two for port 2, and so on).
-* **Light bar colour by controller number**: blue, red, green and pink for ports 1 to 4. A real DS3 on another port is untouched.
-* A DualSense that is powered off by force reconnects with the same controller number.
+* **Rumble** from games, which stops when the game stops it.
+* **Player LEDs** that show the controller number (two dots for port 2, three for port 3, and so on).
+* **Light bar colour by controller number**: port 2 red, port 3 green; the table also holds blue for port 1 and pink for port 4. A real DS3 on another port is untouched.
+* A DualSense that is powered off by force reconnects with the same controller number. This was verified on two pads across runs (DualSense #2 in the identity run, #3 in the output run) and relies on `SHIM_STABLE_ID` (default `1`, the pad's Bluetooth address), with the per-boot counter as the fallback.
 
 It is controlled by two VSH-only keys (see the table below); like the rest of the shim it needs `ENABLE_SHIM = 1`, exists only in debug VSH builds, is RAM-only and is DEX 4.92-only. Known limits:
-* The light bar colours are fixed constants, not configurable.
+* Only ports 2 (red, two LEDs) and 3 (green, three LEDs) were seen in full mode on the console. The colours and LED patterns for ports 1 and 4 come from the same table but were not looked at. The colours are chosen, fixed constants (blue, red, green, pink for ports 1 to 4), not configurable.
+* Rumble was seen from a game only (a split-screen game's effect reached both the DS3 and a DualSense); other rumble sources were not separately tried.
 * The battery level is read from the pad's own status byte and shown as the pad reports it; the charging and full values of the DS3 report have not been seen on hardware.
 * The newer-firmware rumble flag (`valid_flag2` bit 2) is untried, because the tested pads rumble with the current flags.
 * Verified on a DEX 4.92 console with one DS3 and two DualSense pads; a Move navigation controller and other long-report devices were not exercised.

@@ -789,7 +789,8 @@ Build: full mode (`SHIM_OUTPUT_MODE = 2`) with the light bar setup bytes (report
 - After adding the setup bytes the colours showed: #2 red, #3 green.
 - With `valid_flag0 = 0x03` the DualSense rumbled and the player LEDs matched the number (two and three dots).
 
-**Result (passed).** Rumble works and stops, the player LEDs and colour follow the controller number, the DS3 is
+**Result (passed).** Rumble works and stops (the source was a game: a split-screen game's rumble effect reached both the
+DS3 and the DualSense, and the DualSense rumbled), the player LEDs and colour follow the controller number, the DS3 is
 unaffected, no freeze. A force-powered-off #3 reconnected as #3 (the stable identity of stage 1b). The DualSense input
 kept working through the bounce buffer.
 

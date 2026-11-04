@@ -151,7 +151,7 @@ with the motors on (observe stage) confirms it.
   behaviour; the other two exist for the staged console runs and may be removed
   once the full mode is proven. The default is `0` (observe) while the stages are
   being run, and the change that proves the full mode also switches the default
-  to `2`. In observe mode the cap patch is not applied, so nothing the kernel
+  to `2` (done 2026-11-04: the default is now 2). In observe mode the cap patch is not applied, so nothing the kernel
   sends changes.
 - `DS45_SHIM_VERSION` 8: the data block gains the 80-byte output buffer, the
   sequence counter and the debug counters (out calls, translated, passed, last
@@ -195,7 +195,8 @@ two DualSense pads, `SHIM_OUTPUT_MODE = 2`:
 
 - [x] Colour and player LEDs by port: port 2 red with two player LEDs, port 3
   green with three.
-- [x] Rumble works and stops (XMB vibration test, games).
+- [x] Rumble works and stops (seen from a game: a split-screen game's rumble
+  effect reached both the DS3 and the DualSense).
 - [x] The DS3's own rumble and LEDs are unchanged.
 - [x] No freeze, no dropped pad.
 - [x] A force-powered-off DualSense reconnects with the same controller number.
