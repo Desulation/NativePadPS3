@@ -540,7 +540,7 @@ static int check_blob_image(void)
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 8 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 9 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
 	          EVENT_ORIG ? 0 : __LINE__);
@@ -572,6 +572,15 @@ static int check_blob_image(void)
 		CHECK_SUB(db[offsetof(ds45_shim_data_t, out_buf) + i] == 0 ? 0 : __LINE__);
 	for (i = 0; i < 96; i++)
 		CHECK_SUB(db[offsetof(ds45_shim_data_t, pktbuf) + i] == 0 ? 0 : __LINE__);
+	/* the rumble-aware capture (debug only) starts cleared */
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, dbg_out_on_pad)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_on_count)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_off_count)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_off_armed)) == 0 ? 0 : __LINE__);
+	for (i = 0; i < 64; i++) {
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_out_on_cap) + i] == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_out_off_cap) + i] == 0 ? 0 : __LINE__);
+	}
 
 	cfg = db + offsetof(ds45_shim_data_t, cfg);
 	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, deadzone)] == 12 ? 0 : __LINE__);
@@ -2262,7 +2271,7 @@ static int test_output_adopt_v8(void)
 	g_cfg.shim_output_hook = 1;
 	g_cfg.shim_output_mode = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(DS45_SHIM_VERSION == 8);
+	CHECK(DS45_SHIM_VERSION == 9);
 	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)7 << 32) | 1);
 	g_spare_calls = 0;
 	pokes = fake_lv2_poke_count;

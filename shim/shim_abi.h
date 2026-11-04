@@ -27,8 +27,10 @@
  * build that applied the old word edit is not adopted.
  * 8: the DS3-route output state (rumble, player LEDs, light bar) appended, and
  * pid_orig grown from 3 to 7 sites, which moves every field after it by 24 bytes:
- * 272 -> 584. */
-#define DS45_SHIM_VERSION 8
+ * 272 -> 584.
+ * 9: the rumble-aware output capture (debug only) appended after pktbuf:
+ * 584 -> 744. */
+#define DS45_SHIM_VERSION 9
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56
@@ -117,6 +119,19 @@ typedef struct {
 	uint8_t  dbg_out_cap[64];
 	uint8_t  out_buf[80];
 	uint8_t  pktbuf[96];
+	/* Rumble-aware capture, written by the blob, debug only (version 9). A payload
+	 * is "motor on" when it is longer than 4 bytes and payload byte 2 (small motor)
+	 * or byte 4 (large motor) is non-zero. dbg_out_on_* hold the last motor-on
+	 * payload from any pad (count, length, bytes, and that pad's address, the
+	 * payload address minus 0x22B). dbg_out_off_* hold the first zero-motor payload
+	 * (longer than 4 bytes, bytes 2 and 4 zero) from that same pad after it;
+	 * dbg_out_off_armed is 1 from a motor-on payload until that capture is taken.
+	 * dbg_out_rsvd9 keeps the size a multiple of 8. */
+	uint64_t dbg_out_on_pad;
+	uint32_t dbg_out_on_count, dbg_out_on_len, dbg_out_off_count, dbg_out_off_len;
+	uint32_t dbg_out_off_armed, dbg_out_rsvd9;
+	uint8_t  dbg_out_on_cap[64];
+	uint8_t  dbg_out_off_cap[64];
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */

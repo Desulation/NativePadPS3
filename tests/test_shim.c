@@ -1373,6 +1373,216 @@ static int test_output_capture_keeps_last(void)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* Rumble-aware capture: the last motor-on payload and the next zero-motor    */
+/* payload from the same pad (debug only; the filter still returns 0).        */
+/* ------------------------------------------------------------------------ */
+
+/* A pattern payload of n bytes (n >= 5) with the two motor bytes set: payload
+ * byte 2 is the small motor on/off, byte 4 the large motor strength. */
+static void out_motor(fake_pad_t *pad, int n, uint8_t seed, uint8_t small, uint8_t large)
+{
+	out_payload(pad, n, seed);
+	pad->b[SHIM_PAD_OUT_BUF_OFF + 2] = small;
+	pad->b[SHIM_PAD_OUT_BUF_OFF + 4] = large;
+}
+
+static uint64_t pad_key(const fake_pad_t *pad)
+{
+	return (uint64_t)(uintptr_t)pad->b;
+}
+
+static int test_output_motor_on_capture(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t a, b, c;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = (const uint8_t *)&a;
+	uint16_t ol = OLEN_SENTINEL;
+	const uint8_t zero64[64] = {0};
+
+	pad_make(&a, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	pad_make(&b, PAD_VTABLE, VID_SONY, PID_DS3);
+	pad_make(&c, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+
+	/* nothing captured at the start */
+	CHECK(d.dbg_out_on_count == 0 && d.dbg_out_on_len == 0 && d.dbg_out_on_pad == 0);
+	CHECK(d.dbg_out_off_count == 0 && d.dbg_out_off_len == 0 && d.dbg_out_off_armed == 0);
+
+	/* a DualSense pad, small motor on: captured exactly */
+	out_motor(&a, 48, 0x10, 0x01, 0x00);
+	CHECK(shim_output_filter(&d, a.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 1);
+	CHECK(d.dbg_out_on_len == 48);
+	CHECK(d.dbg_out_on_pad == pad_key(&a));
+	CHECK(memcmp(d.dbg_out_on_cap, a.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(d.dbg_out_off_armed == 1);
+	CHECK(d.dbg_out_off_count == 0 && d.dbg_out_off_len == 0);
+
+	/* a DS3 pad, large motor on (byte 4 only): the last motor-on payload from ANY
+	 * pad replaces it */
+	out_motor(&b, 48, 0x70, 0x00, 0x80);
+	CHECK(shim_output_filter(&d, b.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 2);
+	CHECK(d.dbg_out_on_len == 48);
+	CHECK(d.dbg_out_on_pad == pad_key(&b));
+	CHECK(memcmp(d.dbg_out_on_cap, b.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(d.dbg_out_off_armed == 1);
+
+	/* a zero-motor payload from ANOTHER pad does not touch the off capture */
+	out_motor(&c, 48, 0x33, 0x00, 0x00);
+	CHECK(shim_output_filter(&d, c.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 0 && d.dbg_out_off_len == 0);
+	CHECK(memcmp(d.dbg_out_off_cap, zero64, 64) == 0);
+	CHECK(d.dbg_out_off_armed == 1);
+	CHECK(d.dbg_out_on_count == 2 && d.dbg_out_on_pad == pad_key(&b));
+
+	/* the longest payload: 64 bytes copied, the length is 64 */
+	out_motor(&a, 64, 0x01, 0xFF, 0xFF);
+	CHECK(shim_output_filter(&d, a.b + SHIM_PAD_OUT_BUF_OFF, 64, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 3 && d.dbg_out_on_len == 64);
+	CHECK(d.dbg_out_on_pad == pad_key(&a));
+	CHECK(memcmp(d.dbg_out_on_cap, a.b + SHIM_PAD_OUT_BUF_OFF, 64) == 0);
+
+	/* a rejected call (65) and a disabled shim capture nothing */
+	CHECK(shim_output_filter(&d, a.b + SHIM_PAD_OUT_BUF_OFF, 65, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 3);
+	d.enabled = 0;
+	CHECK(shim_output_filter(&d, a.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 3);
+	d.enabled = 1;
+	CHECK(shim_output_filter(&d, NULL, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 3);
+
+	/* observe only: no output parameter written, the payload not touched */
+	CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&a && ol == OLEN_SENTINEL);
+	CHECK(a.b[SHIM_PAD_OUT_BUF_OFF + 2] == 0xFF);
+	return 0;
+}
+
+static int test_output_motor_off_after_on_same_pad(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t a, b;
+	uint8_t rid = 0;
+	const uint8_t *ob = NULL;
+	uint16_t ol = 0;
+	const uint8_t *abuf, *bbuf;
+
+	pad_make(&a, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	pad_make(&b, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	abuf = a.b + SHIM_PAD_OUT_BUF_OFF;
+	bbuf = b.b + SHIM_PAD_OUT_BUF_OFF;
+
+	/* a zero-motor payload before any motor-on one: not armed, not captured */
+	out_motor(&a, 48, 0x20, 0, 0);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 0 && d.dbg_out_off_len == 0);
+
+	/* on, then the first zero from the same pad is captured once */
+	out_motor(&a, 48, 0x30, 0x01, 0x40);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_armed == 1);
+	out_motor(&a, 40, 0x41, 0, 0);
+	CHECK(shim_output_filter(&d, abuf, 40, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 1);
+	CHECK(d.dbg_out_off_len == 40);
+	CHECK(memcmp(d.dbg_out_off_cap, abuf, 40) == 0);
+	CHECK(d.dbg_out_off_armed == 0);
+	CHECK(d.dbg_out_on_count == 1);                   /* the on capture is kept */
+
+	/* later zero payloads are not captured */
+	out_motor(&a, 48, 0x55, 0, 0);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 1 && d.dbg_out_off_len == 40);
+	CHECK(d.dbg_out_off_cap[0] == (uint8_t)(0x41));
+
+	/* a new motor-on payload re-arms; a zero from ANOTHER pad is ignored while the
+	 * on pad's own zero is captured */
+	out_motor(&a, 48, 0x60, 0x00, 0x01);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 2 && d.dbg_out_off_armed == 1);
+	out_motor(&b, 48, 0x70, 0, 0);
+	CHECK(shim_output_filter(&d, bbuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 1 && d.dbg_out_off_armed == 1);
+	out_motor(&a, 48, 0x80, 0, 0);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 2 && d.dbg_out_off_len == 48);
+	CHECK(memcmp(d.dbg_out_off_cap, abuf, 48) == 0);
+	CHECK(d.dbg_out_off_armed == 0);
+
+	/* the on pad moves to another pad: its zero is the one captured, the old
+	 * pad's is not */
+	out_motor(&a, 48, 0x90, 0x01, 0x00);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	out_motor(&b, 48, 0xA0, 0x01, 0x00);
+	CHECK(shim_output_filter(&d, bbuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 4 && d.dbg_out_on_pad == pad_key(&b));
+	out_motor(&a, 48, 0xB0, 0, 0);
+	CHECK(shim_output_filter(&d, abuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 2 && d.dbg_out_off_armed == 1);
+	out_motor(&b, 48, 0xC0, 0, 0);
+	CHECK(shim_output_filter(&d, bbuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 3 && d.dbg_out_off_armed == 0);
+	CHECK(memcmp(d.dbg_out_off_cap, bbuf, 48) == 0);
+
+	/* a motor-on payload while armed keeps it armed and just replaces the capture */
+	out_motor(&b, 48, 0xD0, 0x01, 0x00);
+	CHECK(shim_output_filter(&d, bbuf, 48, &rid, &ob, &ol) == 0);
+	out_motor(&b, 48, 0xE0, 0x00, 0xFF);
+	CHECK(shim_output_filter(&d, bbuf, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 6 && d.dbg_out_off_armed == 1);
+	CHECK(memcmp(d.dbg_out_on_cap, bbuf, 48) == 0);
+
+	/* the calls still return 0 and wrote no out-parameter */
+	CHECK(rid == 0 && ob == NULL && ol == 0);
+	return 0;
+}
+
+static int test_output_motor_short_payload(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t a;
+	uint8_t rid = 0;
+	const uint8_t *ob = NULL;
+	uint16_t ol = 0;
+	const uint8_t *buf;
+	int n;
+
+	pad_make(&a, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	buf = a.b + SHIM_PAD_OUT_BUF_OFF;
+
+	/* lengths 1..4 hold no motor bytes (bytes 2 and 4): never on, even with every
+	 * byte set */
+	memset(a.b + SHIM_PAD_OUT_BUF_OFF, 0xFF, 8);
+	for (n = 1; n <= 4; n++)
+		CHECK(shim_output_filter(&d, buf, (uint16_t)n, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 0 && d.dbg_out_on_len == 0 && d.dbg_out_on_pad == 0);
+	CHECK(d.dbg_out_off_armed == 0);
+
+	/* length 5 is the shortest that counts (byte 4 is inside it) */
+	CHECK(shim_output_filter(&d, buf, 5, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_on_count == 1 && d.dbg_out_on_len == 5);
+	CHECK(d.dbg_out_on_pad == pad_key(&a));
+	CHECK(d.dbg_out_off_armed == 1);
+
+	/* a short all-zero payload from the same pad is not an off */
+	memset(a.b + SHIM_PAD_OUT_BUF_OFF, 0, 8);
+	for (n = 1; n <= 4; n++)
+		CHECK(shim_output_filter(&d, buf, (uint16_t)n, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 0 && d.dbg_out_off_len == 0);
+	CHECK(d.dbg_out_off_armed == 1);
+
+	/* length 5 and zero motors is */
+	CHECK(shim_output_filter(&d, buf, 5, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_off_count == 1 && d.dbg_out_off_len == 5);
+	CHECK(d.dbg_out_off_armed == 0);
+
+	/* short payloads did not disturb the on capture */
+	CHECK(d.dbg_out_on_count == 1 && d.dbg_out_on_len == 5);
+	return 0;
+}
+
 /* The glue: on the host shim_output is the C body itself (entry.c), and it
  * decides on the one shared data object. */
 static int test_glue_output(void)
@@ -1402,6 +1612,9 @@ int run_tests(void)
 		test_output_ds3_pad_untouched,
 		test_output_bad_arguments,
 		test_output_capture_keeps_last,
+		test_output_motor_on_capture,
+		test_output_motor_off_after_on_same_pad,
+		test_output_motor_short_payload,
 		test_glue_output,
 		test_stable_identity_from_connection,
 		test_stable_identity_survives_reconnect,

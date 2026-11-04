@@ -315,6 +315,28 @@ int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
 		d->dbg_out_cap[i] = buf[i];
 	d->dbg_out_cap_len = n;
 
+	/* Rumble-aware capture (debug only): the last motor-on payload from any pad,
+	 * and the first zero-motor payload from that same pad after it. Payload byte 2
+	 * is the small motor, byte 4 the large motor; shorter payloads hold neither. */
+	if (len > 4) {
+		uint64_t pad = (uint64_t)(uintptr_t)(buf - SHIM_PAD_OUT_BUF_OFF);
+
+		if (buf[2] != 0 || buf[4] != 0) {
+			d->dbg_out_on_count++;
+			for (i = 0; i < n; i++)
+				d->dbg_out_on_cap[i] = buf[i];
+			d->dbg_out_on_len = n;
+			d->dbg_out_on_pad = pad;
+			d->dbg_out_off_armed = 1;
+		} else if (d->dbg_out_off_armed && pad == d->dbg_out_on_pad) {
+			d->dbg_out_off_count++;
+			for (i = 0; i < n; i++)
+				d->dbg_out_off_cap[i] = buf[i];
+			d->dbg_out_off_len = n;
+			d->dbg_out_off_armed = 0;
+		}
+	}
+
 	/* The call's pad object sits SHIM_PAD_OUT_BUF_OFF below its payload. */
 	if (shim_pad_is_dualsense(d, buf - SHIM_PAD_OUT_BUF_OFF))
 		d->dbg_out_ds++;

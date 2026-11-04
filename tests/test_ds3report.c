@@ -1158,12 +1158,13 @@ static int test_abi_layout(void)
 	/* "DS45SHM1", most significant byte first */
 	for (i = 0; i < 8; i++)
 		CHECK((uint8_t)(DS45_SHIM_MAGIC >> (56 - 8 * i)) == (uint8_t)"DS45SHM1"[i]);
-	/* 8: the DS3-route output fields (rumble, LEDs, light bar) appended, and
+	/* 9: the rumble-aware output capture appended (584 -> 744). 8: the DS3-route
+	 * output fields (rumble, LEDs, light bar) appended, and
 	 * pid_orig grown from 3 to 7 product-ID sites, which moves everything after
 	 * it by 24 bytes: 272 -> 584. 6 and 7 were the 272-byte layout; 5 added the
 	 * debug diagnostic counters (Amendment 3) after the product-ID originals
 	 * (248 bytes), 4 was 208, 3 the 176-byte one without the originals. */
-	CHECK(DS45_SHIM_VERSION == 8);
+	CHECK(DS45_SHIM_VERSION == 9);
 	CHECK(DS45_SHIM_INFO_LEN == 0x56);
 
 	/* The plugin and the blob compile this header separately and meet in
@@ -1238,7 +1239,24 @@ static int test_abi_layout(void)
 	CHECK(offsetof(ds45_shim_data_t, pktbuf) == 488);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->pktbuf) == 96);
 	CHECK(offsetof(ds45_shim_data_t, pktbuf) % 8 == 0);
-	CHECK(sizeof(ds45_shim_data_t) == 584);
+	/* 9: the rumble-aware capture (debug only), appended after pktbuf: the pad
+	 * of the last motor-on payload (8-aligned), the on/off counts and lengths, the
+	 * off-capture armed flag, a reserved word that keeps the size a multiple of 8,
+	 * and the two 64-byte captures; 584 -> 744 */
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_pad) == 584);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_pad) % 8 == 0);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_count) == 592);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_len) == 596);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_count) == 600);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_len) == 604);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_armed) == 608);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_rsvd9) == 612);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_cap) == 616);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_out_on_cap) == 64);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_cap) == 680);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_out_off_cap) == 64);
+	CHECK(sizeof(ds45_shim_data_t) == 744);
+	CHECK(sizeof(ds45_shim_data_t) % 8 == 0);
 	return 0;
 }
 
