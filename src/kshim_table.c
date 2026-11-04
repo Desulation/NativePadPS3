@@ -11,11 +11,12 @@
  * ds45_kernel_table, reused so a row is only ever applied to the kernel it was
  * researched against.
  *
- * Product-ID acceptance in stage 1 is pure kernel word edits (WORD rows), the
- * variant proven hang-free on the console: nothing branches into the blob on the
- * connect path. A BRANCH row is only valid at the FIRST INSTRUCTION of a
- * function whose calling convention the blob's target shares (note
- * 2026-10-31-ds3-route-pid-patch-fix.md); stage 1b may add one.
+ * Product-ID acceptance: the helper is a BRANCH row to shim_pid_ok (stage 1b), the
+ * two optional inline sites are WORD rows - nothing branches into the blob from
+ * the middle of a kernel function. A BRANCH row is only valid at the FIRST
+ * INSTRUCTION of a function whose calling convention the blob's target shares
+ * (note 2026-10-31-ds3-route-pid-patch-fix.md); host tests cannot catch a wrong
+ * site, they call shim_pid_ok in isolation.
  */
 
 #include "kpatch.h"
@@ -98,12 +99,18 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 
 		DS3_INFO_TEMPLATE,
 
-		/* C4 - helper 0x29E2B4: its `xori 0x042F` at 0x29E2CC becomes
-		 * `xori 0x0CE6`, so the helper accepts the DualSense where it accepted
-		 * the Move navigation controller. Verified by the FNV of the qword
-		 * 0x29E2C8 holding it. */
+		/* F4 - product-ID helper 0x29E2B4 (VID in r3, PID in r4, answer in r3):
+		 * its first instruction becomes a branch to shim_pid_ok in the blob, which
+		 * accepts 0x0268, 0x042F and 0x0CE6 - the DualSense joins the DS3 and the
+		 * Move navigation controller instead of replacing the latter. The helper is
+		 * a leaf and every one of its six callers `bl`s it and assumes nothing
+		 * preserved but the usual non-volatiles (note 2026-10-31-ds3-route-pid-
+		 * patch-fix.md, 1.2 and 2), so this is the one kind of site a BRANCH row
+		 * may target. The row's value is filled in at install (blob base +
+		 * DS45_SHIM_OFF_PID_OK). Verified by the FNV of the qword 0x29E2B0 holding
+		 * the instruction. */
 		{
-			{ DS45_KPATCH_WORD, 0x800000000029E2CCULL, 0x8D1047F832C76096ULL, 0x68800CE6ULL },
+			{ DS45_KPATCH_BRANCH, 0x800000000029E2B4ULL, 0xF1B8B3EFF22A78FCULL, 0ULL },
 		},
 
 		/* F4 - the inline compare at the connection path, applied only with

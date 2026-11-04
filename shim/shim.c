@@ -70,8 +70,7 @@ int shim_is_dualsense(uint16_t vid, uint16_t pid)
 /* Product-ID helper. A leaf of immediate comparisons only: no global and no TOC
  * access, so the kernel can branch to it with its own r2 (tools/shim_pack.py
  * enforces this over this function's code range). Keeps 0x0268 and 0x042F, adds
- * 0x0CE6. Stage 1 accepts the DualSense with kernel word edits instead; this
- * stays for stage 1b. */
+ * 0x0CE6. The helper row of the table (src/kshim_table.c) branches to it. */
 int shim_pid_ok(uint32_t vid, uint32_t pid)
 {
 	return vid == VID_SONY &&

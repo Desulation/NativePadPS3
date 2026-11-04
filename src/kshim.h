@@ -28,13 +28,14 @@
 #include <stdint.h>
 #include "kpatch.h"
 
-#define DS45_SHIM_PID_PATCHES     1   /* helper word, always */
+#define DS45_SHIM_PID_PATCHES     1   /* helper branch, always */
 #define DS45_SHIM_INLINE_PATCHES  2   /* inline words, only with SHIM_INLINE_PID = 1 */
 
 /* One firmware. The fingerprint is the same (fp_addr, fp_hash) scheme
  * ds45_kernel_t uses, so a row is only ever applied to the kernel it was
- * researched against. The product-ID rows are WORD rows (a finished instruction
- * written as given); a BRANCH row would be aimed at shim_pid_ok.
+ * researched against. The helper row is a BRANCH row (aimed at shim_pid_ok in the
+ * blob when installed); the inline rows are WORD rows (a finished instruction
+ * written as given).
  *
  * Every code hash (event_code_hash, enable_code_hash and each product-ID row's
  * expect) is the FNV-1a 64 of the 8-ALIGNED qword holding the address (addr & ~7,
