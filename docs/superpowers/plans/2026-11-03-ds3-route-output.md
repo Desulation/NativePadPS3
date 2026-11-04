@@ -168,3 +168,21 @@ The gate failed (buffer of 72 bytes) and led to spec Amendment 1; the note holds
 - [ ] **Step 2:** Pass: all of the spec's success criteria. Restore.
 - [ ] **Step 3:** Change the default to 2 with its test, document the keys in the README, set the spec status to implemented, run all host tests and the four builds.
 - [ ] **Step 4:** Push, open the PR with the verification list and anything not verified, and bind it.
+
+---
+
+## Amendment (spec Amendment 2): receive-side support for the full input report
+
+The probe run showed the DualSense's input stops once it is sent an output report (facts note F8). Tasks 9 and 10 wait for the tasks below. The facts task comes first and its result decides the patch rows; the later tasks are written once it is done.
+
+### Task 11: Receive path facts (read-only)
+
+**Files:**
+- Modify: `docs/superpowers/notes/2026-11-03-ds3-route-output-facts.md` (add section F9)
+
+**Interfaces:**
+- Produces: the settled facts for the receive-side patches: (1) the whole path from the transport input read (slot `0x37CE38`, the hook's original `0x33A010`) down to the HID receive function for the interrupt-in channel (`0xF9060`) and how a received packet reaches the caller's buffer `dst` of length `len_in`: is the copy bounded by `len_in`, does it truncate, what does the read return; (2) what the four `li r7,0x41` read limits (sites `0xF8484`, `0xF9094`, `0xF9134`, `0xF91F4`) do, what `0x1169E4` does with a packet longer than the limit and the capacity of the interrupt-in receive ring for the DualSense's connection; (3) the typical `len_in` and `dst` size the pad driver passes (caller of the input slot, around `0x2A4E00`); (4) a recommended patch set with the exact new instruction words, hash rows (FNV of the aligned qwords) and the effect on the DS3's 50-byte reports and on other users of the same functions; (5) what the input hook (`shim/entry.c`, the `rc > 0x41` guard and `len_in` check) and `shim_input_filter` must change to accept a 79-byte report.
+
+- [ ] **Step 1:** Disassemble and trace read-only with the scratchpad capstone helpers over `tools/dumps/dex492/ds45pad_lv2.bin` (as Task 1).
+- [ ] **Step 2:** Write section F9. **Gate:** if the copy into `dst` is not bounded by `len_in` (an overflow with a 79-byte packet), or the ring cannot hold a 79-byte packet, state it prominently and stop for the user.
+- [ ] **Step 3:** Commit the note.

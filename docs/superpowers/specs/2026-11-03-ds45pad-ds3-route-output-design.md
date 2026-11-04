@@ -233,6 +233,43 @@ construction points into the old buffer.
   would leave a DualSense vibrating is not acceptable, and the plan must then
   decide before the full stage.
 
+## Amendment 2 (2026-11-03): output needs the full-report input
+
+The console probe (facts note F8) showed that a DualSense accepts the rewritten
+78-byte output report while still in its basic input mode (light bar turned
+blue, no hang), but that its **input then stops**: translated reads stay at 1 and
+the reads seen on its transport crawl. The likely cause is that the pad answers
+its first output report by switching to the full 78-byte `0x31` input report
+(79 bytes with the header), and this kernel's HID receive functions read at most
+`0x41` (65) bytes and refuse a longer packet, leaving it queued.
+
+**Decision (user, 2026-11-03).** This piece now includes receive-side support for
+the full report, so a DualSense keeps working after the first output report. The
+input translator for the `0x31` report already exists (`ds3_report_from_dualsense`
+reads through the status byte, 55 bytes, and also gives motion and the real
+battery level). What is missing is the path that gets the 79-byte packet to it.
+
+**Shape of the work (settled by a facts task before any code).**
+- The receive read limit: the four `0x41` immediates in the HID receive
+  functions (facts F1.1), the interrupt-in ring capacity, and what the receive
+  function does with the packet (how it copies into the pad's buffer and whether
+  that copy is bounded by the caller's length). The moved packet buffer (96 bytes)
+  already holds a 79-byte packet.
+- The input hook: its `rc > 0x41` guard and the minimum buffer length, and what a
+  full report looks like once delivered (length, buffer capacity, truncation).
+- The patches are WORD rows like the cap word (verified, journalled, reverted on
+  unload) and are applied together with the output sites; their gating and the
+  staged console runs follow the same pattern (probe first, then full).
+- Risk: raising a shared receive limit touches every Bluetooth HID device, so the
+  facts task must show the effect on the DS3 (50-byte reports) and on anything
+  else that shares the functions, and the console stages must show the DS3
+  unchanged. A 79-byte packet that the copy into the pad's buffer cannot bound
+  would be an overflow; the facts task states this either way and the design
+  changes if it is.
+
+**Success criteria added.** After the first output report the DualSense's input
+keeps working (sticks, buttons, motion, battery), with the DS3 unchanged.
+
 ## Plan outline (to be expanded by the writing-plans skill)
 
 1. Facts (read-only): buffer ownership and length limits below `0xF8D60`; the
