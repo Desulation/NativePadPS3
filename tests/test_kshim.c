@@ -417,8 +417,11 @@ static void setup(void)
 	g_ent.inline_patches[1].value = PID1_WORD;
 }
 
-/* Snapshot of everything the installer is responsible for leaving untouched on
- * failure (the fixed blob region is scratch and excluded). */
+/* Snapshot of the 17 named kernel qwords the installer is responsible for leaving
+ * untouched on failure: the redirect and spare slots, the product-ID, output and
+ * receive sites (the fixed blob region is scratch and excluded). It is NOT the whole
+ * image; where "nothing was written at all" matters, the test also asserts that
+ * fake_lv2_poke_count did not move. */
 struct snap { uint64_t event, enable, startup, input, spare, helper, pid0, pid1,
                        ecode, ncode, call, cap, slot5, slot6, recv0, recv1, recv2; };
 
@@ -530,11 +533,12 @@ static void haz_on_peek(uint64_t addr)
 
 /* An adoption that must be REFUSED as a whole (a receive word recorded as applied
  * is not ours): the call fails, no poke and no spare-slot borrow, the refusal is
- * traced with the offending receive sites' mask (bits 7-9), the image is
- * byte-identical (the redirects, the buffer slots and all words as found, the input
- * bounce and the raised limits therefore still consistent), and a later unhook and
- * scrub find nothing to undo (no journal, no armed scrub): zero pokes, still the
- * same image. Returns 0 or a line number. */
+ * traced with the offending receive sites' mask (bits 7-9), and the snapshotted
+ * qwords (struct snap: the redirects, the buffer slots and every word, hence the
+ * input bounce and the raised limits still consistent) are equal. The guarantee
+ * that NOTHING at all changed is the poke count: it does not move across the
+ * refused install, nor across a later unhook and scrub (which find nothing to
+ * undo: no journal, no armed scrub). Returns 0 or a line number. */
 static int adopt_refused_check(uint32_t want_mask)
 {
 	struct snap before, after;
@@ -2438,7 +2442,13 @@ static int test_output_adopt_v8(void)
 	kshim_unhook();
 	CHECK(fake_lv2_poke_count - pokes == 1 + 3);              /* helper + redirects */
 	kshim_scrub();
-	CHECK(rd(OUT_CALL_QA) != OUT_Q(0) && rd(OUT_SLOT5) != OLD_BUF);   /* left as found */
+	/* every output and receive site exactly as the observe-mode install left it:
+	 * call site and both buffer slots still ours (not restorable without a sender
+	 * address), cap word and the three receive words never touched */
+	CHECK(check_out_sites(BLOB_BASE, 1, 0, 1, 0) == 0);
+	CHECK(rd(HELPER_QA) == HELPER_Q);                          /* the helper restored */
+	CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(ENABLE_SLOT) == ENABLE_ORIG &&
+	      rd(INPUT_SLOT) == INPUT_ORIG);                       /* the redirects restored */
 	CHECK(fake_lv2_out_of_bounds == 0);
 
 	/* 4. a version-7 block is not adopted (its layout is not ours) */
@@ -2834,13 +2844,14 @@ static int test_unload_order_recv_before_input(void)
 
 /* Adoption of a version-10 block restores every receive word the adopted install
  * recorded, from its own originals, whatever the current config says - like the
- * other output sites. A forged bit (the word is not there), a corrupt recorded
- * original, a row the adopter does not populate and a row without the sender
- * address are all skipped, never written - and when any receive word is not
- * restorable the adoption is refused as a whole (R19: KSHIM_FAILED, nothing written
- * or journalled, the previous blob left live and consistent), because journalling
- * the redirects while a limit stays raised would put the original, unbounced read
- * back in front of a 0x50 limit; a version-9 block (no receive support, a layout
+ * other output sites. For a receive word, a forged bit (the word is not there), a
+ * changed qword, a corrupt recorded original, a row the adopter does not populate
+ * and a row without the sender address are all REFUSALS of the whole adoption (R19:
+ * KSHIM_FAILED, nothing written or journalled, the previous blob left live and
+ * consistent, the refusal traced with the offending sites' mask), because
+ * journalling the redirects while a limit stays raised would put the original,
+ * unbounced read back in front of a 0x50 limit; only non-receive sites are merely
+ * skipped (see test_output_adopt_v8). A version-9 block (no receive support, a layout
  * that stops short of the new fields) is not adopted at all. */
 static int test_recv_adopt_v10(void)
 {
