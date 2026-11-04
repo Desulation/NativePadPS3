@@ -1419,6 +1419,194 @@ static int test_input_bounce_pad_lookup(void)
 }
 
 /* ------------------------------------------------------------------------ */
+/* Raw DualSense report capture (version 11, debug only)                      */
+/* ------------------------------------------------------------------------ */
+
+/* The raw capture is not part of the bounce counters: it must not disturb them. */
+static int raw_capture_clean(void)
+{
+	static const uint8_t zero[sizeof(ds45_shim_data.dbg_in_raw)];
+
+	return ds45_shim_data.dbg_in_raw_len == 0 && ds45_shim_data.dbg_in_raw_seq == 0 &&
+	       memcmp(ds45_shim_data.dbg_in_raw, zero, sizeof(zero)) == 0;
+}
+
+/* A neutral 0x31 report with recognisable bytes in the common block, so a copy
+ * is visible byte for byte (the translation does not refuse them). */
+static void report_marked(uint8_t r[RPT_LEN])
+{
+	int i;
+
+	report_neutral(r);
+	for (i = BT(DS_C_STATUS) - 4; i < BT(DS_C_STATUS) + 8; i++)
+		r[i] = (uint8_t)(0xA0 + i);
+	r[BT(DS_C_STATUS)] = 0x2A;
+}
+
+/* A 78-byte 0x31 report: the first 64 bytes arrive in dbg_in_raw exactly as the
+ * original wrote them, before the in-place translation, and the translated
+ * 49-byte report still reaches dst unchanged. */
+static int test_input_raw_capture_full_report(void)
+{
+	uint8_t dst[96], want[DS3_REPORT_LEN], raw[RPT_LEN];
+	ds45_shim_cfg_t cfg;
+	int mode, i;
+
+	for (mode = 1; mode <= 2; mode++) {
+		glue_reset();
+		ds45_shim_data.out_mode = (uint32_t)mode;
+		cfg = ds45_shim_data.cfg;
+		report_marked(g_oi_report);
+		memcpy(raw, g_oi_report, RPT_LEN);
+		g_oi_len = RPT_LEN;
+		CHECK(ds3_report_from_dualsense(raw, RPT_LEN, &cfg, want) == 0);
+		memset(dst, 0xCC, sizeof(dst));
+		CHECK(raw_capture_clean());
+
+		CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
+		CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);       /* translation unchanged */
+		CHECK(dst[DS3_REPORT_LEN] == 0xCC);
+		CHECK(ds45_shim_data.dbg_in_raw_len == 64);
+		CHECK(ds45_shim_data.dbg_in_raw_seq == 1);
+		CHECK(memcmp(ds45_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
+		CHECK(ds45_shim_data.dbg_in_raw[BT(DS_C_STATUS)] == 0x2A);   /* byte 54, raw */
+		CHECK(ds45_shim_data.inbuf[0] == 0x01);              /* inbuf holds the translated report */
+		for (i = 0; i < 64; i++)
+			CHECK(ds45_shim_data.dbg_in_raw[i] == raw[i]);
+		/* the existing counters are exactly as before */
+		CHECK(ds45_shim_data.stat_translated == 1 && ds45_shim_data.stat_passed == 0);
+		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 1);
+		CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
+	}
+
+	/* a 79-byte read (the longest) is clamped to the same 64 bytes */
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	report_marked(g_oi_report);
+	g_oi_report[78] = 0x77;
+	g_oi_len = 0x4F;
+	CHECK(shim_input(&g_x_ds, dst, 100, 0) > 0);
+	CHECK(ds45_shim_data.dbg_in_raw_len == 64 && ds45_shim_data.dbg_in_raw_seq == 1);
+	CHECK(memcmp(ds45_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
+	return 0;
+}
+
+/* A 10-byte basic report: the capture holds those 10 bytes, length 10, and the
+ * bytes after them are not touched. */
+static int test_input_raw_capture_basic_report(void)
+{
+	uint8_t dst[96], want[DS3_REPORT_LEN], raw[DS_BASIC_LEN];
+	ds45_shim_cfg_t cfg;
+	int i;
+
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	cfg = ds45_shim_data.cfg;
+	report_basic(g_oi_report);
+	memcpy(raw, g_oi_report, DS_BASIC_LEN);
+	g_oi_len = DS_BASIC_LEN;
+	CHECK(ds3_report_from_dualsense_basic(raw, DS_BASIC_LEN, &cfg, want) == 0);
+	memset(dst, 0xCC, sizeof(dst));
+
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
+	CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);
+	CHECK(ds45_shim_data.dbg_in_raw_len == DS_BASIC_LEN);
+	CHECK(ds45_shim_data.dbg_in_raw_seq == 1);
+	CHECK(memcmp(ds45_shim_data.dbg_in_raw, raw, DS_BASIC_LEN) == 0);
+	for (i = DS_BASIC_LEN; i < 64; i++)
+		CHECK(ds45_shim_data.dbg_in_raw[i] == 0);
+
+	/* a shorter report after a longer one: the length shrinks, the stale tail
+	 * is allowed to stay (the length says what is valid) */
+	report_marked(g_oi_report);
+	g_oi_len = RPT_LEN;
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
+	CHECK(ds45_shim_data.dbg_in_raw_len == 64 && ds45_shim_data.dbg_in_raw_seq == 2);
+	report_basic(g_oi_report);
+	g_oi_len = DS_BASIC_LEN;
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
+	CHECK(ds45_shim_data.dbg_in_raw_len == DS_BASIC_LEN && ds45_shim_data.dbg_in_raw_seq == 3);
+	CHECK(memcmp(ds45_shim_data.dbg_in_raw, raw, DS_BASIC_LEN) == 0);
+	return 0;
+}
+
+/* Only a DualSense read of 1..0x4F bytes is captured: not a DS3, not a pad nobody
+ * owns, not an error, a zero-byte read or an impossible length. */
+static int test_input_raw_capture_only_dualsense(void)
+{
+	fake_xport_t *const xp[2] = { &g_x_ds3, &g_x_other };
+	uint8_t dst[128];
+	int w;
+
+	for (w = 0; w < 2; w++) {
+		glue_reset();
+		ds45_shim_data.out_mode = 1;
+		record_make(g_oi_report, 70);
+		g_oi_len = 70;
+		CHECK(shim_input(xp[w], dst, 100, 0) == 70);
+		g_oi_len = DS_BASIC_LEN;
+		report_basic(g_oi_report);
+		CHECK(shim_input(xp[w], dst, 100, 0) == DS_BASIC_LEN);
+		g_oi_len = DS3_REPORT_LEN;
+		CHECK(shim_input(xp[w], dst, 100, 0) == DS3_REPORT_LEN);
+		CHECK(ds45_shim_data.dbg_in_bounce == 3);
+		CHECK(raw_capture_clean());
+	}
+
+	/* a DualSense, but an error, nothing, or more than the read can return */
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	record_make(g_oi_report, 96);
+	g_oi_len = -4;
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == -4);
+	CHECK(raw_capture_clean());
+	g_oi_len = 0;
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == 0);
+	CHECK(raw_capture_clean());
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, -1) == -1);
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0) == 0);
+	memcpy(ds45_shim_data.inbuf, g_oi_report, 96);
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0x50) == 0);
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0x7FFFFFFF) == 0);
+	CHECK(raw_capture_clean());
+	CHECK(ds45_shim_data.dbg_in_drop == 2);
+
+	/* NULL arguments change nothing either */
+	CHECK(shim_input_bounce(NULL, g_pad_ds.b, dst, 64, 10) == 0);
+	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, NULL, 64, 10) == 0);
+	CHECK(raw_capture_clean());
+
+	/* one DualSense read of 1 byte is captured (the lower edge) */
+	g_oi_len = 1;
+	CHECK(shim_input(&g_x_ds, dst, 64, 0) == 1);
+	CHECK(ds45_shim_data.dbg_in_raw_len == 1 && ds45_shim_data.dbg_in_raw_seq == 1);
+	CHECK(ds45_shim_data.dbg_in_raw[0] == g_oi_report[0]);
+	return 0;
+}
+
+/* Each captured read bumps the sequence; the latest bytes are held. */
+static int test_input_raw_capture_seq_counts(void)
+{
+	uint8_t dst[96];
+	int k;
+
+	glue_reset();
+	ds45_shim_data.out_mode = 2;
+	for (k = 1; k <= 3; k++) {
+		report_marked(g_oi_report);
+		g_oi_report[BT(DS_C_STATUS)] = (uint8_t)(0x10 * k + k);
+		g_oi_len = RPT_LEN;
+		CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
+		CHECK(ds45_shim_data.dbg_in_raw_seq == (uint32_t)k);
+		CHECK(ds45_shim_data.dbg_in_raw_len == 64);
+		CHECK(ds45_shim_data.dbg_in_raw[BT(DS_C_STATUS)] == (uint8_t)(0x10 * k + k));
+		CHECK(memcmp(ds45_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
+	}
+	CHECK(ds45_shim_data.dbg_in_bounce == 3 && ds45_shim_data.stat_translated == 3);
+	return 0;
+}
+
+/* ------------------------------------------------------------------------ */
 /* Diagnostic counters (debug tracing, Amendment 3)                           */
 /* ------------------------------------------------------------------------ */
 
@@ -2550,6 +2738,10 @@ int run_tests(void)
 		test_input_bounce_counters,
 		test_input_bounce_counters_other_pad,
 		test_input_bounce_pad_lookup,
+		test_input_raw_capture_full_report,
+		test_input_raw_capture_basic_report,
+		test_input_raw_capture_only_dualsense,
+		test_input_raw_capture_seq_counts,
 	};
 	unsigned i;
 	int line;

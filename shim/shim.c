@@ -321,6 +321,18 @@ int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
 	 * report before writing, and on a refusal write nothing, leaving n = rc. */
 	n = (uint16_t)rc;
 	ds = shim_pad_is_dualsense(d, pad);
+
+	/* Raw capture (debug only): a DualSense's report as the pad sent it, copied
+	 * BEFORE the translation below rewrites inbuf. rc is 1..0x4F here; at most the
+	 * first 64 bytes are kept. */
+	if (ds) {
+		uint16_t m = n < (uint16_t)sizeof(d->dbg_in_raw) ? n : (uint16_t)sizeof(d->dbg_in_raw);
+
+		for (i = 0; i < m; i++)
+			d->dbg_in_raw[i] = d->inbuf[i];
+		d->dbg_in_raw_len = m;
+		d->dbg_in_raw_seq++;
+	}
 	shim_input_filter(d, ds ? 0x054C : 0, ds ? 0x0CE6 : 0, d->inbuf, &n);
 
 	/* n is at most 0x4F here (the buffer holds 96), and only n <= len_in bytes

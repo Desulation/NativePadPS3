@@ -1167,7 +1167,7 @@ static int test_abi_layout(void)
 	 * it by 24 bytes: 272 -> 584. 6 and 7 were the 272-byte layout; 5 added the
 	 * debug diagnostic counters (Amendment 3) after the product-ID originals
 	 * (248 bytes), 4 was 208, 3 the 176-byte one without the originals. */
-	CHECK(DS45_SHIM_VERSION == 10);
+	CHECK(DS45_SHIM_VERSION == 11);
 	CHECK(DS45_SHIM_INFO_LEN == 0x56);
 
 	/* The plugin and the blob compile this header separately and meet in
@@ -1272,7 +1272,14 @@ static int test_abi_layout(void)
 	CHECK(offsetof(ds45_shim_data_t, dbg_in_big) == 868);
 	CHECK(offsetof(ds45_shim_data_t, dbg_in_drop) == 872);
 	CHECK(offsetof(ds45_shim_data_t, dbg_in_err) == 876);
-	CHECK(sizeof(ds45_shim_data_t) == 880);
+	/* 11: the raw DualSense report capture (debug only), appended after dbg_in_err:
+	 * the captured length, a sequence counter and the first 64 bytes of the last
+	 * report before translation; 880 -> 952 */
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw_len) == 880);
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw_seq) == 884);
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw) == 888);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_in_raw) == 64);
+	CHECK(sizeof(ds45_shim_data_t) == 952);
 	CHECK(sizeof(ds45_shim_data_t) % 8 == 0);
 	return 0;
 }

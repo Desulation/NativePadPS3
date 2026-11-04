@@ -226,6 +226,18 @@ Task 11 is done (commit 5a3f534, gate failed: the receive copy is unbounded and 
 - [ ] **Step 1:** Tests first: `test_input_bounce_translates_full_report` (a 0x31 report of 78 bytes in the bounce buffer yields the 49-byte DS3 report in the caller's buffer, the return value 49, and the caller's buffer never written past 49 bytes - guard bytes), `test_input_bounce_basic_report_unchanged` (a 10-byte basic report still translates), `test_input_ds3_path_untouched` (the original is called with the caller's own `dst` and `len_in`, nothing copied), `test_input_bounce_modes` (mode 0, 3, 99, disabled: the original gets the caller's buffer), `test_input_bounce_drop_oversize`, `test_input_bounce_never_overruns_dst` (len_in 0 to 64, report lengths up to 79), counters.
 - [ ] **Step 2:** Run RED, implement, GREEN; blob and SDK builds. Commit.
 
+### Task 16: Raw DualSense report capture (added after probe run 2)
+
+The probe run 2 showed the DualSense's battery as empty (translated byte 30 = 1, the lowest level) and the user cannot tell whether the pad is low. To tell a low pad from a wrong status offset, the bounce path records the last raw DualSense report before translation.
+
+**Files:** `shim/shim_abi.h`, `shim/shim.c`, `src/main.c`, `src/kshim.c` (version only if needed), tests in `tests/test_shim.c`, `tests/test_ds3report.c`, `tests/test_kshim.c`.
+
+**Interfaces:**
+- Produces: `DS45_SHIM_VERSION 11`; appended data block fields `uint32_t dbg_in_raw_len; uint32_t dbg_in_raw_seq;` and `uint8_t dbg_in_raw[64]` (size a multiple of 8): in `shim_input_bounce`, for a DualSense pad with a read of rc in 1..0x4F, BEFORE `shim_input_filter`, copy `min(rc,64)` bytes of `inbuf` into `dbg_in_raw` (plain bounded loop), set `dbg_in_raw_len` to that count and increment `dbg_in_raw_seq`; no other behaviour changes. Trace: an `inraw len=0x.. seq=0x.. <hex>` line printed by the housekeeping tick when `dbg_in_raw_seq` changed since the last print.
+
+- [ ] **Step 1:** Tests first: the raw capture holds the pre-translation bytes (a 78-byte 0x31 report: the first 64 bytes, exact), the length and sequence, a basic 10-byte report, no capture for a non-DualSense pad or an error/zero read, and the translated output and counters are unchanged. Abi layout and version 11.
+- [ ] **Step 2:** RED, implement, GREEN; blob and SDK builds. Commit.
+
 ### Task 15: Resume Tasks 9 and 10
 
 - [ ] **Step 1:** Re-run the console probe (Task 9) with the receive rows and the bounce path: pass = the light bar turns blue **and the DualSense input keeps working**, the DS3 unchanged. Then Task 10.

@@ -571,7 +571,7 @@ static int check_blob_image(void)
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 10 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 11 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
 	          EVENT_ORIG ? 0 : __LINE__);
@@ -620,6 +620,11 @@ static int check_blob_image(void)
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_big)) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_drop)) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_err)) == 0 ? 0 : __LINE__);
+	/* version 11: the raw report capture starts cleared too */
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_raw_len)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_raw_seq)) == 0 ? 0 : __LINE__);
+	for (i = 0; i < 64; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_in_raw) + i] == 0 ? 0 : __LINE__);
 
 	cfg = db + offsetof(ds45_shim_data_t, cfg);
 	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, deadzone)] == 12 ? 0 : __LINE__);
@@ -2339,7 +2344,7 @@ static int test_output_adopt_v8(void)
 	g_cfg.shim_output_hook = 1;
 	g_cfg.shim_output_mode = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(DS45_SHIM_VERSION == 10);
+	CHECK(DS45_SHIM_VERSION == 11);
 	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)7 << 32) | 1);
 	g_spare_calls = 0;
 	pokes = fake_lv2_poke_count;
@@ -2666,7 +2671,7 @@ static int test_recv_adopt_v10(void)
 	struct snap pristine, after;
 	int pokes, g, i;
 
-	CHECK(DS45_SHIM_VERSION == 10);
+	CHECK(DS45_SHIM_VERSION == 11);
 
 	/* 1. adopt with another config and restore all of it */
 	for (g = 0; g < 2; g++) {

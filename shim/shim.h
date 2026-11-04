@@ -138,6 +138,10 @@ int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
  *   - otherwise shim_input_note(d, pad); then rc == 0: return 0;
  *     rc > 0x4F (cannot happen, the read is limited to 0x4F): dbg_in_drop++,
  *     return 0; rc > 0x41: dbg_in_big++.
+ *   - Raw capture (version 11, debug only): for a DualSense pad, BEFORE the filter
+ *     below rewrites inbuf, min(rc, 64) bytes of d->inbuf are copied to
+ *     d->dbg_in_raw, dbg_in_raw_len is set to that count and dbg_in_raw_seq++.
+ *     Nothing is captured for any other pad or for rc <= 0 or rc > 0x4F.
  *   - n = rc; shim_input_filter runs on d->inbuf: with the DualSense identity
  *     (0x054C, 0x0CE6) when pad is a DualSense, where it translates a basic 0x01
  *     or full 0x31 report in place into the 49-byte DS3 report (n becomes 49)

@@ -390,6 +390,43 @@ static void shim_dbg_cap_line(uint64_t base, const char *tag, size_t len_off,
 	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
 }
 
+/* The last raw DualSense report the input hook read, before translation
+ * ("inraw"): its captured length, the capture counter and the bytes as hex. Written
+ * only when the counter changed since the last line, so an idle pad adds nothing;
+ * a busy one adds a line per housekeeping tick, not per report. It shows what the
+ * pad really sends (the battery status byte is report byte 54). */
+static void shim_dbg_inraw(uint64_t base)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	static uint32_t last_seq;
+	uint8_t cap[64];
+	char line[192];   /* "inraw len=0x" + 8 + " seq=0x" + 8 + ' ' + 128 hex digits + '\n' = 165 */
+	char *p = line;
+	uint32_t seq = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_raw_seq));
+	uint32_t len, i;
+
+	if (seq == last_seq)
+		return;
+	len = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_raw_len));
+	if (len > sizeof cap)
+		len = sizeof cap;
+	if (ds45_lv2_read_bytes(base + offsetof(ds45_shim_data_t, dbg_in_raw), cap, (int)sizeof cap))
+		return;
+	last_seq = seq;
+
+	p = shim_dbg_tag(p, "inraw len=");
+	p = shim_dbg_hex(p, len);
+	p = shim_dbg_tag(p, " seq=");
+	p = shim_dbg_hex(p, seq);
+	*p++ = ' ';
+	for (i = 0; i < len; i++) {
+		*p++ = hex[cap[i] >> 4];
+		*p++ = hex[cap[i] & 0xF];
+	}
+	*p++ = '\n';
+	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+}
+
 /* The last payload of any kind ("outcap"), then the last motor-on payload
  * ("outon") and the next zero-motor payload from that same pad ("outoff"). */
 static void shim_dbg_outcap(uint64_t base)
@@ -482,6 +519,7 @@ static void shim_dbg_trace(void)
 
 	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
 	shim_dbg_outcap(base);
+	shim_dbg_inraw(base);
 }
 #endif /* DS45_DEBUG */
 

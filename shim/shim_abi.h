@@ -32,8 +32,10 @@
  * 584 -> 744.
  * 10: the receive-limit words (sites 7-9) grow pid_orig from 7 to 10 sites, which
  * moves every field after it by 24 bytes (744 -> 768), and the input bounce buffer
- * (inbuf, 96 bytes) and its four debug counters are appended last: 768 -> 880. */
-#define DS45_SHIM_VERSION 10
+ * (inbuf, 96 bytes) and its four debug counters are appended last: 768 -> 880.
+ * 11: the raw DualSense report capture (debug only) appended after the bounce
+ * counters: 880 -> 952. */
+#define DS45_SHIM_VERSION 11
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56
@@ -147,6 +149,13 @@ typedef struct {
 	 * installer leaves them zero. The size is kept a multiple of 8. */
 	uint8_t  inbuf[96];
 	uint32_t dbg_in_bounce, dbg_in_big, dbg_in_drop, dbg_in_err;
+	/* The raw DualSense report capture (version 11), written by the blob, debug
+	 * only: the first dbg_in_raw_len (at most 64) bytes of the last DualSense read
+	 * of 1..0x4F bytes, copied BEFORE the in-place translation, and dbg_in_raw_seq,
+	 * which counts those captures. The plugin's trace prints them when the sequence
+	 * changed, to show what the pad really sends. The size is kept a multiple of 8. */
+	uint32_t dbg_in_raw_len, dbg_in_raw_seq;
+	uint8_t  dbg_in_raw[64];
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */
