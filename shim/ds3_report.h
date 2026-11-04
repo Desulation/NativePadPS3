@@ -19,6 +19,10 @@
  *   [6..9]   left X, left Y, right X, right Y
  *   [14..25] pressure: Up, Right, Down, Left, L2, R2, L1, R1, Triangle, Circle,
  *            Cross, Square
+ *   [30]     battery, which the kernel passes on as is: 1..5 the level (the
+ *            DualSense's 0..10 halved, rounded up, never 0), 0xEE charging,
+ *            0xEF fully charged. The basic report has no battery data and
+ *            reads 0x05.
  *   [41..48] sensors, 16 bit big-endian: accel X, Y, Z, then the gyro
  * Every other byte is 0.
  *
