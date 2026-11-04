@@ -46,11 +46,15 @@ Kernel side, DEX 4.92 (LV2 offsets, `0x8000000000000000` + offset):
   `0x116EF0`. The payload is copied before the call returns.
 - **verified.** The pad object is the buffer address minus `0x22B`, so the hook
   can recognise a DualSense pad with the existing `shim_pad_is_dualsense`.
-- **open (plan task 1).** Whether the memory after the shared packet buffer
-  (`0x4326C8` + 79 bytes = `0x432717`) is unused; whether `0x116EF0` or anything
-  below it has its own length limit; the exact DS3 payload the kernel builds
-  (length, offsets, duration bytes); that every Bluetooth DS3 output goes through
-  the call at `0x2A2DE8`.
+- **verified (plan task 1, `docs/superpowers/notes/2026-11-03-ds3-route-output-facts.md`).**
+  The shared packet buffer has room for only **72 bytes**: the object at
+  `0x432710` follows it and starts with the pointer to the registered Bluetooth
+  HID client, so a 79-byte packet would overwrite it (see Amendment 1). Nothing
+  below `0xF8D60` caps the length below 77. The call at `0x2A2DE8` is the only
+  path for pad rumble and LED updates over Bluetooth, but not the only Bluetooth
+  path that sends a DS3-format output report: the start-up drivers send an
+  all-zero one through a control-channel sender with no cap, which the patches
+  do not touch.
 
 DualSense side (sourced: Linux `drivers/hid/hid-playstation.c`, third-party
 `dualsensectl`):
@@ -69,11 +73,15 @@ DualSense side (sourced: Linux `drivers/hid/hid-playstation.c`, third-party
   work. **open:** whether the pad accepts output while it still sends the short
   basic input report. Settled on the console (probe stage).
 
-DS3 side (sourced: Linux `hid-sony.c`): 36-byte report with the rumble bytes at
-1-5 (right duration, right motor on/off, left duration, left motor 0-255) and the
-LED bitmap at byte 10 (LED1 `0x02` ... LED4 `0x10`). The PS3 may use a longer
-form: the translator's offsets come from a capture of the report the kernel
-really builds, not from this table alone.
+DS3 side (**verified** in the kernel, the packer `0xCC054`): the payload the
+kernel hands to the sender is always **48 bytes**, the report id not included.
+Payload bytes 1-4 are the rumble request (right duration, right/small motor
+on-off, left duration, left/large motor 0-255), byte 9 is the LED bitmap (LED1
+`0x02` ... LED4 `0x10`, masked with `0x1E`), bytes 10-29 are four 5-byte LED
+timing blocks, the rest zero. In the periodic path the durations are the constant
+`0x96` (finite). A real DS3's idle report in the dumps matches. The meaning of
+each byte is the standard DS3 one (assumed, from Linux `hid-sony.c`); a capture
+with the motors on (observe stage) confirms it.
 
 ## Design
 
@@ -88,8 +96,10 @@ really builds, not from this table alone.
 3. On a rewrite the hook calls the original `0x10283C` (a tail call) with report
    id `0x31`, the new buffer and payload length 77 (the report without its id).
    The sender copies it at once, so one buffer is enough.
-4. Two kernel patches at install: the call site becomes a branch-and-link to the
-   blob's output entry, and the sender's 64-byte cap is raised to 77.
+4. Kernel patches at install: the call site becomes a branch-and-link to the
+   blob's output entry, the sender's 64-byte cap is raised to 77, and the two TOC
+   slots of the shared packet buffer are redirected to a 96-byte buffer of ours
+   (Amendment 1).
 
 ### 2. Translation
 
@@ -121,8 +131,8 @@ really builds, not from this table alone.
 - **Cap patch:** the compare at `0xF8D74` is raised from `0x40` to `0x4D` (77).
 - Both rows are verified by the FNV of the 8-aligned qword, applied in the same
   all-or-nothing transaction as the existing hooks, reverted in reverse on
-  unload, RAM only, DEX 4.92 fingerprint only. A mismatch at either site **fails
-  the whole install** (fail closed, as for the current hooks).
+  unload, RAM only, DEX 4.92 fingerprint only. A mismatch at any output site
+  **fails the whole install** (fail closed, as for the current hooks).
 - Config key `SHIM_OUTPUT_HOOK` (debug builds; default on) switches the output
   patches off. A second key `SHIM_OUTPUT_MODE` selects `0` observe (hook
   installed, everything passes through, the first payloads are traced), `1` probe
@@ -173,14 +183,55 @@ and no change to controller numbering across reconnects.
 
 - The pad may refuse output while in basic input mode. If so, full-report input
   (the other stage 2 piece) has to come first, and this spec is resumed after it.
-- The shared packet buffer may not have room for 79 bytes, or a lower layer may
-  cap the length. Then approach A as written cannot ship and the design is
-  reopened (candidates: a smaller report if one is found, or moving the packet to
-  a buffer of our own, which needs a call and is outside the shim rules).
+- (Resolved by Amendment 1.) The shared packet buffer could not hold 79 bytes;
+  the design now moves it.
 - A branch-and-link entry is a new kind of patch; a wrong TOC or `r2` there is
   the same class of fault as the earlier hangs. Hence the observe stage first.
 - The player LED patterns and colours are chosen by eye on the console.
 - Finite rumble durations (see Translation).
+
+## Amendment 1 (2026-11-03): the packet buffer is moved
+
+Plan task 1 found that the shared packet buffer `0x4326C8` is 72 bytes, and the
+79-byte packet would overwrite the first qword of the HID client state at
+`0x432710` (a live pointer, null only while nobody is registered). The sender
+cap alone is therefore not enough.
+
+**Decision.** Every user of the buffer reaches it through one of two TOC slots:
+the qword at `0x372650` (the buffer, `0x80000000004326C8`) and the qword at
+`0x372660` (the buffer plus 1). The installer redirects them with two pointer
+patches (the kind already in the patcher) to a **shim-owned packet buffer of
+96 bytes** in the blob's data block, the second slot to that address plus 1.
+All seven load sites then use it; their own use never exceeds 66 bytes (65 for
+receive), so they stay correct. No call is needed, so the shim rules hold. The
+facts note lists the sites and states that no other qword or address
+construction points into the old buffer.
+
+**Consequences.**
+- Patches in total: the call site (branch-and-link), the two buffer slots, and
+  the cap word. The transaction grows from at most 6 to at most 10 entries; the
+  patcher's list limit and its compile-time checks are raised to match.
+- Staging changes: observe mode (`SHIM_OUTPUT_MODE = 0`) installs the call site
+  **and the buffer redirect**, so the moved buffer is proven harmless with normal
+  traffic (pad input must keep working, since the receive paths use it) before
+  any longer packet exists. Probe and full mode add the cap word.
+- The cap raise also lets the other caller of the sender (a generic method) send
+  up to 77 payload bytes; with the 96-byte buffer that is safe.
+- A report longer than the transmit ring has room for (134 bytes on the
+  interrupt channel; 81 are needed) is dropped by the kernel (`0x1169E4`
+  returns 0); the next periodic update resends, so a drop is harmless.
+- The two slots are patched one after the other. A receive running between them
+  could pair the old buffer with the new "plus 1" slot once. The shim installs at
+  boot before any pad connects, which is why this is accepted; the observe stage
+  checks pad input afterwards.
+- The receive side keeps its 65-byte limit; raising it belongs to the
+  full-report input piece, not this one.
+- Rumble: the kernel's durations are finite (`0x96`), and a DualSense keeps
+  vibrating until told to stop. Whether the kernel sends a zero-motor report when
+  rumble ends, or relies on the DS3 expiring, decides the translation. The
+  observe stage captures a rumble start and stop; a stateless translation that
+  would leave a DualSense vibrating is not acceptable, and the plan must then
+  decide before the full stage.
 
 ## Plan outline (to be expanded by the writing-plans skill)
 

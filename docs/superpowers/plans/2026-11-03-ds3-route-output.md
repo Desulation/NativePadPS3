@@ -14,7 +14,8 @@
 
 - DEX 4.92 only, fingerprint-gated; debug VSH builds only; RAM only; every kernel write verified by the FNV of its 8-aligned qword before writing, applied in the one all-or-nothing transaction, reverted on unload.
 - Shim code rules: only loads and stores into its own objects and the call's buffer, no locks, no allocation, no calls except the tail call to the original, no libc, no static data; built twice (host tests and the blob). The hook never blocks a send: anything unexpected passes the call through unchanged.
-- DualSense report: `0x31`, 78 bytes, sequence nibble from a wrapping counter, tag `0x10`, CRC-32 (reflected, init `0xFFFFFFFF`, final XOR) over `0xA2` then bytes 0-73, little-endian at 74-77. The kernel sender takes the report id separately, so the payload is 77 bytes; the cap at `0xF8D74` becomes `0x4D`.
+- DualSense report: `0x31`, 78 bytes, sequence nibble from a wrapping counter, tag `0x10`, CRC-32 (reflected, init `0xFFFFFFFF`, final XOR) over `0xA2` then bytes 0-73, little-endian at 74-77. The kernel sender takes the report id separately, so the payload is 77 bytes; the cap at `0xF8D74` becomes `0x4D` (word `0x2B9F004D`).
+- Spec Amendment 1: the shared packet buffer `0x4326C8` is only 72 bytes, so the two TOC slots that point to it (`0x80000000_00372650` = buffer, `0x80000000_00372660` = buffer + 1) are redirected by pointer patches to a 96-byte `pktbuf` in the data block. The DS3 payload the kernel builds is 48 bytes (id excluded): rumble bytes 1-4, LED bitmap byte 9. Facts note: `docs/superpowers/notes/2026-11-03-ds3-route-output-facts.md` (hashes, expected values, register contract).
 - Nothing Sony-proprietary in git: notes hold addresses, hashes and mnemonics only, never raw kernel bytes.
 - Console safety: arm DualSenses by Bluetooth address only (never the Move motion controller's key); no peek bursts; every console stage ends with `tools/ps3_console_restore.ps1`; stop and report to the user if any pad misbehaves.
 - Build with `src/build.ps1 -Variant vsh -Debug -Sdk C:\usr\local\cell` (the `CELL_SDK` variable is POSIX-style). Host tests: `pwsh -File tests/run_tests.ps1` (regenerate `src/shim_blob.h` through the build before `test_kshim`). Test files start with `/* SOURCES: ... */`.
@@ -26,13 +27,16 @@
 - A DualSense pad whose payload is empty, short, long or not the captured shape passes through; the hook never errors. Pinned in Task 7 and Task 8.
 - NULL buffer, zero length, length over 64 and a disabled shim pass through. Pinned in Task 4.
 - Two DualSense pads and a reconnect: each pad's colour and LEDs come from its own LED bitmap, and the shared sequence counter wraps cleanly. Pinned in Task 8.
-- A mismatch at either output site fails the whole install with nothing written; unload reverts both; hook off installs exactly like version 7. Pinned in Task 5.
+- A mismatch at any output site (call site, cap word, either buffer slot) fails the whole install with nothing written; unload reverts all of them; hook off installs exactly like version 7. Pinned in Task 5.
+- With the packet buffer moved, pad input and every other Bluetooth HID send and receive keep working. Pinned by the Task 6 console checks (input still translated, DS3 untouched).
 
 ---
 
-### Task 1: Facts note (read-only)
+### Task 1: Facts note (read-only) - DONE (commit bd6d333)
 
-**Files:**
+The gate failed (buffer of 72 bytes) and led to spec Amendment 1; the note holds every value Tasks 5-8 need. Nothing further to do here.
+
+**Files (kept for the record):**
 - Create: `docs/superpowers/notes/2026-11-03-ds3-route-output-facts.md`
 
 **Interfaces:**
@@ -50,9 +54,9 @@
 - Test: `tests/test_kpatch.c`
 
 **Interfaces:**
-- Produces: `DS45_KPATCH_BRANCHL` (after `DS45_KPATCH_BRANCH`; `value` is the absolute target, encoded as `bl target`, opcode 18 with LK = 1) and `int kpatch_branchl_word(uint64_t from, uint64_t to, uint32_t *word)`, same contract and range as `kpatch_branch_word`.
+- Produces: `DS45_KPATCH_BRANCHL` (after `DS45_KPATCH_BRANCH`; `value` is the absolute target, encoded as `bl target`, opcode 18 with LK = 1) and `int kpatch_branchl_word(uint64_t from, uint64_t to, uint32_t *word)`, same contract and range as `kpatch_branch_word`. `DS45_KPATCH_MAX` raised from 8 to 12 (the output patches bring one transaction to 10 entries); the journal arrays follow it.
 
-- [ ] **Step 1:** Add tests: `test_branchl_encoding` (forward, backward, ±range limits, misaligned target, NULL word), `test_branchl_verify_apply_revert` (hash checked, out-of-range refused, apply then revert restores the qword in both halves), `test_branchl_hash_mismatch_writes_nothing`.
+- [ ] **Step 1:** Add tests: `test_branchl_encoding` (forward, backward, ±range limits, misaligned target, NULL word), `test_branchl_verify_apply_revert` (hash checked, out-of-range refused, apply then revert restores the qword in both halves), `test_branchl_hash_mismatch_writes_nothing`, `test_patch_list_limit` (12 patches apply and revert; 13 are refused with -1 and nothing read).
 - [ ] **Step 2:** Run `tests/run_tests.ps1`; expect `test_kpatch` to fail to build or fail.
 - [ ] **Step 3:** Implement the kind and `kpatch_branchl_word` next to the BRANCH code, sharing the range check.
 - [ ] **Step 4:** Run the host tests; expect all pass.
@@ -65,7 +69,7 @@
 - Test: `tests/test_config.c`, `tests/test_ds3report.c` (abi layout), `tests/test_kshim.c` (data block fields)
 
 **Interfaces:**
-- Produces: `DS45_SHIM_VERSION 8`; `DS45_SHIM_PID_SITES 5` (sites 0-2 as today, 3 = output call site, 4 = cap word) and `pid_orig[5]`; appended to `ds45_shim_data_t`: `uint64_t orig_output` (code address of `0x10283C`, written from the firmware row), `uint32_t out_mode, out_seq, dbg_out_calls, dbg_out_ds, dbg_out_translated, dbg_out_passed, dbg_out_last_len, dbg_out_cap_len`, `uint8_t dbg_out_cap[64]`, `uint8_t out_buf[80]`, padded to a multiple of 8. Config fields `int shim_output_hook` (default 1) and `int shim_output_mode` (default 0, clamped 0..2) with VSH-only keys `SHIM_OUTPUT_HOOK` and `SHIM_OUTPUT_MODE`, boot marks `cfg_shim_output_hook` / `cfg_shim_output_mode`. The shimdbg line gains ` outc= outds= outxl= outps= outlen=` and a separate `outcap` line with the captured payload as hex, printed when it changes.
+- Produces: `DS45_SHIM_VERSION 8`; `DS45_SHIM_PID_SITES 7` (sites 0-2 as today, 3 = output call site, 4 = cap word, 5 = buffer TOC slot, 6 = buffer-plus-one TOC slot) and `pid_orig[7]`; appended to `ds45_shim_data_t`: `uint64_t orig_output` (code address of `0x10283C`, written from the firmware row), `uint32_t out_mode, out_seq, dbg_out_calls, dbg_out_ds, dbg_out_translated, dbg_out_passed, dbg_out_last_len, dbg_out_cap_len`, `uint8_t dbg_out_cap[64]`, `uint8_t out_buf[80]` (the 78-byte DualSense report), `uint8_t pktbuf[96]` (the moved packet buffer, 8-aligned, zero), padded to a multiple of 8. Config fields `int shim_output_hook` (default 1) and `int shim_output_mode` (default 0, clamped 0..2) with VSH-only keys `SHIM_OUTPUT_HOOK` and `SHIM_OUTPUT_MODE`, boot marks `cfg_shim_output_hook` / `cfg_shim_output_mode`. The shimdbg line gains ` outc= outds= outxl= outps= outlen=` and a separate `outcap` line with the captured payload as hex, printed when it changes.
 
 - [ ] **Step 1:** Write the failing tests: key parsing like `test_shim_stable_id_key` (default, 0, junk, last wins, mode clamp), the new `test_abi_layout` offsets and size, and `test_kshim` checks that `out_mode` and `orig_output` land in the block.
 - [ ] **Step 2:** Run the host tests; expect failures in those three suites.
@@ -96,10 +100,10 @@
 - Test: `tests/test_kshim.c`
 
 **Interfaces:**
-- Consumes: `DS45_KPATCH_BRANCHL`, Task 3 fields, Task 1 hashes.
-- Produces: row fields `output_patches[2]` and `orig_output`; DEX 4.92 values: BRANCHL at `0x80000000002A2DE8` (value filled at install with `base + DS45_SHIM_OFF_OUTPUT`) and WORD at `0x80000000000F8D74` = `cmplwi cr7,r31,0x4D` (`0x2B9F004D`), `orig_output = 0x800000000010283C`. Site 3 applies when `shim_output_hook` is set, site 4 when it is set and `shim_output_mode` is not 0. `pid_site`, `pid_capture`, `pid_patched_qword`, the range check and adoption handle the new sites and kind; `KSHIM_FINAL_MAX` stays within `DS45_KPATCH_MAX`.
+- Consumes: `DS45_KPATCH_BRANCHL`, `DS45_KPATCH_MAX` 12, Task 3 fields (`pktbuf`, `orig_output`, `output_patches[4]`), the facts note's hashes.
+- Produces: row fields `output_patches[4]` and `orig_output`; DEX 4.92 values: site 3 BRANCHL at `0x80000000002A2DE8` (target `base + DS45_SHIM_OFF_OUTPUT`, expect `0x2A29E6BB7BA10D5E`); site 4 WORD at `0x80000000000F8D74` = `cmplwi cr7,r31,0x4D` (`0x2B9F004D`, expect `0xBF27C253F5228E13`); site 5 PTR at `0x8000000000372650` (expect the current value `0x80000000004326C8`, new value the address of `pktbuf` in the blob); site 6 PTR at `0x8000000000372660` (expect `0x80000000004326C9`, new value `pktbuf + 1`); `orig_output = 0x800000000010283C`. Sites 3, 5 and 6 apply when `shim_output_hook` is set (any mode); site 4 only when it is set and `shim_output_mode` is not 0. `pid_site`, `pid_capture`, `pid_patched_qword` (add the PTR arm: the whole qword is replaced), the range check and adoption handle the new sites and kinds; `KSHIM_FINAL_MAX` (10) and the adoption journal check stay within `DS45_KPATCH_MAX` (12). Apply order inside the transaction: buffer slot 5, then slot 6 (back to back), then the call site, then the cap word.
 
-- [ ] **Step 1:** Tests: `test_output_sites_gated` (hook off: none; mode 0: call site only; mode 1 and 2: both), `test_output_branchl_follows_load_base`, `test_output_site_mismatch_fails_clean` (each site in turn; snapshot equality, zero pokes), `test_output_remove_restores_all`, `test_output_adopt_v8` (adopt restores both; a v7 block is not adopted), extend `test_builtin_table` and the pristine-image row test.
+- [ ] **Step 1:** Tests: `test_output_sites_gated` (hook off: none; mode 0: call site and both buffer slots; mode 1 and 2: those plus the cap word), `test_output_branchl_follows_load_base`, `test_buffer_slots_point_into_blob` (both slots hold `pktbuf` and `pktbuf + 1` at the load base; old values restored on remove), `test_output_site_mismatch_fails_clean` (each of the four sites in turn; snapshot equality, zero pokes), `test_output_remove_restores_all`, `test_output_adopt_v8` (adopt restores every applied site; a v7 block is not adopted), extend `test_builtin_table` and the pristine-image row test.
 - [ ] **Step 2:** Run host tests; expect failures.
 - [ ] **Step 3:** Implement the row, table and installer changes.
 - [ ] **Step 4:** Run host tests; expect all pass.
@@ -110,9 +114,9 @@
 **Files:**
 - Modify: `docs/superpowers/notes/2026-11-03-ds3-route-output-facts.md` (add the capture)
 
-- [ ] **Step 1:** Build the debug plugin; deploy with `tools/ps3_console_deploy.ps1 -Ip 192.168.1.97 -Dest tools/dumps/dex492/output1 -Config` the usual keys plus `SHIM_OUTPUT_HOOK = 1`, `SHIM_OUTPUT_MODE = 0`; confirm both hook sites read back as patched (call site a `bl` into the blob, cap word unchanged).
+- [ ] **Step 1:** Build the debug plugin; deploy with `tools/ps3_console_deploy.ps1 -Ip 192.168.1.97 -Dest tools/dumps/dex492/output1 -Config` the usual keys plus `SHIM_OUTPUT_HOOK = 1`, `SHIM_OUTPUT_MODE = 0`; confirm the sites read back as patched (call site a `bl` into the blob, both buffer slots pointing at `pktbuf` and `pktbuf + 1`, cap word unchanged).
 - [ ] **Step 2:** Arm the DualSenses by Bluetooth address with `tools/ps3_console_linkkeys.ps1 -Arm -Bd`; ask the user to power on the DS3, then the DualSense(s), and to start the XMB controller vibration test and change controller numbers (reconnect).
-- [ ] **Step 3:** Read `ps3_console_trace.ps1`. Pass: no freeze, `outc` rising, DS3 and DualSense behave as before. Record the DS3 payload (length, rumble and LED offsets, duration bytes) in the facts note; note whether durations are always "forever".
+- [ ] **Step 3:** Read `ps3_console_trace.ps1`. Pass: no freeze, `outc` rising, DS3 and DualSense behave as before, **and pad input still works through the moved buffer** (`xl` rising for the DualSense, the DS3 usable in the XMB). Record the DS3 payload with the motors on and off (the 48 bytes, the duration bytes) in the facts note, and in particular **whether the kernel sends a zero-motor report when a rumble ends** or relies on the duration expiring. That answer decides the rumble translation: if it relies on expiry, stop and report to the user before Task 7.
 - [ ] **Step 4:** Restore with `tools/ps3_console_restore.ps1`. Commit the note. **Gate:** a freeze or a pad regression stops the plan for the user.
 
 ### Task 7: Pure translator
@@ -122,7 +126,7 @@
 - Test: `tests/test_ds3output.c` (`/* SOURCES: ../shim/ds3_output.c */`)
 
 **Interfaces:**
-- Produces: `#define DS_OUT_LEN 78`; `int ds3_output_to_dualsense(const uint8_t *in, int in_len, uint8_t seq, uint8_t out[DS_OUT_LEN])` (0 and all 78 bytes written, or -1 with `out` untouched for NULL, a payload shorter than the captured layout or not of its shape); `void ds3_output_probe(uint8_t seq, uint8_t out[DS_OUT_LEN])` (fixed player-1 colour and LED, no rumble). Offsets and the LED/colour table are named constants taken from the facts note: player LEDs `0x04, 0x0A, 0x15, 0x1B` for ports 1-4, colours blue, red, green, pink; lowest set LED bit chooses the port; none set means LEDs and light bar off; large motor copied, small motor 255 or 0; valid flags set on every report.
+- Produces: `#define DS_OUT_LEN 78`; `int ds3_output_to_dualsense(const uint8_t *in, int in_len, uint8_t seq, uint8_t out[DS_OUT_LEN])` (`in` is the 48-byte DS3 payload without the report id; 0 and all 78 bytes written, or -1 with `out` untouched for NULL, `in_len` not 48, or a payload not of its shape); `void ds3_output_probe(uint8_t seq, uint8_t out[DS_OUT_LEN])` (fixed player-1 colour and LED, no rumble). Offsets and the LED/colour table are named constants taken from the facts note: player LEDs `0x04, 0x0A, 0x15, 0x1B` for ports 1-4, colours blue, red, green, pink; lowest set LED bit chooses the port; none set means LEDs and light bar off; large motor copied, small motor 255 or 0; valid flags set on every report.
 
 - [ ] **Step 1:** Write the tests: `test_header_and_flags`, `test_rumble_mapping`, `test_led_and_colour_per_port` (all four ports, several bits set, none set), `test_crc_matches_reference` (an independent reference loop in the test file, prefix `0xA2`), `test_sequence_nibble_wraps`, `test_declines_bad_input` (NULL, empty, short, wrong shape; `out` untouched), `test_no_read_past_len` (guard bytes, every length), `test_fuzz`, `test_probe_report`.
 - [ ] **Step 2:** Run; expect the suite to fail to build.
