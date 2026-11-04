@@ -293,6 +293,30 @@ Counters at the end of the run: 192 motor-on reports, 24 captured stops, 15,413 
 - Not yet seen: a captured large-motor value above 0 (the games used the small motor in the last captured reports); the
   translation copies the byte as planned.
 
+## F8 - Console probe run (2026-11-03, plan task 9) [console]
+
+Build: probe mode (`SHIM_OUTPUT_MODE = 1`: every DualSense pad gets a fixed report, blue light bar and player LED 1, no
+rumble), data block v9, cap word raised to `0x4D`. Read back after install: cap qword `0xF8D70` low half `2B9F004D`, call
+site `bl` into the blob, slots at `pktbuf` / `pktbuf + 1`. Pads: a DS3 over Bluetooth and one DualSense.
+
+**Output works.** The DualSense accepted the rewritten 78-byte report **while in its basic input mode** and the light bar
+turned blue (user). No hang, no disconnect; the 79-byte packet went through the moved buffer and the raised cap. 23 of 47
+output calls were rewritten (the DualSense's), the DS3's 24 passed through untouched, the DS3 stayed fully usable.
+
+**Regression: the DualSense's input stopped.** `xl` (translated reads) stayed at 1 from the first rewritten report on,
+while `inds` (reads seen on the DualSense's transport) crawled to 142 in about 100 s instead of the thousands seen before.
+The user confirms no input on the DualSense; the DS3 is unaffected.
+
+**Likely cause (not proven).** A DualSense on Bluetooth sends the short basic report 0x01 until the host sends it an
+output report 0x31, and then switches to the full 78-byte 0x31 input report (plus one header byte = 79 bytes). The HID
+receive functions of this kernel read at most `0x41` (65) bytes (F1.1) and for a longer packet return `0x80010028` and
+leave it queued (F1.4), so the input stalls while the poll keeps retrying. If that is right, the output piece cannot ship
+alone: it needs the receive side to take 79-byte packets, which is the stage 2 full-input piece (the translator for the
+0x31 report already exists in shim/ds3_report.c).
+
+**Not yet checked.** The raw reads the input hook sees after the switch (no instrumentation records the read result or
+the first bytes), and the capacity of the interrupt-in ring.
+
 ## Method (commands)
 
 All from the scratchpad, never from the repo root (`dis.py` there shadows the stdlib), `python -I`:
