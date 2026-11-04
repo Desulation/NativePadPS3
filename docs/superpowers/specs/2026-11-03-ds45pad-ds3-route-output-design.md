@@ -270,6 +270,43 @@ battery level). What is missing is the path that gets the 79-byte packet to it.
 **Success criteria added.** After the first output report the DualSense's input
 keeps working (sticks, buttons, motion, battery), with the DS3 unchanged.
 
+## Amendment 3 (2026-11-03): receiving the full report through a bounce buffer
+
+Plan task 11 (facts note F9) found that the kernel's interrupt-in receive
+function copies a received packet into the caller's buffer without checking its
+size, and the pad driver's buffer is a 64-byte stack local. The read limit
+(`0x41`) is also what keeps a 79-byte full report out: an over-long record has
+its 2-byte length prefix consumed and then the read fails with `0x80010028`, so
+the ring is left out of step and no report is ever delivered. Raising the limit
+alone would overflow the stack buffer by about 14 bytes.
+
+**Decision (user, 2026-11-03).**
+- Raise the interrupt-in read limit from `0x41` to `0x50` with three WORD rows
+  (`li r7,0x50` at `0xF9094`, `0xF9134`, `0xF91F4`; channel 1 only, the
+  channel-3 limit at `0xF8484` stays). They are verified, journalled and
+  reverted like the other rows, and applied only when the output hook rewrites
+  (`SHIM_OUTPUT_MODE` 1 or 2), because only a rewritten output report makes the
+  pad send the long report.
+- The input hook (`shim_input`), for a DualSense pad only, calls the original
+  read with a shim-owned **bounce buffer** (`inbuf`, 96 bytes, in the data
+  block) and the larger length, translates the report there, and copies at most
+  the caller's `len_in` bytes into the caller's buffer. A result that is not
+  translatable and does not fit is dropped (the facts task states what the
+  callers do with a zero return). Every other pad, the DS3 included, is read
+  exactly as today, into the caller's buffer.
+- The input filter and the translator are unchanged: they already translate a
+  `0x31` report (motion, touchpad flags, battery level), so those come with it.
+
+**Risks.**
+- The limit raise is shared by every device on that channel. A device that sends
+  more than 64 bytes was already stalling; after the patch its reports are
+  delivered into callers that cannot hold them. The facts task enumerates the
+  other callers of the receive function before any code is written, and the
+  design is reopened if one can hold a device that sends long reports.
+- The patch transaction grows to 13 entries; the patcher's limit is raised to 16.
+- The bounce path first runs on the console in the probe stage; the DS3 must stay
+  unchanged throughout.
+
 ## Plan outline (to be expanded by the writing-plans skill)
 
 1. Facts (read-only): buffer ownership and length limits below `0xF8D60`; the

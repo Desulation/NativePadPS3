@@ -186,3 +186,46 @@ The probe run showed the DualSense's input stops once it is sent an output repor
 - [ ] **Step 1:** Disassemble and trace read-only with the scratchpad capstone helpers over `tools/dumps/dex492/ds45pad_lv2.bin` (as Task 1).
 - [ ] **Step 2:** Write section F9. **Gate:** if the copy into `dst` is not bounded by `len_in` (an overflow with a 79-byte packet), or the ring cannot hold a 79-byte packet, state it prominently and stop for the user.
 - [ ] **Step 3:** Commit the note.
+
+Task 11 is done (commit 5a3f534, gate failed: the receive copy is unbounded and the pad driver's buffer is 64 bytes). Spec Amendment 3 chose the bounce-buffer design; Tasks 12-15 implement it, and Tasks 9 and 10 (console probe and full stages) resume after them.
+
+### Task 12: Other receive callers and the transport read contract (read-only)
+
+**Files:**
+- Modify: `docs/superpowers/notes/2026-11-03-ds3-route-output-facts.md` (add F10)
+
+**Interfaces:**
+- Produces: (1) every caller of the interrupt-in receive function `0xF8FE0` (the open ones are `0x100130` and `0x1007B8`) and of `0x101E20`: what each passes as the destination and its size, which devices reach it, and whether any of them could now be handed a packet of 65-79 bytes that its destination cannot hold; (2) the transport read method `0xC9D60` behind slot `0x37CE38`: how it uses `len_in`, `dst` and `flag`, what it returns for 0, an error and a short packet, and what the pad driver (callers `0x2A50FC`, `0x2A521C`) does with a zero return and with an error; (3) whether calling the original with a different `dst` and `len_in = 0x50` is safe (any other use of those arguments); (4) the effect of a stalled ring on the DS3 and the poll rate seen in the probe run.
+- Gate: if any other caller's destination can be smaller than 79 bytes AND could receive a long packet from a device that is actually used with this console (a DS3, a Move device, a DualSense), stop and tell the user.
+
+- [ ] **Step 1:** Read-only trace as in Tasks 1 and 11.
+- [ ] **Step 2:** Write F10, with the gate verdict. Commit.
+
+### Task 13: Receive-limit rows and data block v10
+
+**Files:**
+- Modify: `shim/shim_abi.h`, `src/kpatch.h`, `src/kshim.h`, `src/kshim_table.c`, `src/kshim.c`, `src/main.c` (trace)
+- Test: `tests/test_kshim.c`, `tests/test_ds3report.c` (abi layout), `tests/test_kpatch.c`
+
+**Interfaces:**
+- Produces: `DS45_SHIM_VERSION 10`; `DS45_KPATCH_MAX 16`; `DS45_SHIM_PID_SITES 10` (sites 7, 8, 9 = the three receive-limit words `li r7,0x50`, WORD rows with the expect hashes and new words of F9 section 4); data block fields `uint8_t inbuf[96]` (8-aligned) and debug counters `dbg_in_bounce` (bounce reads of a DualSense), `dbg_in_big` (reads of 66-79 bytes), `dbg_in_drop` (results dropped for not fitting); output sites gated as before, receive rows applied when the hook is set and `shim_output_mode` is 1 or 2 and `orig_output` is non-zero; the capture/adopt/apply order puts the three receive rows after the cap word; `KSHIM_FINAL_MAX` 13.
+
+- [ ] **Step 1:** Tests first (as Task 5): gating (mode 0: none of the three; mode 1 and 2: all three), exact words and hashes, apply/remove/adopt (v9 not adopted), mismatch at each of the three fails clean with nothing written, abi layout and version 10, the patch-list limit test follows 16.
+- [ ] **Step 2:** Run RED, implement, GREEN; the four SDK builds. Commit.
+
+### Task 14: Bounce-buffer input hook
+
+**Files:**
+- Modify: `shim/entry.c`, `shim/shim.c`, `shim/shim.h`
+- Test: `tests/test_shim.c`
+
+**Interfaces:**
+- Consumes: Task 12's contract for the original read; `inbuf`, the counters of Task 13.
+- Produces: in `shim_input` (the host-visible C body), when the shim is enabled, `out_mode` is 1 or 2 and the pad found for the transport is a DualSense: call the original with `d->inbuf` and a length of `0x50`, accept a result up to `0x4F` bytes, run `shim_input_filter` on `inbuf`, copy the resulting bytes (at most the caller's `len_in`) into the caller's `dst` and return that count; a result longer than `len_in` that did not translate is dropped as Task 12 specifies. Any other pad, mode 0, an out-of-range mode or a disabled shim: the original is called with the caller's `dst` and `len_in`, exactly as today.
+
+- [ ] **Step 1:** Tests first: `test_input_bounce_translates_full_report` (a 0x31 report of 78 bytes in the bounce buffer yields the 49-byte DS3 report in the caller's buffer, the return value 49, and the caller's buffer never written past 49 bytes - guard bytes), `test_input_bounce_basic_report_unchanged` (a 10-byte basic report still translates), `test_input_ds3_path_untouched` (the original is called with the caller's own `dst` and `len_in`, nothing copied), `test_input_bounce_modes` (mode 0, 3, 99, disabled: the original gets the caller's buffer), `test_input_bounce_drop_oversize`, `test_input_bounce_never_overruns_dst` (len_in 0 to 64, report lengths up to 79), counters.
+- [ ] **Step 2:** Run RED, implement, GREEN; blob and SDK builds. Commit.
+
+### Task 15: Resume Tasks 9 and 10
+
+- [ ] **Step 1:** Re-run the console probe (Task 9) with the receive rows and the bounce path: pass = the light bar turns blue **and the DualSense input keeps working**, the DS3 unchanged. Then Task 10.
