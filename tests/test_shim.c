@@ -27,6 +27,8 @@ extern ds45_shim_data_t ds45_shim_data;
 int shim_event(void *drv, long status, long len);
 int shim_enable(void *drv, long status, long len);
 int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag);
+int shim_output(const uint8_t *buf, uint16_t len, uint8_t *rid,
+                const uint8_t **obuf, uint16_t *olen);
 
 /* Sony USB identity. */
 #define VID_SONY        0x054C
@@ -1198,9 +1200,209 @@ static int test_stable_identity_off(void)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* DS3-route output hook (observe only): shim_output_filter                   */
+/* ------------------------------------------------------------------------ */
+
+/* The kernel's output call hands the filter the payload at pad+0x22B, 48 bytes
+ * of it; a payload pattern makes the byte-for-byte capture visible. */
+static void out_payload(fake_pad_t *pad, int n, uint8_t seed)
+{
+	int i;
+
+	for (i = 0; i < n; i++)
+		pad->b[SHIM_PAD_OUT_BUF_OFF + i] = (uint8_t)(seed + i * 3);
+}
+
+/* Sentinels for the three out-parameters: the observe-only filter must leave
+ * all of them exactly as they were. */
+#define RID_SENTINEL 0xA7
+#define OLEN_SENTINEL 0xBEEF
+
+static int test_output_counts_and_captures(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+
+	/* a DualSense pad, 48-byte payload */
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	out_payload(&pad, 48, 0x10);
+	CHECK(SHIM_PAD_OUT_BUF_OFF == 0x22B);
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_calls == 1);
+	CHECK(d.dbg_out_ds == 1);
+	CHECK(d.dbg_out_passed == 1);
+	CHECK(d.dbg_out_translated == 0);
+	CHECK(d.dbg_out_last_len == 48);
+	CHECK(d.dbg_out_cap_len == 48);
+	CHECK(memcmp(d.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	/* observe only: no output parameter is written, the payload is not touched */
+	CHECK(rid == RID_SENTINEL);
+	CHECK(ob == (const uint8_t *)&pad);
+	CHECK(ol == OLEN_SENTINEL);
+	CHECK(pad.b[SHIM_PAD_OUT_BUF_OFF + 5] == (uint8_t)(0x10 + 15));
+	CHECK(pad.b[SHIM_PAD_OUT_BUF_OFF + 48] == 0x5A);
+	/* nothing else of the data block moved */
+	CHECK(d.stat_translated == 0 && d.stat_passed == 0 && d.out_seq == 0);
+
+	/* a second call bumps again */
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_calls == 2 && d.dbg_out_ds == 2 && d.dbg_out_passed == 2);
+	return 0;
+}
+
+/* A DualShock 3: the Sony pad class but PID 0x0268. It is counted and captured
+ * (the capture is the ground truth about what the console sends a DS3), but not
+ * as a DualSense, and nothing is rewritten. */
+static int test_output_ds3_pad_untouched(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t pad, before;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DS3);
+	out_payload(&pad, 48, 0x40);
+	before = pad;
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_calls == 1);
+	CHECK(d.dbg_out_ds == 0);
+	CHECK(d.dbg_out_passed == 1);
+	CHECK(d.dbg_out_last_len == 48 && d.dbg_out_cap_len == 48);
+	CHECK(memcmp(d.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+	CHECK(memcmp(pad.b, before.b, sizeof(pad.b)) == 0);
+
+	/* a pad of another class entirely (the vtable does not match): same */
+	pad_make(&pad, PAD_VTABLE + 8, VID_SONY, PID_DUALSENSE);
+	out_payload(&pad, 48, 0x40);
+	CHECK(shim_output_filter(&d, pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_calls == 2 && d.dbg_out_ds == 0 && d.dbg_out_passed == 2);
+	return 0;
+}
+
+static int test_output_bad_arguments(void)
+{
+	ds45_shim_data_t d = data_enabled(), zero;
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = (const uint8_t *)&pad;
+	uint16_t ol = OLEN_SENTINEL;
+	const uint8_t *buf;
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	buf = pad.b + SHIM_PAD_OUT_BUF_OFF;
+
+	/* NULL data block: return 0, write nothing (the call must not crash) */
+	CHECK(shim_output_filter(NULL, buf, 48, &rid, &ob, &ol) == 0);
+	CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+
+	/* NULL buffer: counted as a call, nothing else */
+	zero = d;
+	CHECK(shim_output_filter(&d, NULL, 48, &rid, &ob, &ol) == 0);
+	zero.dbg_out_calls = 1;
+	CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+	/* length 0 */
+	CHECK(shim_output_filter(&d, buf, 0, &rid, &ob, &ol) == 0);
+	zero.dbg_out_calls = 2;
+	CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+	/* length 65, over the 64-byte payload cap */
+	CHECK(shim_output_filter(&d, buf, 65, &rid, &ob, &ol) == 0);
+	zero.dbg_out_calls = 3;
+	CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+	CHECK(d.dbg_out_ds == 0 && d.dbg_out_passed == 0 && d.dbg_out_cap_len == 0);
+
+	/* shim disabled: counted as a call, nothing captured, nothing else */
+	d = data_enabled();
+	d.enabled = 0;
+	zero = d;
+	CHECK(shim_output_filter(&d, buf, 48, &rid, &ob, &ol) == 0);
+	zero.dbg_out_calls = 1;
+	CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+	/* none of the above wrote an out-parameter or the payload */
+	CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
+	return 0;
+}
+
+/* The capture holds the LAST payload only, and its length is the payload length
+ * (at most 64, the cap the kernel's sender enforces). */
+static int test_output_capture_keeps_last(void)
+{
+	ds45_shim_data_t d = data_enabled();
+	fake_pad_t pad;
+	uint8_t rid = 0;
+	const uint8_t *ob = NULL;
+	uint16_t ol = 0;
+	const uint8_t *buf;
+	int i;
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	buf = pad.b + SHIM_PAD_OUT_BUF_OFF;
+
+	/* the longest payload the kernel accepts: all 64 bytes captured */
+	out_payload(&pad, 64, 0x01);
+	CHECK(shim_output_filter(&d, buf, 64, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_last_len == 64 && d.dbg_out_cap_len == 64);
+	CHECK(memcmp(d.dbg_out_cap, buf, 64) == 0);
+
+	/* a shorter, different one replaces it: the length follows, the bytes are
+	 * the new ones, nothing past the length is claimed */
+	out_payload(&pad, 30, 0xC0);
+	CHECK(shim_output_filter(&d, buf, 30, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_last_len == 30 && d.dbg_out_cap_len == 30);
+	CHECK(memcmp(d.dbg_out_cap, buf, 30) == 0);
+	for (i = 0; i < 30; i++)
+		CHECK(d.dbg_out_cap[i] == (uint8_t)(0xC0 + i * 3));
+
+	/* a rejected call (65) does not disturb the capture */
+	CHECK(shim_output_filter(&d, buf, 65, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_last_len == 30 && d.dbg_out_cap_len == 30);
+	CHECK(d.dbg_out_calls == 3);
+
+	/* one byte */
+	CHECK(shim_output_filter(&d, buf, 1, &rid, &ob, &ol) == 0);
+	CHECK(d.dbg_out_last_len == 1 && d.dbg_out_cap_len == 1);
+	CHECK(d.dbg_out_cap[0] == buf[0]);
+	return 0;
+}
+
+/* The glue: on the host shim_output is the C body itself (entry.c), and it
+ * decides on the one shared data object. */
+static int test_glue_output(void)
+{
+	fake_pad_t pad;
+	uint8_t rid = RID_SENTINEL;
+	const uint8_t *ob = NULL;
+	uint16_t ol = OLEN_SENTINEL;
+
+	ds45_shim_data = data_enabled();
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	out_payload(&pad, 48, 0x20);
+	CHECK(shim_output(pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
+	CHECK(ds45_shim_data.dbg_out_calls == 1);
+	CHECK(ds45_shim_data.dbg_out_ds == 1);
+	CHECK(ds45_shim_data.dbg_out_passed == 1);
+	CHECK(ds45_shim_data.dbg_out_cap_len == 48);
+	CHECK(memcmp(ds45_shim_data.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(rid == RID_SENTINEL && ob == NULL && ol == OLEN_SENTINEL);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int (*const tests[])(void) = {
+		test_output_counts_and_captures,
+		test_output_ds3_pad_untouched,
+		test_output_bad_arguments,
+		test_output_capture_keeps_last,
+		test_glue_output,
 		test_stable_identity_from_connection,
 		test_stable_identity_survives_reconnect,
 		test_stable_identity_fallbacks,

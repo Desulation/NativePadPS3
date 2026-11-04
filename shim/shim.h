@@ -46,6 +46,11 @@
 #define SHIM_CONN_HANDLE  0x10   /* u8 in a connection entry: its own handle */
 #define SHIM_CONN_ID      0x08   /* a connection entry's +0x08..+0x0F: the controller's
                                   * Bluetooth address in the pad-identity layout */
+#define SHIM_PAD_OUT_BUF_OFF 0x22B /* the pad's output payload buffer: the kernel's output
+                                  * call (0x2A2DE8) passes pad + 0x22B as the payload, so
+                                  * pad = payload - 0x22B (facts note F6) */
+#define SHIM_OUT_MAX_LEN  64     /* the kernel sender's payload cap (also the size of
+                                  * the data block's dbg_out_cap) */
 
 /* 1 only for a DualSense (VID 0x054C, PID 0x0CE6). */
 int shim_is_dualsense(uint16_t vid, uint16_t pid);
@@ -110,5 +115,27 @@ const uint8_t *shim_pad_from_xport(const ds45_shim_data_t *d, const void *xport)
  * room for DS3_REPORT_LEN bytes. d->enabled == 0 forces passthrough. */
 int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
                       uint8_t *buf, uint16_t *len);
+
+/* Output decision (DS3-route output, observe mode), run from the stub on the
+ * kernel's output call (the Bluetooth sender 0x10283C): buf is the payload
+ * (pad + 0x22B, SHIM_PAD_OUT_BUF_OFF), len its length (the kernel caps it at
+ * 64). Returns 1 when the call must be rewritten, in which case *rid, *out_buf
+ * and *out_len carry the replacement report id, payload pointer and length; 0
+ * to pass the call through unchanged. It never rewrites yet: it returns 0 and
+ * writes none of the three out-parameters.
+ *
+ * It always counts and records, for any pad (the capture of what the console
+ * really sends a DualShock 3 is the ground truth the rewrite is built on):
+ *   - d NULL: return 0, write nothing.
+ *   - otherwise dbg_out_calls++ first. Then, if the shim is disabled or buf is
+ *     NULL or len is 0 or over 64: return 0 (counters only, no capture).
+ *   - otherwise dbg_out_last_len = len, the payload's min(len, 64) bytes are
+ *     copied to dbg_out_cap with dbg_out_cap_len set to that count, the pad
+ *     (buf - 0x22B) is tested with shim_pad_is_dualsense (dbg_out_ds++ for a
+ *     DualSense), dbg_out_passed++ and 0 is returned.
+ * Only loads from the buffer and the pad, stores into the data block, a plain
+ * bounded byte loop (no memcpy), no lock, no call. */
+int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
+                       uint8_t *rid, const uint8_t **out_buf, uint16_t *out_len);
 
 #endif /* DS45_SHIM_H */

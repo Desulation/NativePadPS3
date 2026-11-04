@@ -288,3 +288,36 @@ int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
 		d->stat_passed++;
 	return len ? (int)*len : 0;
 }
+
+int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
+                       uint8_t *rid, const uint8_t **out_buf, uint16_t *out_len)
+{
+	uint16_t n, i;
+
+	/* Observe mode: nothing is rewritten yet, so the out-parameters are never
+	 * written. */
+	(void)rid;
+	(void)out_buf;
+	(void)out_len;
+
+	if (!d)
+		return 0;
+	d->dbg_out_calls++;
+	if (!d->enabled || !buf || len == 0 || len > SHIM_OUT_MAX_LEN)
+		return 0;
+
+	/* What the console really sends, for any pad (a DS3's included): the length
+	 * and the payload itself, the last call's only. len is at most 64 here, so
+	 * the clamp to the capture buffer is belt and braces. */
+	d->dbg_out_last_len = len;
+	n = len < (uint16_t)sizeof(d->dbg_out_cap) ? len : (uint16_t)sizeof(d->dbg_out_cap);
+	for (i = 0; i < n; i++)
+		d->dbg_out_cap[i] = buf[i];
+	d->dbg_out_cap_len = n;
+
+	/* The call's pad object sits SHIM_PAD_OUT_BUF_OFF below its payload. */
+	if (shim_pad_is_dualsense(d, buf - SHIM_PAD_OUT_BUF_OFF))
+		d->dbg_out_ds++;
+	d->dbg_out_passed++;
+	return 0;
+}
