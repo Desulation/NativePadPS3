@@ -469,6 +469,191 @@ static int test_too_many_patches(void)
 	return 0;
 }
 
+/* BRANCHL is `bl target`: the encoding of `b target` with LK (bit 0) set. */
+static int test_branchl_encoding(void)
+{
+	uint32_t w = 0xDEADBEEF;
+	uint64_t f = DS45_LV2_BASE + 0x1000;
+
+	CHECK(kpatch_branchl_word(f, DS45_LV2_BASE + 0x2000, &w) == 0);
+	CHECK(w == 0x48001001u);
+
+	/* backwards: the displacement is two's complement in the 24-bit LI field */
+	CHECK(kpatch_branchl_word(DS45_LV2_BASE + 0x2000, f, &w) == 0);
+	CHECK(w == 0x4BFFF001u);
+	CHECK(kpatch_branchl_word(f, f - 4, &w) == 0);
+	CHECK(w == 0x4BFFFFFDu);
+	CHECK(kpatch_branchl_word(f, f, &w) == 0);      /* call to self */
+	CHECK(w == 0x48000001u);
+
+	/* same range as `b`: -32 MiB .. +32 MiB - 4 encode, one more word does not */
+	CHECK(kpatch_branchl_word(f, f + 0x1FFFFFCULL, &w) == 0);
+	CHECK(w == 0x49FFFFFDu);
+	CHECK(kpatch_branchl_word(f + 0x2000000ULL, f, &w) == 0);
+	CHECK(w == 0x4A000001u);
+
+	w = 0xDEADBEEF;
+	CHECK(kpatch_branchl_word(f, f + 0x2000000ULL, &w) == -1);
+	CHECK(w == 0xDEADBEEFu);                        /* untouched on failure */
+	CHECK(kpatch_branchl_word(f + 0x2000004ULL, f, &w) == -1);
+	CHECK(w == 0xDEADBEEFu);
+
+	/* a displacement that is not a multiple of 4 cannot be encoded */
+	CHECK(kpatch_branchl_word(f, f + 2, &w) == -1);
+	CHECK(kpatch_branchl_word(f, f + 1, &w) == -1);
+	CHECK(w == 0xDEADBEEFu);
+	CHECK(kpatch_branchl_word(f, f + 8, NULL) == -1);
+
+	/* opcode 18, AA clear, LK set; and it differs from `b` only in LK */
+	CHECK(kpatch_branchl_word(f, f + 0x100, &w) == 0);
+	CHECK((w & 3u) == 1u);
+	CHECK((w >> 26) == 18u);
+	{
+		uint32_t b = 0;
+
+		CHECK(kpatch_branch_word(f, f + 0x100, &b) == 0);
+		CHECK(w == (b | 1u));
+	}
+	return 0;
+}
+
+static int test_branchl_verify_apply_revert(void)
+{
+	ds45_kpatch_t p[2];
+	ds45_kjournal_t j;
+	uint8_t before[SNAP_LEN], after[SNAP_LEN];
+
+	fill_image();
+	snap(before);
+
+	/* low half (addr & 4 != 0): the high half is kept */
+	p[0].kind = DS45_KPATCH_BRANCHL;
+	p[0].addr = A + 12;
+	p[0].expect = qhash(Q1);
+	p[0].value = A + 12 + 0x200;
+	CHECK(kpatch_verify(p, 1) == 0);
+
+	/* an unreachable target is refused before anything is written */
+	p[0].value = A + 12 + 0x2000000ULL;
+	CHECK(kpatch_verify(p, 1) == 1);
+	CHECK(kpatch_apply(p, 1, &j) == 1);
+	CHECK(j.n == 0);
+	p[0].value = A + 12 + 2;                        /* misaligned target */
+	CHECK(kpatch_verify(p, 1) == 1);
+	CHECK(kpatch_apply(p, 1, &j) == 1);
+	p[0].value = A + 12 + 0x200;
+	p[0].addr = A + 10;                             /* misaligned instruction */
+	CHECK(kpatch_verify(p, 1) == 1);
+	p[0].addr = A + 12;
+	CHECK(fake_lv2_poke_count == 0);
+
+	/* two halves of two qwords in one transaction */
+	p[1].kind = DS45_KPATCH_BRANCHL;
+	p[1].addr = A + 16;                             /* high half: the low half is kept */
+	p[1].expect = qhash(Q2);
+	p[1].value = A + 16 + 0x400;
+	CHECK(kpatch_apply(p, 2, &j) == 0);
+	CHECK(j.n == 2);
+	CHECK(rd(A + 8) == 0x6000000048000201ULL);
+	CHECK(rd(A + 16) == 0x48000401F8010010ULL);
+	CHECK(j.qaddr[0] == A + 8 && j.orig[0] == Q1);
+	CHECK(j.qaddr[1] == A + 16 && j.orig[1] == Q2);
+	CHECK(fake_lv2_poke_count == 2);
+	CHECK(kpatch_verify(p, 2) != 0);                /* no longer as expected */
+
+	kpatch_revert(&j);
+	CHECK(j.n == 0);
+	CHECK(rd(A + 8) == Q1);
+	CHECK(rd(A + 16) == Q2);
+	snap(after);
+	CHECK(memcmp(before, after, SNAP_LEN) == 0);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+static int test_branchl_hash_mismatch_writes_nothing(void)
+{
+	ds45_kpatch_t p[2];
+	ds45_kjournal_t j;
+	uint8_t before[SNAP_LEN], after[SNAP_LEN];
+
+	fill_image();
+	snap(before);
+
+	p[0].kind = DS45_KPATCH_BRANCHL;
+	p[0].addr = A + 12;
+	p[0].expect = qhash(Q1) ^ 1;
+	p[0].value = A + 12 + 0x200;
+	CHECK(kpatch_verify(p, 1) == 1);
+	CHECK(kpatch_apply(p, 1, &j) == 1);
+	CHECK(j.n == 0);
+	CHECK(fake_lv2_poke_count == 0);
+
+	/* the hash of the wrong bytes (the other half only) is no better */
+	p[0].expect = qhash(Q1 & 0xFFFFFFFFULL);
+	CHECK(kpatch_verify(p, 1) == 1);
+
+	/* a good patch followed by a bad BRANCHL: still nothing is written */
+	p[0].expect = qhash(Q1);
+	p[1].kind = DS45_KPATCH_BRANCHL;
+	p[1].addr = A + 16;
+	p[1].expect = qhash(Q2) ^ 1;
+	p[1].value = A + 16 + 0x400;
+	CHECK(kpatch_verify(p, 2) == 2);
+	CHECK(kpatch_apply(p, 2, &j) == 2);
+	CHECK(j.n == 0);
+	CHECK(fake_lv2_poke_count == 0);
+	snap(after);
+	CHECK(memcmp(before, after, SNAP_LEN) == 0);
+	return 0;
+}
+
+/* The limit is 12 entries: one install transaction grows to 10. */
+static int test_patch_list_limit(void)
+{
+	ds45_kpatch_t p[13];
+	ds45_kjournal_t j;
+	uint8_t before[SNAP_LEN], after[SNAP_LEN];
+	int i;
+
+	CHECK(DS45_KPATCH_MAX == 12);
+
+	fill_image();
+	snap(before);
+
+	for (i = 0; i < 13; i++) {
+		p[i].kind = DS45_KPATCH_PTR;
+		p[i].addr = A + 0x20 + 8 * (uint64_t)i;
+		p[i].expect = 0;
+		p[i].value = 0x8000000000001000ULL + (uint64_t)i;
+	}
+
+	/* 13 are refused, and nothing is even read */
+	fake_lv2_peek_count = 0;
+	memset(&j, 0x55, sizeof(j));
+	CHECK(kpatch_verify(p, 13) == -1);
+	CHECK(kpatch_apply(p, 13, &j) == -1);
+	CHECK(fake_lv2_peek_count == 0);
+	CHECK(fake_lv2_poke_count == 0);
+	snap(after);
+	CHECK(memcmp(before, after, SNAP_LEN) == 0);
+
+	/* 12 apply, journal every one, and revert */
+	CHECK(kpatch_verify(p, 12) == 0);
+	CHECK(kpatch_apply(p, 12, &j) == 0);
+	CHECK(j.n == 12);
+	for (i = 0; i < 12; i++) {
+		CHECK(j.qaddr[i] == p[i].addr);
+		CHECK(rd(p[i].addr) == p[i].value);
+	}
+	kpatch_revert(&j);
+	CHECK(j.n == 0);
+	for (i = 0; i < 12; i++)
+		CHECK(rd(p[i].addr) == 0);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int line;
@@ -489,6 +674,18 @@ int run_tests(void)
 	if (line)
 		return line;
 	line = test_too_many_patches();
+	if (line)
+		return line;
+	line = test_branchl_encoding();
+	if (line)
+		return line;
+	line = test_branchl_verify_apply_revert();
+	if (line)
+		return line;
+	line = test_branchl_hash_mismatch_writes_nothing();
+	if (line)
+		return line;
+	line = test_patch_list_limit();
 	if (line)
 		return line;
 
