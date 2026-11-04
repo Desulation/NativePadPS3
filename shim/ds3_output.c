@@ -37,7 +37,11 @@
 
 #define REPORT_ID           0x31
 #define REPORT_TAG          0x10
+/* Rumble needs both bits to work across firmware generations (as SDL sends
+ * them): compatible vibration, and haptics select. Firmware 2.21+ Linux uses
+ * valid_flag2 bit 2 (compatible vibration 2) instead; not set here. */
 #define FLAG0_VIBRATION     0x01  /* compatible vibration */
+#define FLAG0_HAPTICS       0x02  /* haptics select */
 #define FLAG1_LIGHTBAR      0x04  /* light bar colour enable */
 #define FLAG1_PLAYER_LEDS   0x10  /* player indicator enable */
 /* Until the host sends the light bar setup, a DualSense on Bluetooth keeps
@@ -104,7 +108,7 @@ static void build(uint8_t seq, uint8_t small, uint8_t large, uint8_t leds,
 	out[OUT_ID] = REPORT_ID;
 	out[OUT_SEQ] = (uint8_t)((seq & 0x0F) << 4);
 	out[OUT_TAG] = REPORT_TAG;
-	out[OUT_FLAG0] = FLAG0_VIBRATION;
+	out[OUT_FLAG0] = FLAG0_VIBRATION | FLAG0_HAPTICS;
 	out[OUT_FLAG1] = FLAG1_LIGHTBAR | FLAG1_PLAYER_LEDS;
 	out[OUT_MOTOR_RIGHT] = small ? MOTOR_ON : 0;
 	out[OUT_MOTOR_LEFT] = large;

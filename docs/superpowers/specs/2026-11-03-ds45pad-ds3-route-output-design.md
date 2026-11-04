@@ -65,7 +65,7 @@ DualSense side (sourced: Linux `drivers/hid/hid-playstation.c`, third-party
 - CRC: reflected CRC-32 (polynomial `0xEDB88320`, init `0xFFFFFFFF`, final XOR)
   over the byte `0xA2` followed by bytes 0-73.
 - Common block offsets in the report: valid_flag0 = 3 (bit0 compatible
-  vibration), valid_flag1 = 4 (bit0 mute LED, bit2 light bar colour, bit4 player
+  vibration, bit1 haptics select), valid_flag1 = 4 (bit0 mute LED, bit2 light bar colour, bit4 player
   LEDs), motor_right = 5, motor_left = 6, valid_flag2 = 41, light bar setup = 44,
   brightness = 45, player LEDs = 46, light bar R/G/B = 47/48/49.
 - Player LED patterns (unconfirmed): P1 `0x04`, P2 `0x0A`, P3 `0x15`, P4 `0x1B`.
@@ -107,7 +107,12 @@ with the motors on (observe stage) confirms it.
   wraps at 16, tag `0x10`. Bytes 50-73 are zero. CRC as above, computed with a
   bitwise loop (no table).
 - Valid flags are set on every report (full state each time, no tracking):
-  flag0 bit0, flag1 bits 2 and 4, and the light bar setup: valid_flag2 (byte 41)
+  flag0 = `0x03` (bit0 compatible vibration plus bit1 haptics select: the first
+  console run sent only bit0 and the pad did not rumble; SDL sends both, which
+  works across firmware generations; Linux `hid-playstation.c` sends haptics
+  select with bit0 below firmware 2.21 and with valid_flag2 bit 2 above it,
+  and that bit-2 variant is left as the next thing to try if the pad still does
+  not rumble), flag1 bits 2 and 4, and the light bar setup: valid_flag2 (byte 41)
   = `0x02` (light bar setup control enable) and light bar setup (byte 44) =
   `0x02` (fade light out). A DualSense plays a Bluetooth start-up animation on
   its light bar until the host sends the setup, and ignores the colour meanwhile

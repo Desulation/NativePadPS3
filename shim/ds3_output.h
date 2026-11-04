@@ -25,7 +25,8 @@
  *
  * DualSense report 0x31, DS_OUT_LEN bytes:
  *   [0] 0x31   [1] sequence in the high nibble   [2] tag 0x10
- *   [3] valid_flag0 0x01 (compatible vibration)
+ *   [3] valid_flag0 0x03 (compatible vibration | haptics select, as SDL sends
+ *       it; Linux on firmware 2.21+ uses valid_flag2 bit 2 instead, not set)
  *   [4] valid_flag1 0x14 (light bar colour | player indicator)
  *   [5] motor_right 255 or 0   [6] motor_left
  *   [41] valid_flag2 0x02 (light bar setup control enable)

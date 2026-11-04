@@ -89,7 +89,7 @@ static int report_ok(const uint8_t *p, uint8_t seq, const uint8_t *r)
 
 	if (r[0] != 0x31 || r[1] != (uint8_t)((seq & 0x0F) << 4) || r[2] != 0x10)
 		return 0;
-	if (r[3] != 0x01 || r[4] != 0x14)
+	if (r[3] != 0x03 || r[4] != 0x14)
 		return 0;
 	if (r[41] != 0x02 || r[44] != 0x02)
 		return 0;
@@ -121,7 +121,7 @@ static int test_header_and_flags(void)
 	CHECK(r[0] == 0x31);                 /* report id */
 	CHECK(r[1] == 0x00);                 /* sequence nibble, high */
 	CHECK(r[2] == 0x10);                 /* tag */
-	CHECK(r[3] == 0x01);                 /* valid_flag0: compatible vibration */
+	CHECK(r[3] == 0x03);                 /* valid_flag0: compatible vibration | haptics select */
 	CHECK(r[4] == 0x14);                 /* valid_flag1: light bar colour | player LEDs */
 	CHECK(r[11] == 0x00);                /* mute LED */
 	CHECK(r[41] == 0x02);                /* valid_flag2: light bar setup enable */
@@ -133,7 +133,7 @@ static int test_header_and_flags(void)
 	p[4] = 0xFF;
 	p[9] = 0x1E;
 	CHECK(translate(p, 7, r) == 0);
-	CHECK(r[3] == 0x01 && r[4] == 0x14);
+	CHECK(r[3] == 0x03 && r[4] == 0x14);
 	CHECK(r[41] == 0x02 && r[44] == 0x02);
 	return 0;
 }
@@ -307,8 +307,8 @@ static int test_crc_matches_reference(void)
 	/* The same two reports as a literal, with CRCs computed outside this
 	 * program (zlib over 0xA2 + report[0..73]): a bug that is in both bitwise
 	 * loops would still fail here. */
-	static const uint8_t k_crc_a[4] = { 0x7B, 0x41, 0xFF, 0x41 };
-	static const uint8_t k_crc_b[4] = { 0x5A, 0x89, 0xDF, 0x5F };
+	static const uint8_t k_crc_a[4] = { 0xEA, 0xFA, 0xFD, 0x2E };
+	static const uint8_t k_crc_b[4] = { 0xCB, 0x32, 0xDD, 0x30 };
 	uint8_t p[DS3_OUT_PAYLOAD_LEN], r[DS_OUT_LEN], want[DS_OUT_LEN];
 	int n, i;
 
@@ -319,7 +319,7 @@ static int test_crc_matches_reference(void)
 	p[9] = 0x02;
 	CHECK(translate(p, 0, r) == 0);
 	memset(want, 0, sizeof(want));
-	want[0] = 0x31; want[2] = 0x10; want[3] = 0x01; want[4] = 0x14;
+	want[0] = 0x31; want[2] = 0x10; want[3] = 0x03; want[4] = 0x14;
 	want[41] = 0x02; want[44] = 0x02;
 	want[5] = 255;  want[6] = 0x80; want[46] = 0x04; want[49] = 255;
 	memcpy(want + 74, k_crc_a, 4);
@@ -331,7 +331,7 @@ static int test_crc_matches_reference(void)
 	p[9] = 0x08;
 	CHECK(translate(p, 5, r) == 0);
 	memset(want, 0, sizeof(want));
-	want[0] = 0x31; want[1] = 0x50; want[2] = 0x10; want[3] = 0x01; want[4] = 0x14;
+	want[0] = 0x31; want[1] = 0x50; want[2] = 0x10; want[3] = 0x03; want[4] = 0x14;
 	want[41] = 0x02; want[44] = 0x02;
 	want[6] = 0xFF; want[46] = 0x15; want[48] = 255;
 	memcpy(want + 74, k_crc_b, 4);
@@ -532,11 +532,11 @@ static int test_probe_report(void)
 
 	/* a hard-coded report: seq 0, the CRC computed outside this program */
 	{
-		static const uint8_t k_crc[4] = { 0xA2, 0x12, 0x67, 0xDE };
+		static const uint8_t k_crc[4] = { 0x33, 0xA9, 0x65, 0xB1 };
 		uint8_t lit[DS_OUT_LEN];
 
 		memset(lit, 0, sizeof(lit));
-		lit[0] = 0x31; lit[2] = 0x10; lit[3] = 0x01; lit[4] = 0x14;
+		lit[0] = 0x31; lit[2] = 0x10; lit[3] = 0x03; lit[4] = 0x14;
 		lit[41] = 0x02; lit[44] = 0x02;
 		lit[46] = 0x04; lit[49] = 255;
 		memcpy(lit + 74, k_crc, 4);

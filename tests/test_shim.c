@@ -2423,12 +2423,12 @@ static int test_output_full_rewrites_exact_bytes(void)
 	 * motor full, left motor off, light bar setup (valid_flag2 and setup = 0x02),
 	 * player LEDs 0x0A, light bar red, zeros, CRC */
 	memset(exp, 0, sizeof(exp));
-	exp[0] = 0x31; exp[1] = 0x50; exp[2] = 0x10; exp[3] = 0x01; exp[4] = 0x14;
+	exp[0] = 0x31; exp[1] = 0x50; exp[2] = 0x10; exp[3] = 0x03; exp[4] = 0x14;
 	exp[5] = 0xFF; exp[6] = 0x00;
 	exp[41] = 0x02; exp[44] = 0x02;
 	exp[46] = 0x0A;
 	exp[47] = 0xFF; exp[48] = 0x00; exp[49] = 0x00;
-	exp[74] = 0xD7; exp[75] = 0x4F; exp[76] = 0xC8; exp[77] = 0x8A;   /* hard-coded CRC */
+	exp[74] = 0x46; exp[75] = 0xF4; exp[76] = 0xCA; exp[77] = 0xE5;   /* hard-coded CRC */
 
 	CHECK(shim_output_filter(&d, pl, 48, &rid, &ob, &ol) == 1);
 	CHECK(rid == 0x31 && ob == d.out_buf + 1 && ol == 77);
@@ -2486,7 +2486,7 @@ static int test_output_two_pads_use_own_leds(void)
 		CHECK(saved[0] == 0x31);
 		CHECK((saved[1] >> 4) == (i & 0x0F));            /* 0..15, then back to 0 */
 		CHECK((saved[1] & 0x0F) == 0);
-		CHECK(saved[2] == 0x10 && saved[3] == 0x01 && saved[4] == 0x14);
+		CHECK(saved[2] == 0x10 && saved[3] == 0x03 && saved[4] == 0x14);
 		CHECK(saved[41] == 0x02 && saved[44] == 0x02);   /* light bar setup */
 		if (i & 1) {
 			CHECK(saved[5] == 0xFF && saved[6] == 0x40);
