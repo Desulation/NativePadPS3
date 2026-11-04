@@ -294,6 +294,44 @@ int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
 	return len ? (int)*len : 0;
 }
 
+int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
+                      uint16_t len_in, int rc)
+{
+	uint16_t n, i;
+
+	if (!d || !dst)
+		return rc < 0 ? rc : 0;
+	d->dbg_in_bounce++;
+	if (rc < 0) {
+		d->dbg_in_err++;
+		return rc;
+	}
+	shim_input_note(d, pad);
+	if (rc == 0)
+		return 0;
+	if (rc > SHIM_IN_BOUNCE_MAX) {
+		d->dbg_in_drop++;
+		return 0;
+	}
+	if (rc > 0x41)
+		d->dbg_in_big++;
+
+	/* Translate in place in the bounce buffer: both translators read the whole
+	 * report before writing, and on a refusal write nothing, leaving n = rc. */
+	n = (uint16_t)rc;
+	shim_input_filter(d, 0x054C, 0x0CE6, d->inbuf, &n);
+
+	/* n is at most 0x4F here (the buffer holds 96), and only n <= len_in bytes
+	 * ever reach the caller. */
+	if (n > len_in) {
+		d->dbg_in_drop++;
+		return 0;
+	}
+	for (i = 0; i < n; i++)
+		dst[i] = d->inbuf[i];
+	return n;
+}
+
 int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
                        uint8_t *rid, const uint8_t **out_buf, uint16_t *out_len)
 {

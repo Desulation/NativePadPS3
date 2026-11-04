@@ -78,9 +78,10 @@ typedef struct {
 	 * output site off), which the output hook tail-calls. */
 	ds45_kpatch_t output_patches[DS45_SHIM_OUTPUT_PATCHES];
 	/* The receive-limit words (data-block product-ID sites 7-9): three WORD rows,
-	 * each the `li r7,0x40` that sets the read limit (0x41) of a channel-1 receive
+	 * each the `li r7,0x41` that sets the read limit (0x41) of a channel-1 receive
 	 * function of the Bluetooth transport, rewritten to `li r7,0x50` so the
-	 * DualSense's 79-byte full report is accepted (the limit becomes 0x51). Applied
+	 * DualSense's 79-byte full report is accepted (the limit goes from 0x41 to
+	 * 0x50). Applied
 	 * exactly when the cap word is - SHIM_OUTPUT_HOOK with SHIM_OUTPUT_MODE 1 or 2
 	 * and a non-zero orig_output - and only together with the two packet-buffer
 	 * slots (sites 5 and 6): the larger read would otherwise run past the kernel's

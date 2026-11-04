@@ -41,7 +41,7 @@
  * the inline words, then the output sites - 3 the output call site, 4 the sender's
  * payload-cap word, 5 the TOC slot holding the packet buffer's address, 6 the TOC
  * slot holding that address plus one, then the receive-limit words - 7, 8 and 9,
- * the three `li r7,0x40` immediates (the kernel's read limit of 0x41 bytes) that
+ * the three `li r7,0x41` immediates (the kernel's read limit, 0x41 bytes) that
  * become `li r7,0x50`, so the DualSense's 79-byte full report fits (src/kshim.h:
  * DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES +
  * DS45_SHIM_RECV_PATCHES, checked there). */

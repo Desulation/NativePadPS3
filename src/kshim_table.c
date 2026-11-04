@@ -61,8 +61,8 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 
 		/* Amendment 2 - the fixed executable region the blob is placed in: the
 		 * CFW payload's free zero run 0x57C000..0x580000 (0x4338 bytes, 8-aligned,
-		 * identical and unused across every dump sampled). The blob 0x1740 + the
-		 * 0x10 flush OPD end well before exec_bound. */
+		 * identical and unused across every dump sampled). The blob (about 9.5 KB,
+		 * DS45_SHIM_BLOB_LEN) + the 0x10 flush OPD end well before exec_bound. */
 		0x800000000057C000ULL, 0x8000000000580000ULL,
 
 		/* F5 - the kernel's own dcbst/sync/icbi/isync range flush (entry
@@ -155,8 +155,8 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		 * facts.md, F9 section 4). Once the output hook rewrites to a DualSense
 		 * it answers with 79-byte full reports, which the kernel's channel-1
 		 * receive functions refuse at their read limit of 0x41; each row turns
-		 * the limit's `li r7,0x40` into `li r7,0x50` (0x38E00050), so the limit
-		 * becomes 0x51. Every instruction is the LOW half of its qword; expect
+		 * the limit's `li r7,0x41` (0x38E00041) into `li r7,0x50` (0x38E00050), so
+		 * the limit goes from 0x41 to 0x50. Every instruction is the LOW half of its qword; expect
 		 * is the FNV of that aligned qword. Applied with the cap word (SHIM_
 		 * OUTPUT_HOOK, mode 1 or 2, orig_output non-zero) and only together
 		 * with the two packet-buffer slots above. The channel-3 limit at

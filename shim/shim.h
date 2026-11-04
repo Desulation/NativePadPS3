@@ -116,6 +116,36 @@ const uint8_t *shim_pad_from_xport(const ds45_shim_data_t *d, const void *xport)
 int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
                       uint8_t *buf, uint16_t *len);
 
+/* The bounce read is given this length (the raised read limit: the transport
+ * returns at most 0x4F, the packet minus its header byte). */
+#define SHIM_IN_BOUNCE_LEN 0x50
+#define SHIM_IN_BOUNCE_MAX (SHIM_IN_BOUNCE_LEN - 1)
+
+/* Bounce-buffer input decision (full-report input). The input hook, for an
+ * enabled shim in output mode 1 or 2 and a pad that is a DualSense, calls the
+ * original read with d->inbuf (96 bytes, shim-owned) and a length of 0x50
+ * instead of the caller's dst, because the transport read copies the whole
+ * packet, up to 78 bytes for a full 0x31 report, with no bound and the caller's
+ * buffer is 64 bytes. rc is that read's result; pad is the pad found for the
+ * transport (may be NULL, only noted); dst/len_in are the caller's buffer. It
+ * returns the value the hook returns to the kernel:
+ *   - d NULL or dst NULL: nothing is touched; rc if rc < 0, else 0.
+ *   - dbg_in_bounce++ for every bounce read.
+ *   - rc < 0: dbg_in_err++, return rc (nothing else is counted or written).
+ *   - otherwise shim_input_note(d, pad); then rc == 0: return 0;
+ *     rc > 0x4F (cannot happen, the read is limited to 0x4F): dbg_in_drop++,
+ *     return 0; rc > 0x41: dbg_in_big++.
+ *   - n = rc; shim_input_filter(d, 0x054C, 0x0CE6, d->inbuf, &n) translates a
+ *     basic 0x01 or full 0x31 report in place in d->inbuf into the 49-byte DS3
+ *     report (n becomes 49) and otherwise leaves it (n = rc).
+ *   - n <= len_in: exactly n bytes are copied from d->inbuf to dst and n is
+ *     returned. n > len_in (a long record the caller cannot hold, or a
+ *     translated report and len_in < 49): dbg_in_drop++, return 0, dst untouched.
+ * dst is never written past n <= len_in bytes. Pure loads and stores, a plain
+ * bounded byte loop (no memcpy), no other call than the helpers above. */
+int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
+                      uint16_t len_in, int rc);
+
 /* Output decision (DS3-route output), run from the stub on the kernel's output
  * call (the Bluetooth sender 0x10283C): buf is the payload (pad + 0x22B,
  * SHIM_PAD_OUT_BUF_OFF), len its length (the kernel caps it at 64). Returns 1

@@ -2437,8 +2437,8 @@ static int test_recv_sites_gated(void)
 }
 
 /* The built-in DEX 4.92 row carries exactly the three receive-limit rows of the
- * F9 section 4 facts: WORD rows turning `li r7,0x40` into `li r7,0x50` (0x38E00050;
- * the limit 0x41 -> 0x51 with the compare they feed), each the LOW half of its
+ * F9 section 4 facts: WORD rows turning `li r7,0x41` (0x38E00041) into `li r7,0x50`
+ * (0x38E00050; the read limit goes from 0x41 to 0x50), each the LOW half of its
  * qword, with the FNV of the pristine 8-aligned qword; and nothing touches the
  * channel-3 limit at 0xF8484, which is a different channel's. */
 static int test_recv_rows_exact(void)
@@ -2470,7 +2470,7 @@ static int test_recv_rows_exact(void)
 }
 
 /* The receive rows depend on the buffer slots (sites 5 and 6): the read limit is
- * raised to 0x51 only because the buffer behind it now has room. A row whose
+ * raised to 0x50 only because the buffer behind it now has room. A row whose
  * buffer-slot rows are not populated (all, or just one of the two) is REFUSED
  * outright - the install fails, nothing is written, the receive qwords included -
  * and never applied alone. (site_selected makes the receive rows depend on the
