@@ -78,14 +78,24 @@
 #define HI32         0xFFFFFFFF00000000ULL
 
 /* Product-ID sites 3-6 (the output call site, the cap word and the two TOC
- * slots) exist in the layout but are not enabled yet: a row's output_patches
- * must never be applied, recorded or adopted. These are made-up qwords with a
- * WORD row each, planted so that a site wrongly selected would be patched. */
+ * slots) are the row's output_patches[0..3]. The fixture row leaves them empty;
+ * plant_output_rows() fills them, shaped like the DEX 4.92 row: [0] a BRANCHL at
+ * the HIGH half of its qword, [1] the cap WORD at the LOW half, [2] and [3] PTR
+ * rows on two TOC slots holding the old packet buffer address and that plus one.
+ * The qwords are made-up patterns; every row has a distinct address so a site
+ * index that reached the wrong row would patch the wrong qword. */
 #define OUT_PATCHES_N 4
 #define OUT_QA(i)    (B + 0x7100 + 8 * (i))
 #define OUT_SITE(i)  (OUT_QA(i) + 4)
 #define OUT_Q(i)     (0x7171717100000000ULL + (uint64_t)(i) * 0x0101010101ULL)
 #define OUT_WORD(i)  (0x60000000u + (uint32_t)(i))
+#define OUT_CALL_QA  OUT_QA(0)         /* bl: the high half (addr & 4 == 0) */
+#define OUT_CAP_QA   OUT_QA(1)         /* the cap compare: the low half */
+#define OUT_CAP_SITE (OUT_CAP_QA + 4)
+#define OUT_SLOT5    (B + 0x7200)      /* TOC slot holding the old buffer address */
+#define OUT_SLOT6    (B + 0x7208)      /* ... and that plus one */
+#define OLD_BUF      0x80000000004326C8ULL
+#define CAP_WORD     0x2B9F004Du       /* cmplwi cr7,r31,0x4D */
 
 /* The fixed executable base the blob is placed at (design Amendment 2): an
  * in-window address clear of every table-entry address above, standing in for
@@ -393,10 +403,54 @@ static void setup(void)
 /* Snapshot of everything the installer is responsible for leaving untouched on
  * failure (the fixed blob region is scratch and excluded). */
 struct snap { uint64_t event, enable, startup, input, spare, helper, pid0, pid1,
-                       ecode, ncode; };
+                       ecode, ncode, call, cap, slot5, slot6; };
+
+/* Fill the row's four output patches (data-block sites 3-6) and plant the qwords
+ * they were researched against. A test that wants the output sites applied sets
+ * g_cfg.shim_output_hook (and shim_output_mode) after this. */
+static void plant_output_rows(void)
+{
+	g_ent.output_patches[0].kind = DS45_KPATCH_BRANCHL;
+	g_ent.output_patches[0].addr = OUT_CALL_QA;
+	g_ent.output_patches[0].expect = qhash(OUT_Q(0));
+	g_ent.output_patches[0].value = 0;                 /* filled in at install */
+	g_ent.output_patches[1].kind = DS45_KPATCH_WORD;
+	g_ent.output_patches[1].addr = OUT_CAP_SITE;
+	g_ent.output_patches[1].expect = qhash(OUT_Q(1));
+	g_ent.output_patches[1].value = CAP_WORD;
+	g_ent.output_patches[2].kind = DS45_KPATCH_PTR;
+	g_ent.output_patches[2].addr = OUT_SLOT5;
+	g_ent.output_patches[2].expect = OLD_BUF;          /* PTR rows compare the value */
+	g_ent.output_patches[2].value = 0;
+	g_ent.output_patches[3].kind = DS45_KPATCH_PTR;
+	g_ent.output_patches[3].addr = OUT_SLOT6;
+	g_ent.output_patches[3].expect = OLD_BUF + 1;
+	g_ent.output_patches[3].value = 0;
+	put_q(OUT_CALL_QA, OUT_Q(0));
+	put_q(OUT_CAP_QA, OUT_Q(1));
+	put_q(OUT_SLOT5, OLD_BUF);
+	put_q(OUT_SLOT6, OLD_BUF + 1);
+}
+
+/* The packet buffer in a blob loaded at base. */
+static uint64_t pktbuf_at(uint64_t base)
+{
+	return base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pktbuf);
+}
+
+/* "bl target" as PowerPC encodes it (AA = 0, LK = 1), worked out here
+ * independently of kpatch_branchl_word. */
+static uint32_t ppc_bl(uint64_t from, uint64_t to)
+{
+	return 0x48000001u | (uint32_t)((to - from) & 0x03FFFFFCu);
+}
 
 static void take_snap(struct snap *s)
 {
+	s->call    = rd(OUT_CALL_QA);
+	s->cap     = rd(OUT_CAP_QA);
+	s->slot5   = rd(OUT_SLOT5);
+	s->slot6   = rd(OUT_SLOT6);
 	s->event   = rd(EVENT_SLOT);
 	s->enable  = rd(ENABLE_SLOT);
 	s->startup = rd(STARTUP_SLOT);
@@ -1037,53 +1091,55 @@ static int test_output_fields(void)
 	return 0;
 }
 
-/* Sites 3-6 map to the row's output_patches but this task never selects them: a
- * row full of output patches installs exactly like one without, in both
- * SHIM_INLINE_PID settings - same pid_applied, zero pid_orig past site 2, the
- * output qwords never written - and an adopted install never journals a forged
- * "applied" bit for them either. */
-static int test_output_sites_not_selected(void)
+/* With SHIM_OUTPUT_HOOK off the output sites (3-6) are never selected: a row full
+ * of output patches installs exactly like one without - the same number of
+ * writes, the same pid_applied bits (version 7's), zero pid_orig past site 2, the
+ * output qwords never written - in both SHIM_INLINE_PID settings, and whatever
+ * the output mode. (This test used to also forge an applied bit for site 3 and
+ * expect adoption to ignore it; adoption now restores what the install recorded
+ * whatever the config says, so that case lives in test_output_adopt_v8.) */
+static int test_output_sites_hook_off(void)
 {
 	const uint64_t orig_at = BLOB_BASE + DS45_SHIM_OFF_DATA +
 	                         offsetof(ds45_shim_data_t, pid_orig);
 	const uint64_t applied_at = BLOB_BASE + DS45_SHIM_OFF_DATA +
 	                            offsetof(ds45_shim_data_t, pid_applied);
-	int g, i, pokes;
+	int g, i, mode, pokes, bare_pokes;
 
 	for (g = 0; g < 2; g++) {
+		/* the baseline: the same install with no output rows at all */
 		setup();
 		g_cfg.shim_inline_pid = g;
-		for (i = 0; i < OUT_PATCHES_N; i++) {
-			g_ent.output_patches[i].kind = DS45_KPATCH_WORD;
-			g_ent.output_patches[i].addr = OUT_SITE(i);
-			g_ent.output_patches[i].expect = qhash(OUT_Q(i));
-			g_ent.output_patches[i].value = OUT_WORD(i);
-			put_q(OUT_QA(i), OUT_Q(i));
-		}
-		wlog_start();
-		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-		for (i = 0; i < OUT_PATCHES_N; i++) {
-			CHECK(rd(OUT_QA(i)) == OUT_Q(i));
-			CHECK(!wlog_has(OUT_QA(i)));
-			CHECK(rd(orig_at + 8 * (3 + i)) == 0);
-		}
-		CHECK((rd(applied_at) >> 32) == (g ? 7u : 1u));
-
-		/* a forged applied bit for site 3 (with an original and the row's word
-		 * in place, so a selecting adopter would accept it) is ignored */
-		put_q(applied_at, (uint64_t)((g ? 7u : 1u) | 8u) << 32);
-		put_q(orig_at + 8 * 3, OUT_Q(0));
-		put_q(OUT_QA(0), (OUT_Q(0) & HI32) | OUT_WORD(0));
 		pokes = fake_lv2_poke_count;
-		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
-		CHECK(fake_lv2_poke_count == pokes);
-		/* the adopted journal is what version 7 rebuilt: the helper, the inline
-		 * words when on, and the three redirects - one qword write each */
-		kshim_unhook();
-		CHECK(fake_lv2_poke_count - pokes == (g ? 6 : 4));
-		kshim_scrub();
-		CHECK(rd(OUT_QA(0)) == ((OUT_Q(0) & HI32) | OUT_WORD(0)));  /* left as found */
-		CHECK(fake_lv2_out_of_bounds == 0);
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+		bare_pokes = fake_lv2_poke_count - pokes;
+		kshim_remove();
+
+		for (mode = 0; mode < 3; mode++) {
+			setup();
+			plant_output_rows();
+			g_cfg.shim_inline_pid = g;
+			g_cfg.shim_output_hook = 0;
+			g_cfg.shim_output_mode = mode;
+			wlog_start();
+			pokes = fake_lv2_poke_count;
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			fake_lv2_on_peek = NULL;
+			CHECK(fake_lv2_poke_count - pokes == bare_pokes);
+			CHECK(rd(OUT_CALL_QA) == OUT_Q(0) && rd(OUT_CAP_QA) == OUT_Q(1));
+			CHECK(rd(OUT_SLOT5) == OLD_BUF && rd(OUT_SLOT6) == OLD_BUF + 1);
+			for (i = 0; i < OUT_PATCHES_N; i++) {
+				CHECK(!wlog_has(OUT_QA(i)));
+				CHECK(rd(orig_at + 8 * (3 + i)) == 0);
+			}
+			CHECK(!wlog_has(OUT_SLOT5) && !wlog_has(OUT_SLOT6));
+			CHECK((rd(applied_at) >> 32) == (g ? 7u : 1u));
+			/* the output sender's address and the mode still reach the block */
+			CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
+			         offsetof(ds45_shim_data_t, orig_output)) == OUTPUT_ORIG);
+			kshim_remove();
+			CHECK(fake_lv2_out_of_bounds == 0);
+		}
 	}
 	return 0;
 }
@@ -1590,6 +1646,635 @@ static int test_helper_branch_row(void)
 	return 0;
 }
 
+/* ----- the DS3-route output sites (data-block sites 3-6) ------------------ */
+
+/* The four output sites as they stand after an install at base: the call site a
+ * bl to the blob's output entry (the high half of its qword; the low half kept)
+ * or untouched, the cap word the low half of its qword or untouched, and both TOC
+ * slots on the blob's packet buffer (and that plus one) or untouched. */
+static int check_out_sites(uint64_t base, int call, int cap, int buf)
+{
+	const uint64_t bl = ((uint64_t)ppc_bl(OUT_CALL_QA, base + DS45_SHIM_OFF_OUTPUT) << 32) |
+	                    (OUT_Q(0) & 0xFFFFFFFFULL);
+
+	CHECK_SUB(rd(OUT_CALL_QA) == (call ? bl : OUT_Q(0)) ? 0 : __LINE__);
+	CHECK_SUB(rd(OUT_CAP_QA) == (cap ? ((OUT_Q(1) & HI32) | CAP_WORD) : OUT_Q(1))
+	          ? 0 : __LINE__);
+	CHECK_SUB(rd(OUT_SLOT5) == (buf ? pktbuf_at(base) : OLD_BUF) ? 0 : __LINE__);
+	CHECK_SUB(rd(OUT_SLOT6) == (buf ? pktbuf_at(base) + 1 : OLD_BUF + 1) ? 0 : __LINE__);
+	return 0;
+}
+
+static uint64_t pid_orig_at(uint64_t base, int site)
+{
+	return rd(base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_orig) +
+	          8 * (uint64_t)site);
+}
+
+static uint32_t pid_applied_at(uint64_t base)
+{
+	return (uint32_t)(rd(base + DS45_SHIM_OFF_DATA +
+	                     offsetof(ds45_shim_data_t, pid_applied)) >> 32);
+}
+
+/* Make the memory behind output row k (0..3) differ from what the row expects. */
+static void tamper_out(int k)
+{
+	switch (k) {
+	case 0: put_q(OUT_CALL_QA, OUT_Q(0) ^ 1); break;
+	case 1: put_q(OUT_CAP_QA, OUT_Q(1) ^ 1); break;
+	case 2: put_q(OUT_SLOT5, OLD_BUF + 0x10); break;
+	default: put_q(OUT_SLOT6, OLD_BUF + 0x11); break;
+	}
+}
+
+/* Which output sites a configuration selects (SHIM_OUTPUT_HOOK / _MODE, and the
+ * row's orig_output, since the stub tail-branches to it): sites 3, 5 and 6 with
+ * the hook on in any mode, site 4 (the cap word) only in probe and full mode, and
+ * none at all when the row has no sender address. An out-of-range mode is
+ * observe, exactly as the block's out_mode treats it. For each case the install
+ * must leave exactly those sites patched, record exactly their bits and
+ * originals, journal exactly those writes, and unload must restore the image. */
+static int test_output_sites_gated(void)
+{
+	static const struct {
+		int hook, mode;
+		uint64_t orig_output;
+		int call, cap, buf;
+	} c[] = {
+		/* hook off: nothing beyond version 7, whatever the mode */
+		{ 0, 0, OUTPUT_ORIG, 0, 0, 0 },
+		{ 0, 1, OUTPUT_ORIG, 0, 0, 0 },
+		{ 0, 2, OUTPUT_ORIG, 0, 0, 0 },
+		/* hook on: observe takes the call site and the buffer slots ... */
+		{ 1, 0, OUTPUT_ORIG, 1, 0, 1 },
+		/* ... probe and full add the cap word */
+		{ 1, 1, OUTPUT_ORIG, 1, 1, 1 },
+		{ 1, 2, OUTPUT_ORIG, 1, 1, 1 },
+		/* out-of-range modes are observe */
+		{ 1, 3, OUTPUT_ORIG, 1, 0, 1 },
+		{ 1, -1, OUTPUT_ORIG, 1, 0, 1 },
+		{ 1, 99, OUTPUT_ORIG, 1, 0, 1 },
+		/* no sender address in the row: the stub would branch to 0, so no output
+		 * site is touched, whatever the config */
+		{ 1, 0, 0, 0, 0, 0 },
+		{ 1, 1, 0, 0, 0, 0 },
+		{ 1, 2, 0, 0, 0, 0 },
+		{ 0, 1, 0, 0, 0, 0 },
+	};
+	struct snap before, after;
+	uint32_t want_mask;
+	size_t t;
+	int g, pokes, n;
+
+	for (t = 0; t < sizeof c / sizeof c[0]; t++)
+		for (g = 0; g < 2; g++) {
+			setup();
+			plant_output_rows();
+			g_ent.orig_output = c[t].orig_output;
+			g_cfg.shim_inline_pid = g;
+			g_cfg.shim_output_hook = c[t].hook;
+			g_cfg.shim_output_mode = c[t].mode;
+			take_snap(&before);
+
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			CHECK(check_out_sites(BLOB_BASE, c[t].call, c[t].cap, c[t].buf) == 0);
+			want_mask = 1u | (g ? 6u : 0u) | (c[t].call ? 8u : 0u) |
+			            (c[t].cap ? 16u : 0u) | (c[t].buf ? 96u : 0u);
+			CHECK(pid_applied_at(BLOB_BASE) == want_mask);
+			CHECK(pid_orig_at(BLOB_BASE, 3) == (c[t].call ? OUT_Q(0) : 0));
+			CHECK(pid_orig_at(BLOB_BASE, 4) == (c[t].cap ? OUT_Q(1) : 0));
+			CHECK(pid_orig_at(BLOB_BASE, 5) == (c[t].buf ? OLD_BUF : 0));
+			CHECK(pid_orig_at(BLOB_BASE, 6) == (c[t].buf ? OLD_BUF + 1 : 0));
+
+			/* the journal: helper, [2 inline,] the output sites, 3 redirects - one
+			 * qword write each on unload */
+			n = 1 + (g ? 2 : 0) + c[t].call + c[t].cap + 2 * c[t].buf + 3;
+			pokes = fake_lv2_poke_count;
+			kshim_unhook();
+			CHECK(fake_lv2_poke_count - pokes == n);
+			kshim_scrub();
+			take_snap(&after);
+			CHECK(snap_eq(&before, &after));
+			CHECK(fake_lv2_out_of_bounds == 0);
+		}
+	return 0;
+}
+
+/* Site index -> row: sites 3, 4, 5, 6 are the row's output_patches[0..3], each
+ * with its own address, so a site that reached the wrong row would read, verify
+ * or patch the wrong qword. With all four selected, each row's own qword changes
+ * to its own value and its own original is recorded at its own index; tampering
+ * with row k's memory (and only that) refuses the install, and with the cap row
+ * unselected (observe mode) tampering with it is never noticed. */
+static int test_output_site_index_mapping(void)
+{
+	int k;
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_inline_pid = 1;
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1) == 0);
+	CHECK(pid_applied_at(BLOB_BASE) == 0x7Fu);
+	CHECK(pid_orig_at(BLOB_BASE, 0) == HELPER_Q);
+	CHECK(pid_orig_at(BLOB_BASE, 1) == PID0_Q && pid_orig_at(BLOB_BASE, 2) == PID1_Q);
+	CHECK(pid_orig_at(BLOB_BASE, 3) == OUT_Q(0));      /* output_patches[0] */
+	CHECK(pid_orig_at(BLOB_BASE, 4) == OUT_Q(1));      /* [1] */
+	CHECK(pid_orig_at(BLOB_BASE, 5) == OLD_BUF);       /* [2] */
+	CHECK(pid_orig_at(BLOB_BASE, 6) == OLD_BUF + 1);   /* [3] */
+	kshim_remove();
+
+	for (k = 0; k < OUT_PATCHES_N; k++) {
+		struct snap before;
+
+		setup();
+		plant_output_rows();
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = 1;
+		tamper_out(k);
+		take_snap(&before);
+		CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+	}
+
+	/* observe mode: only the cap row is out of the picture */
+	for (k = 0; k < OUT_PATCHES_N; k++) {
+		setup();
+		plant_output_rows();
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = 0;
+		tamper_out(k);
+		if (k == 1) {
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			CHECK(rd(OUT_CAP_QA) == (OUT_Q(1) ^ 1));       /* never looked at */
+			CHECK(pid_orig_at(BLOB_BASE, 4) == 0);
+			kshim_remove();
+			CHECK(rd(OUT_CAP_QA) == (OUT_Q(1) ^ 1));
+		} else {
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+		}
+	}
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* The call site is a bl to the blob's output entry, so it follows the load base
+ * (a WORD row does not): same site, two bases, two encodings - each worked out
+ * independently here - and an adopted install at the second base restores it. */
+static int test_output_branchl_follows_load_base(void)
+{
+	static const uint64_t base[2] = { BLOB_BASE, BLOB_BASE + 0x40000 };
+	struct snap pristine, after;
+	uint64_t h[2];
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		setup();
+		plant_output_rows();
+		g_ent.exec_base = base[i];
+		g_ent.exec_bound = base[i] + 0x4000;
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = 1;
+		take_snap(&pristine);
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+
+		h[i] = rd(OUT_CALL_QA);
+		CHECK((uint32_t)(h[i] >> 32) ==
+		      ppc_bl(OUT_CALL_QA, base[i] + DS45_SHIM_OFF_OUTPUT));
+		CHECK((h[i] & 0xFFFFFFFFULL) == (OUT_Q(0) & 0xFFFFFFFFULL));   /* low half kept */
+		CHECK(check_out_sites(base[i], 1, 1, 1) == 0);
+		CHECK(pid_orig_at(base[i], 3) == OUT_Q(0));
+
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);     /* adopted */
+		CHECK(rd(OUT_CALL_QA) == h[i]);
+		kshim_remove();
+		take_snap(&after);
+		CHECK(snap_eq(&pristine, &after));
+		CHECK(rd(OUT_CALL_QA) == OUT_Q(0));
+	}
+	CHECK(h[0] != h[1]);
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* The two TOC slots are redirected into the blob's own packet buffer: one holds
+ * its address, the other that plus one, at any load base and in observe as well
+ * as probe mode; the buffer lies inside the installed data block, 8-aligned with
+ * room for its 96 bytes; unload puts the old values back. */
+static int test_buffer_slots_point_into_blob(void)
+{
+	static const uint64_t base[2] = { BLOB_BASE, BLOB_BASE + 0x40000 };
+	uint64_t pb[2], off;
+	int i, mode;
+
+	for (i = 0; i < 2; i++)
+		for (mode = 0; mode < 2; mode++) {
+			setup();
+			plant_output_rows();
+			g_ent.exec_base = base[i];
+			g_ent.exec_bound = base[i] + 0x4000;
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+
+			pb[i] = pktbuf_at(base[i]);
+			CHECK(rd(OUT_SLOT5) == pb[i]);
+			CHECK(rd(OUT_SLOT6) == pb[i] + 1);
+			CHECK((pb[i] & 7) == 0);
+			CHECK(pb[i] >= base[i] + DS45_SHIM_OFF_DATA);
+			CHECK(pb[i] + sizeof(((ds45_shim_data_t *)0)->pktbuf) <=
+			      base[i] + DS45_SHIM_BLOB_LEN);
+
+			kshim_remove();
+			CHECK(rd(OUT_SLOT5) == OLD_BUF);
+			CHECK(rd(OUT_SLOT6) == OLD_BUF + 1);
+			for (off = 0; off < (uint64_t)DS45_SHIM_BLOB_LEN + 16; off += 8)
+				CHECK(rd(base[i] + off) == 0);
+		}
+	CHECK(pb[0] != pb[1]);                    /* the slots follow the load base */
+	CHECK(fake_lv2_out_of_bounds == 0);
+	return 0;
+}
+
+/* Any one output site not holding what it was researched against fails the whole
+ * install, before anything is written: the call site and the cap word by hash,
+ * the two TOC slots by exact value. Statically (zero pokes, nothing borrowed) and
+ * as a change between the verify and the apply (nothing lasting written: every
+ * kernel qword is as found once the change is undone). */
+static uint64_t g_toctou_addr, g_toctou_val;
+static void toctou_out_on_peek(uint64_t addr)
+{
+	if (addr == g_toctou_addr)
+		put_q(addr, g_toctou_val);
+}
+
+static int test_output_site_mismatch_fails_clean(void)
+{
+	static const uint64_t addr[OUT_PATCHES_N] =
+		{ OUT_CALL_QA, OUT_CAP_QA, OUT_SLOT5, OUT_SLOT6 };
+	static const uint64_t found[OUT_PATCHES_N] =
+		{ OUT_Q(0), OUT_Q(1), OLD_BUF, OLD_BUF + 1 };
+	struct snap before, after;
+	int k, mode;
+
+	for (mode = 1; mode < 3; mode++)
+		for (k = 0; k < OUT_PATCHES_N; k++) {
+			/* static mismatch */
+			setup();
+			plant_output_rows();
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			tamper_out(k);
+			take_snap(&before);
+			CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+			CHECK(fake_lv2_out_of_bounds == 0);
+
+			/* the site changes after it was verified, before the apply */
+			setup();
+			plant_output_rows();
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			take_snap(&before);
+			g_toctou_addr = addr[k];
+			g_toctou_val = found[k] ^ 0x10;
+			fake_lv2_on_peek = toctou_out_on_peek;
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+			fake_lv2_on_peek = NULL;
+			CHECK(rd(addr[k]) == g_toctou_val);          /* not clobbered */
+			put_q(addr[k], found[k]);                    /* undo the test's artefact */
+			take_snap(&after);
+			CHECK(snap_eq(&before, &after));
+			CHECK(rd(SPARE_SLOT) == SPARE_STUB);
+			CHECK(fake_lv2_out_of_bounds == 0);
+		}
+	return 0;
+}
+
+/* The call site's bl must reach the blob's output entry (a 26-bit displacement,
+ * +-32 MiB) or the install is refused before the blob is even written. Within
+ * the 8 MiB LV2 window every site reaches every base, so the range cannot fail
+ * for a real row (asserted below); the check is still real code, and the same
+ * step refuses a displacement that cannot be encoded - here a call site that is
+ * not 4-aligned - with nothing written, borrowed or changed. */
+static int test_output_branchl_out_of_range_refused(void)
+{
+	struct snap before;
+
+	CHECK(DS45_LV2_BOUND - DS45_LV2_BASE <= 0x2000000ULL);    /* window within reach */
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	g_ent.output_patches[0].addr = OUT_CALL_QA + 2;   /* its qword still hashes right */
+	take_snap(&before);
+	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
+	CHECK(fake_lv2_out_of_bounds == 0);
+
+	/* the same row at an encodable address installs */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	kshim_remove();
+	return 0;
+}
+
+/* One poke failing at each step of the final apply, with every output site and
+ * the inline words selected, leaves the image byte-identical (the output sites
+ * included in the snapshot). */
+static int fail_at_out(int poke_index)
+{
+	struct snap before, after;
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_inline_pid = 1;
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	take_snap(&before);
+	g_fault_at = poke_index;
+	fake_lv2_poke_fail_after = g_fault_at;
+	fake_lv2_on_peek = clear_fault_after_failed_poke;
+	CHECK_SUB(kshim_install_from(&g_ent, 1) == KSHIM_FAILED ? 0 : __LINE__);
+	fake_lv2_on_peek = NULL;
+	fake_lv2_poke_fail_after = -1;
+	take_snap(&after);
+	CHECK_SUB(snap_eq(&before, &after) ? 0 : __LINE__);
+	CHECK_SUB(rd(SPARE_SLOT) == SPARE_STUB ? 0 : __LINE__);
+	CHECK_SUB(fake_lv2_out_of_bounds == 0 ? 0 : __LINE__);
+	return 0;
+}
+
+static int test_output_rollback_each_step(void)
+{
+	const int n = 3 + 4 + 3;      /* helper + 2 inline, the 4 output sites, 3 redirects */
+	int pokes, i;
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_inline_pid = 1;
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	pokes = fake_lv2_poke_count;
+	kshim_remove();
+	CHECK(fake_lv2_poke_count - pokes == n + (DS45_SHIM_BLOB_LEN + 16) / 8);
+	for (i = 0; i < n; i++)
+		CHECK(fail_at_out(pokes - n + i) == 0);
+	return 0;
+}
+
+/* The transaction's order, and the data block complete before the first patch.
+ * Order: the helper and inline rows as today, then the two buffer slots back to
+ * back, then the call site, then the cap word, then the event, enable and input
+ * redirects. At each of those writes the block already carries the magic, the
+ * version, the sender's address (orig_output: the stub tail-branches to it the
+ * moment the call site is patched) and the recorded originals. */
+static int g_ord_in_cb, g_ord_checks, g_ord_bad;
+static void order_on_peek(uint64_t addr)
+{
+	static const uint64_t sites[] = {
+		HELPER_QA, PID0_QA, PID1_QA, OUT_SLOT5, OUT_SLOT6, OUT_CALL_QA,
+		OUT_CAP_QA, EVENT_SLOT, ENABLE_SLOT, INPUT_SLOT
+	};
+	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	int n0, i;
+
+	if (g_ord_in_cb)
+		return;
+	n0 = g_wlog_n;
+	wlog_on_peek(addr);
+	if (g_wlog_n == n0)
+		return;                                   /* not the read-back of a write */
+	for (i = 0; i < (int)(sizeof sites / sizeof sites[0]); i++)
+		if (sites[i] == addr) {
+			g_ord_in_cb = 1;
+			g_ord_checks++;
+			if (rd(db) != DS45_SHIM_MAGIC ||
+			    (uint32_t)(rd(db + offsetof(ds45_shim_data_t, version)) >> 32) !=
+			        DS45_SHIM_VERSION ||
+			    rd(db + offsetof(ds45_shim_data_t, orig_output)) != OUTPUT_ORIG ||
+			    (uint32_t)(rd(db + offsetof(ds45_shim_data_t, pid_applied)) >> 32) != 0x7Fu ||
+			    rd(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 3) != OUT_Q(0) ||
+			    rd(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 5) != OLD_BUF)
+				g_ord_bad++;
+			g_ord_in_cb = 0;
+		}
+}
+
+static int wlog_index(uint64_t addr)
+{
+	int i;
+	for (i = 0; i < g_wlog_n; i++)
+		if (g_wlog[i] == addr)
+			return i;
+	return -1;
+}
+
+static int test_output_apply_order_and_block_complete(void)
+{
+	int helper, p0, p1, s5, s6, call, cap, ev, en, in;
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_inline_pid = 1;
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	wlog_start();
+	g_ord_checks = g_ord_bad = g_ord_in_cb = 0;
+	fake_lv2_on_peek = order_on_peek;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	fake_lv2_on_peek = NULL;
+
+	CHECK(g_ord_checks == 10);                    /* every patched site was checked */
+	CHECK(g_ord_bad == 0);
+
+	helper = wlog_index(HELPER_QA);
+	p0 = wlog_index(PID0_QA);
+	p1 = wlog_index(PID1_QA);
+	s5 = wlog_index(OUT_SLOT5);
+	s6 = wlog_index(OUT_SLOT6);
+	call = wlog_index(OUT_CALL_QA);
+	cap = wlog_index(OUT_CAP_QA);
+	ev = wlog_index(EVENT_SLOT);
+	en = wlog_index(ENABLE_SLOT);
+	in = wlog_index(INPUT_SLOT);
+	CHECK(helper >= 0 && helper < p0 && p0 < p1 && p1 < s5);
+	CHECK(s6 == s5 + 1);                          /* the two slots back to back */
+	CHECK(s6 < call && call < cap && cap < ev && ev < en && en < in);
+	CHECK(in == g_wlog_n - 1);                    /* the input redirect is the last write */
+	kshim_remove();
+	return 0;
+}
+
+/* Remove undoes every output site, in the same journal as the rest. */
+static int test_output_remove_restores_all(void)
+{
+	struct snap before, after;
+	int pokes, g, mode, n;
+
+	for (g = 0; g < 2; g++)
+		for (mode = 0; mode < 3; mode++) {
+			setup();
+			plant_output_rows();
+			g_cfg.shim_inline_pid = g;
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			take_snap(&before);
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			CHECK(check_out_sites(BLOB_BASE, 1, mode != 0, 1) == 0);
+
+			n = 1 + (g ? 2 : 0) + 1 + (mode != 0) + 2 + 3;
+			pokes = fake_lv2_poke_count;
+			kshim_remove();
+			CHECK(fake_lv2_poke_count - pokes == n + (DS45_SHIM_BLOB_LEN + 16) / 8);
+			take_snap(&after);
+			CHECK(snap_eq(&before, &after));
+			CHECK(check_out_sites(BLOB_BASE, 0, 0, 0) == 0);
+			CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
+			CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == 0);
+
+			pokes = fake_lv2_poke_count;
+			kshim_remove();                       /* again: a harmless no-op */
+			CHECK(fake_lv2_poke_count == pokes);
+		}
+	return 0;
+}
+
+/* Adoption restores every site the adopted install recorded as applied - the
+ * output sites included - from the install's own originals, whatever the current
+ * config says (like the inline words). A bit whose site is unpopulated in the row,
+ * already changed, or not carrying our edit is skipped, never written; a row
+ * without the sender address restores no output site; a version-7 block is not
+ * adopted at all. */
+static int test_output_adopt_v8(void)
+{
+	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	struct snap pristine, after;
+	uint32_t mask;
+	int pokes, g, mode, n;
+
+	/* 1. adopt with another config and restore all of it */
+	for (g = 0; g < 2; g++)
+		for (mode = 0; mode < 3; mode++) {
+			setup();
+			plant_output_rows();
+			g_cfg.shim_inline_pid = g;
+			g_cfg.shim_output_hook = 1;
+			g_cfg.shim_output_mode = mode;
+			take_snap(&pristine);
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+			mask = 1u | (g ? 6u : 0u) | 8u | (mode ? 16u : 0u) | 96u;
+			CHECK(pid_applied_at(BLOB_BASE) == mask);
+
+			g_cfg.shim_inline_pid = !g;           /* the adopter's config differs */
+			g_cfg.shim_output_hook = 0;
+			g_cfg.shim_output_mode = 0;
+			pokes = fake_lv2_poke_count;
+			g_tr_applied_n = 0;
+			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+			CHECK(fake_lv2_poke_count == pokes);      /* zero pokes */
+			CHECK(g_tr_applied_n == 1 && g_tr_applied == mask);
+			CHECK(check_out_sites(BLOB_BASE, 1, mode != 0, 1) == 0);
+
+			n = 1 + (g ? 2 : 0) + 1 + (mode != 0) + 2 + 3;
+			kshim_unhook();
+			CHECK(fake_lv2_poke_count - pokes == n);
+			kshim_scrub();
+			take_snap(&after);
+			CHECK(snap_eq(&pristine, &after));
+			CHECK(check_out_sites(BLOB_BASE, 0, 0, 0) == 0);
+			CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
+			CHECK(fake_lv2_out_of_bounds == 0);
+		}
+
+	/* 2. a forged bit (site 4, never applied in observe mode: the cap qword is not
+	 * carrying our word), a call site and a slot someone changed since: all three
+	 * skipped and left as found; the intact slot 5, helper and redirects restored */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 0;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(pid_applied_at(BLOB_BASE) == (1u | 8u | 96u));
+	put_q(db + offsetof(ds45_shim_data_t, pid_applied),
+	      (uint64_t)(1u | 8u | 16u | 96u) << 32);
+	put_q(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 4, OUT_Q(1));
+	{
+		const uint64_t call_changed = rd(OUT_CALL_QA) ^ 0x1;       /* the low half */
+		const uint64_t slot6_changed = pktbuf_at(BLOB_BASE) + 0x20;
+
+		put_q(OUT_CALL_QA, call_changed);
+		put_q(OUT_SLOT6, slot6_changed);
+		pokes = fake_lv2_poke_count;
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+		CHECK(fake_lv2_poke_count == pokes);
+		kshim_unhook();
+		CHECK(fake_lv2_poke_count - pokes == 1 + 1 + 3);   /* helper, slot 5, redirects */
+		kshim_scrub();
+		CHECK(rd(OUT_CALL_QA) == call_changed);               /* left as found */
+		CHECK(rd(OUT_SLOT6) == slot6_changed);
+		CHECK(rd(OUT_CAP_QA) == OUT_Q(1));                    /* never written */
+		CHECK(rd(OUT_SLOT5) == OLD_BUF);                      /* restored */
+		CHECK(rd(HELPER_QA) == HELPER_Q);
+		CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
+	}
+
+	/* 3. a site the adopter's row does not populate is not restored, even with its
+	 * bit set and a good original; nor is any output site when the adopter's row
+	 * has no sender address */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	memset(&g_ent.output_patches[3], 0, sizeof g_ent.output_patches[3]);
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	kshim_unhook();
+	CHECK(fake_lv2_poke_count - pokes == 1 + 1 + 1 + 1 + 3);  /* all but slot 6 */
+	kshim_scrub();
+	CHECK(rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);         /* left as found */
+	CHECK(rd(OUT_SLOT5) == OLD_BUF && rd(OUT_CALL_QA) == OUT_Q(0));
+	CHECK(rd(OUT_CAP_QA) == OUT_Q(1));
+
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	g_ent.orig_output = 0;
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	kshim_unhook();
+	CHECK(fake_lv2_poke_count - pokes == 1 + 3);              /* helper + redirects */
+	kshim_scrub();
+	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1) == 0);          /* all left as found */
+	CHECK(fake_lv2_out_of_bounds == 0);
+
+	/* 4. a version-7 block is not adopted (its layout is not ours) */
+	setup();
+	plant_output_rows();
+	g_cfg.shim_output_hook = 1;
+	g_cfg.shim_output_mode = 1;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	CHECK(DS45_SHIM_VERSION == 8);
+	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)7 << 32) | 1);
+	g_spare_calls = 0;
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+	CHECK(fake_lv2_poke_count == pokes && g_spare_calls == 0);
+	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1) == 0);          /* left as found */
+	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	kshim_remove();
+	return 0;
+}
+
 /* The DS3 info block of the facts note, section C1.5 (Bluetooth variant). */
 static const uint8_t c15_template[0x56] = {
 	0x00, 0x05, 0x03, 0x50, 0x00, 0x00, 0x00, 0x00,
@@ -1660,17 +2345,33 @@ static int test_builtin_table(void)
 	CHECK(k->inline_patches[1].expect == 0xF86140C9C3D7FB8DULL);
 	CHECK(k->inline_patches[1].value == 0x4BFFFC48ULL);
 
-	/* the output rows are not filled in yet (the installer does not select
-	 * them): an empty slot per patch and no sender address */
+	/* the DS3-route output rows (facts note 2026-11-03: F1.1 the two TOC slots,
+	 * F5 the hashes): sites 3-6 in order, and the sender the hook tail-calls */
 	CHECK(DS45_SHIM_OUTPUT_PATCHES == 4);
 	CHECK(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES ==
 	      DS45_SHIM_PID_SITES);
-	CHECK(k->orig_output == 0);
-	for (i = 0; i < DS45_SHIM_OUTPUT_PATCHES; i++) {
-		CHECK(k->output_patches[i].addr == 0);
-		CHECK(k->output_patches[i].expect == 0);
-		CHECK(k->output_patches[i].value == 0);
-	}
+	CHECK(k->orig_output == 0x800000000010283CULL);
+	/* [0] site 3: the bl to the sender, retargeted at install to the blob's entry */
+	CHECK(k->output_patches[0].kind == DS45_KPATCH_BRANCHL);
+	CHECK(k->output_patches[0].addr == 0x80000000002A2DE8ULL);
+	CHECK(k->output_patches[0].expect == 0x2A29E6BB7BA10D5EULL);
+	CHECK(k->output_patches[0].value == 0);
+	/* [1] site 4: the send cap, cmplwi cr7,r31,0x4D (the compare is the low half) */
+	CHECK(k->output_patches[1].kind == DS45_KPATCH_WORD);
+	CHECK(k->output_patches[1].addr == 0x80000000000F8D74ULL);
+	CHECK(k->output_patches[1].expect == 0xBF27C253F5228E13ULL);
+	CHECK(k->output_patches[1].value == 0x2B9F004DULL);
+	/* [2] [3] sites 5 and 6: the two TOC slots; a PTR row compares the current
+	 * value (the old buffer, and the buffer plus one), the new one is the blob's
+	 * packet buffer, filled in at install */
+	CHECK(k->output_patches[2].kind == DS45_KPATCH_PTR);
+	CHECK(k->output_patches[2].addr == 0x8000000000372650ULL);
+	CHECK(k->output_patches[2].expect == 0x80000000004326C8ULL);
+	CHECK(k->output_patches[2].value == 0);
+	CHECK(k->output_patches[3].kind == DS45_KPATCH_PTR);
+	CHECK(k->output_patches[3].addr == 0x8000000000372660ULL);
+	CHECK(k->output_patches[3].expect == 0x80000000004326C9ULL);
+	CHECK(k->output_patches[3].value == 0);
 	return 0;
 }
 
@@ -1750,14 +2451,17 @@ static int test_builtin_row_on_pristine_image(void)
 {
 	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
 	uint64_t spare = k->syscall_table + (uint64_t)k->spare_syscall * 8;
-	/* the sites the installer applies today: the helper and the two inline words
-	 * (the output sites 3-6 have no built-in rows yet) */
-	enum { NSITES = DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES };
+	/* the code sites the installer applies: the helper, the two inline words, the
+	 * output call site and the cap word. The two output TOC slots (sites 5 and 6)
+	 * are data, past the code image, and are planted below. */
+	enum { NSITES = DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + 2,
+	       CALL = DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES, CAP = CALL + 1 };
 	uint64_t q[NSITES], qa[NSITES];
 	long n;
-	int inl, i;
+	int inl, mode, i;
 
-	for (inl = 0; inl < 2; inl++) {
+	for (inl = 0; inl < 2; inl++)
+	for (mode = 0; mode < 2; mode++) {
 		setup();
 		n = load_image_492();
 		if (n == 0) {
@@ -1772,10 +2476,20 @@ static int test_builtin_row_on_pristine_image(void)
 		CHECK(in_image(k->enable_code_addr & ~7ULL, n));
 		for (i = 0; i < NSITES; i++) {
 			qa[i] = (i < DS45_SHIM_PID_PATCHES ? k->pid_patches[i].addr
-			         : k->inline_patches[i - DS45_SHIM_PID_PATCHES].addr) & ~7ULL;
+			         : i < CALL ? k->inline_patches[i - DS45_SHIM_PID_PATCHES].addr
+			         : k->output_patches[i - CALL].addr) & ~7ULL;
 			CHECK(in_image(qa[i], n));
 			q[i] = rd(qa[i]);
 		}
+		/* the output call site and the cap word are code (in the image) ... */
+		CHECK(k->output_patches[0].addr == 0x80000000002A2DE8ULL);
+		CHECK(k->output_patches[1].addr == 0x80000000000F8D74ULL);
+		/* ... and the two TOC slots (0x372650, 0x372660) are past it, so they are
+		 * planted with the values the row expects, like the other data slots */
+		CHECK(!in_image(k->output_patches[2].addr, n) &&
+		      !in_image(k->output_patches[3].addr, n));
+		put_q(k->output_patches[2].addr, k->output_patches[2].expect);
+		put_q(k->output_patches[3].addr, k->output_patches[3].expect);
 		/* ... and what is planted lies past it, so it masks no image byte; the
 		 * fixed exec region (0x57C000..) is past the code image too, so it reads
 		 * zero and the installer's zero-check passes */
@@ -1790,6 +2504,8 @@ static int test_builtin_row_on_pristine_image(void)
 		put_q(k->alloc_desc + 8, KERNEL_TOC);
 		fake_spare_syscall = (int)k->spare_syscall;
 		g_cfg.shim_inline_pid = inl;
+		g_cfg.shim_output_hook = 1;
+		g_cfg.shim_output_mode = mode;         /* 0 observe: no cap word; 1 probe */
 
 		CHECK(kshim_install_from(ds45_shim_table, ds45_shim_table_count) ==
 		      KSHIM_INSTALLED);
@@ -1799,10 +2515,22 @@ static int test_builtin_row_on_pristine_image(void)
 		CHECK(rd(qa[0]) != q[0]);
 		CHECK((rd(qa[1]) != q[1]) == (inl != 0));
 		CHECK((rd(qa[2]) != q[2]) == (inl != 0));
+		/* the call site is now a bl to the blob's output entry (high half of its
+		 * qword, the low half kept), the cap word only outside observe mode, and
+		 * the TOC slots hold the blob's packet buffer and that plus one */
+		CHECK(rd(qa[CALL]) == (((uint64_t)ppc_bl(k->output_patches[0].addr,
+		      k->exec_base + DS45_SHIM_OFF_OUTPUT) << 32) | (q[CALL] & 0xFFFFFFFFULL)));
+		CHECK((rd(qa[CAP]) != q[CAP]) == (mode != 0));
+		if (mode)
+			CHECK(rd(qa[CAP]) == ((q[CAP] & HI32) | 0x2B9F004DULL));
+		CHECK(rd(k->output_patches[2].addr) == pktbuf_at(k->exec_base));
+		CHECK(rd(k->output_patches[3].addr) == pktbuf_at(k->exec_base) + 1);
 
 		kshim_remove();
 		for (i = 0; i < NSITES; i++)
 			CHECK(rd(qa[i]) == q[i]);
+		CHECK(rd(k->output_patches[2].addr) == k->output_patches[2].expect);
+		CHECK(rd(k->output_patches[3].addr) == k->output_patches[3].expect);
 		CHECK(rd(k->event_slot) == k->event_expect);
 		CHECK(rd(k->enable_slot) == k->enable_expect);
 		CHECK(rd(k->input_slot) == k->input_expect);
@@ -1825,7 +2553,7 @@ int run_tests(void)
 		test_input_hook_gated,
 		test_stable_id_switch,
 		test_output_fields,
-		test_output_sites_not_selected,
+		test_output_sites_hook_off,
 		test_event_code_hash_mismatch,
 		test_enable_code_hash_mismatch,
 		test_code_hash_is_of_the_aligned_qword,
@@ -1845,6 +2573,16 @@ int run_tests(void)
 		test_remove_restores_all,
 		test_word_rows_do_not_follow_the_load_base,
 		test_helper_branch_row,
+		test_output_sites_gated,
+		test_output_site_index_mapping,
+		test_output_branchl_follows_load_base,
+		test_buffer_slots_point_into_blob,
+		test_output_site_mismatch_fails_clean,
+		test_output_branchl_out_of_range_refused,
+		test_output_rollback_each_step,
+		test_output_apply_order_and_block_complete,
+		test_output_remove_restores_all,
+		test_output_adopt_v8,
 		test_builtin_table,
 		test_builtin_row_on_pristine_image,
 	};

@@ -15,8 +15,9 @@
  *      verify the whole region [base, base + blob + flush OPD) currently reads
  *      zero, that it ends at or before exec_bound, and that base is 8-aligned
  *      inside the window - writing nothing if any fails;
- *   4. range-check a BRANCH row against base (the helper row must
- *      reach shim_pid_ok - WORD rows hold a finished instruction, no range);
+ *   4. range-check the branch rows against base (the BRANCH helper row must
+ *      reach shim_pid_ok, the BRANCHL output call site the output entry - WORD
+ *      and PTR rows hold a finished instruction or pointer, no range);
  *   5. copy the blob qword by qword, rebasing relocated words;
  *   6. fill the data block (originals, pad class and manager, info template,
  *      cfg, enabled, and each product-ID site's original qword with the set of
@@ -25,8 +26,11 @@
  *   7. flush the instruction cache over the blob (F5), by borrowing the spare
  *      syscall slot once (its only use here), pointed at { flush entry, TOC };
  *   8. apply, transactionally, the helper word, the inline words (only with
- *      SHIM_INLINE_PID), the event redirect, the enable redirect and the input
- *      redirect, in that order.
+ *      SHIM_INLINE_PID), the output sites (only with SHIM_OUTPUT_HOOK and a row
+ *      that names the output sender: the two packet-buffer TOC slots back to
+ *      back, the call site, then - in probe and full mode only - the cap word),
+ *      the event redirect, the enable redirect and the input redirect, in that
+ *      order.
  *
  * Every write is read back. Any failure restores the borrowed spare slot (when
  * it was borrowed) and leaves every pre-existing kernel structure byte-identical
@@ -54,12 +58,14 @@
 #define KSHIM_FLUSH_OPD_LEN 16
 
 /* The final transactional apply: the helper word, the inline words (when
- * enabled), the output sites (when a later task enables them), then the event,
- * enable and input redirects. The journal holds one entry for each. */
+ * enabled), the output sites (when enabled), then the event, enable and input
+ * redirects. The journal holds one entry for each: at most 10, within the
+ * patcher's 12. */
 #define KSHIM_REDIRECTS 3
 #define KSHIM_FINAL_MAX (DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + \
                          DS45_SHIM_OUTPUT_PATCHES + KSHIM_REDIRECTS)
 typedef char kshim_final_fits_kpatch[(KSHIM_FINAL_MAX <= DS45_KPATCH_MAX) ? 1 : -1];
+typedef char kshim_final_is_ten[(KSHIM_FINAL_MAX == 10) ? 1 : -1];
 
 /* The data block exactly fills the blob's tail (OFF_DATA .. BLOB_LEN); it is
  * written qword by qword, so its size must be a multiple of 8. */
@@ -171,7 +177,7 @@ static int hash_ok(uint64_t addr, uint64_t expect)
 }
 
 /* Product-ID site i of a row, in data-block order: the helper rows, then the
- * inline rows, then the output rows (sites 3-6). */
+ * inline rows, then the output rows (sites 3-6 = output_patches[0..3]). */
 static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
 {
 	if (i < DS45_SHIM_PID_PATCHES)
@@ -181,65 +187,147 @@ static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
 	return &k->output_patches[i - DS45_SHIM_PID_PATCHES - DS45_SHIM_INLINE_PATCHES];
 }
 
-/* Whether the installer may select site i at all. The output sites (3-6) have a
- * place in the layout and the row, but nothing applies, records or adopts them
- * yet, so an install is exactly what data-block version 7 produced; the output
- * task that adds the hook turns them on here. */
-static int site_enabled(int i)
+/* The output sites by index (the data-block site numbers, shim_abi.h). */
+#define SITE_OUT_CALL 3   /* the bl to the output sender, retargeted at the blob's entry */
+#define SITE_OUT_CAP  4   /* the send-length cap compare */
+#define SITE_BUF      5   /* TOC slot holding the packet buffer's address */
+#define SITE_BUF1     6   /* TOC slot holding that address plus one */
+
+/* The order the sites go into the final transaction (and, mirrored by the
+ * journal, come out of it): the helper and inline rows as before, then the two
+ * buffer slots back to back, then the call site, then the cap word - so the
+ * buffer is in the blob before anything can send into it, and the longer cap goes
+ * in last. The redirects follow them. Data-block order stays site order. */
+static const uint8_t PID_ORDER[DS45_SHIM_PID_SITES] = {
+	0, 1, 2, SITE_BUF, SITE_BUF1, SITE_OUT_CALL, SITE_OUT_CAP
+};
+
+/* Whether this install applies site i. The helper always; the inline words with
+ * SHIM_INLINE_PID; the output sites only with SHIM_OUTPUT_HOOK and a row that
+ * names the output sender (the stub tail-branches to orig_output, so a call site
+ * patched with orig_output 0 would jump to address 0) - the call site and the
+ * buffer slots in any output mode, the cap word only in probe (1) and full (2)
+ * mode, matching the out_mode the block carries (anything else is observe, where
+ * nothing the kernel sends may change). With the hook off the install is exactly
+ * what data-block version 7 produced. */
+static int site_selected(const ds45_shim_kernel_t *k, int i)
 {
-	return i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES;
+	if (i < DS45_SHIM_PID_PATCHES)
+		return 1;
+	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES)
+		return g_cfg.shim_inline_pid != 0;
+	if (!g_cfg.shim_output_hook || k->orig_output == 0)
+		return 0;
+	if (i == SITE_OUT_CAP)
+		return g_cfg.shim_output_mode == 1 || g_cfg.shim_output_mode == 2;
+	return 1;
 }
 
-/* The product-ID rows this install applies - the helper always, the inline
- * words only with SHIM_INLINE_PID - into out[] (how many is returned in *n).
- * Each site must still hold the qword its row was researched against; its
- * original qword goes into orig[site] and the site's bit into *applied, for the
- * data block. (A BRANCH row's new instruction is not known to kpatch until the
- * blob's load base is known, so the hash is checked here, ahead of the blob
- * placement, as well as by the final kpatch_apply.) 0 if any site differs or
- * cannot be read. */
-static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int *n,
-                       uint64_t orig[DS45_SHIM_PID_SITES], uint32_t *applied)
+/* Whether an adopter may restore site i that the adopted install recorded as
+ * applied: the row must populate it (a non-zero kind), and for an output site the
+ * row must still name the output sender. Deliberately NOT the current config:
+ * what the install applied is what gets restored, like the inline words. */
+static int site_restorable(const ds45_shim_kernel_t *k, int i)
+{
+	if (pid_site(k, i)->kind == 0)
+		return 0;
+	if (i >= DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES && k->orig_output == 0)
+		return 0;
+	return 1;
+}
+
+/* Whether the qword q is what row p was researched against: a PTR row compares
+ * the value, every other kind the FNV of the qword. */
+static int site_matches(const ds45_kpatch_t *p, uint64_t q)
+{
+	if (p->kind == DS45_KPATCH_PTR)
+		return q == p->expect;
+	return qword_hash(q) == p->expect;
+}
+
+/* The product-ID rows this install applies (site_selected) into out[], in
+ * PID_ORDER (how many is returned in *n; site[] names each one's site index).
+ * Each site must still hold what its row was researched against; its original
+ * qword goes into orig[site] and the site's bit into *applied, for the data
+ * block. (A branch row's new instruction is not known to kpatch until the blob's
+ * load base is known, so the check is made here, ahead of the blob placement, as
+ * well as by the final kpatch_apply.) 0 if any site differs or cannot be read. */
+static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int site[],
+                       int *n, uint64_t orig[DS45_SHIM_PID_SITES], uint32_t *applied)
 {
 	const ds45_kpatch_t *p;
 	uint64_t cur;
-	int i;
+	int i, j;
 
 	*n = 0;
 	*applied = 0;
-	for (i = 0; i < DS45_SHIM_PID_SITES; i++) {
+	for (i = 0; i < DS45_SHIM_PID_SITES; i++)
 		orig[i] = 0;
-		if (!site_enabled(i))
-			continue;
-		if (i >= DS45_SHIM_PID_PATCHES && !g_cfg.shim_inline_pid)
+	for (j = 0; j < DS45_SHIM_PID_SITES; j++) {
+		i = PID_ORDER[j];
+		if (!site_selected(k, i))
 			continue;
 		p = pid_site(k, i);
-		if (ds45_lv2_read(p->addr & ~7ULL, &cur) || qword_hash(cur) != p->expect)
+		/* a PTR slot is read at its own (8-aligned) address, an instruction row
+		 * by the qword holding it */
+		if (ds45_lv2_read(p->kind == DS45_KPATCH_PTR ? p->addr : (p->addr & ~7ULL),
+		                  &cur) ||
+		    !site_matches(p, cur))
 			return 0;
 		orig[i] = cur;
 		*applied |= 1u << i;
+		site[*n] = i;
 		out[(*n)++] = *p;
 	}
 	return 1;
 }
 
-/* The qword a product-ID site holds once row p is applied over orig: the
- * instruction replaces the high half when (addr & 4) == 0, the low half
- * otherwise (kpatch.h). A BRANCH row targets shim_pid_ok in the blob at base.
- * 0 if the row's instruction cannot be formed.
- * The BRANCH arm serves the helper row (tests/test_kshim.c
- * test_helper_branch_row). */
-static int pid_patched_qword(const ds45_kpatch_t *p, uint64_t orig, uint64_t base,
-                             uint64_t *out)
+/* What row p of site `site` writes, once the blob is at base: the finished
+ * instruction of a WORD row; shim_pid_ok for the BRANCH helper; the output entry
+ * for the BRANCHL call site; the blob's packet buffer (sites 5) and that plus one
+ * (site 6) for the PTR slots. The final transaction and adoption both go through
+ * this, so an adopted install is recomputed exactly as it was written. */
+static uint64_t pid_value(int site, const ds45_kpatch_t *p, uint64_t base)
 {
+	switch (p->kind) {
+	case DS45_KPATCH_BRANCH:
+		return base + DS45_SHIM_OFF_PID_OK;
+	case DS45_KPATCH_BRANCHL:
+		return base + DS45_SHIM_OFF_OUTPUT;
+	case DS45_KPATCH_PTR:
+		return base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pktbuf) +
+		       (site == SITE_BUF1 ? 1 : 0);
+	default:
+		return p->value;
+	}
+}
+
+/* The qword product-ID site `site` holds once row p is applied over orig: a PTR
+ * row replaces the whole qword; the other kinds' instruction replaces the high
+ * half when (addr & 4) == 0, the low half otherwise (kpatch.h). The BRANCH and
+ * BRANCHL rows target the blob at base (pid_value). 0 if the row's instruction
+ * cannot be formed.
+ * The BRANCH arm serves the helper row (tests/test_kshim.c
+ * test_helper_branch_row), the BRANCHL and PTR arms the output sites. */
+static int pid_patched_qword(int site, const ds45_kpatch_t *p, uint64_t orig,
+                             uint64_t base, uint64_t *out)
+{
+	const uint64_t v = pid_value(site, p, base);
 	uint32_t w;
 
+	if (p->kind == DS45_KPATCH_PTR) {
+		*out = v;
+		return 1;
+	}
 	if (p->kind == DS45_KPATCH_WORD) {
-		if (p->value > 0xFFFFFFFFULL)
+		if (v > 0xFFFFFFFFULL)
 			return 0;
-		w = (uint32_t)p->value;
+		w = (uint32_t)v;
 	} else if (p->kind == DS45_KPATCH_BRANCH) {
-		if (kpatch_branch_word(p->addr, base + DS45_SHIM_OFF_PID_OK, &w))
+		if (kpatch_branch_word(p->addr, v, &w))
+			return 0;
+	} else if (p->kind == DS45_KPATCH_BRANCHL) {
+		if (kpatch_branchl_word(p->addr, v, &w))
 			return 0;
 	} else {
 		return 0;
@@ -250,11 +338,13 @@ static int pid_patched_qword(const ds45_kpatch_t *p, uint64_t orig, uint64_t bas
 }
 
 /* Adoption: journal every product-ID site the adopted install recorded as
- * applied, from the original it kept in the data block - but only a site whose
- * recorded original hashes to the row's expected value AND which still holds
- * exactly that original with the row's instruction in it. Any other site is left
- * as found (traced, not journalled); the redirects are adopted regardless. Reads
- * only. Appends to j. */
+ * applied, from the original it kept in the data block - but only a site the row
+ * populates (site_restorable), whose recorded original is what the row was
+ * researched against AND which still holds exactly that original with the row's
+ * edit in it. The current config plays no part: what the install applied is what
+ * gets restored. Any other site is left as found (traced, not journalled); the
+ * redirects are adopted regardless. The journal order mirrors an install's
+ * (PID_ORDER), so unload undoes the sites last first. Reads only. Appends to j. */
 static void adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
                             ds45_kjournal_t *j)
 {
@@ -262,28 +352,29 @@ static void adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
 	const ds45_kpatch_t *p;
 	uint64_t q, orig, cur, want;
 	uint32_t applied;
-	int i;
+	int i, jj;
 
 	if (ds45_lv2_read(db + offsetof(ds45_shim_data_t, pid_applied), &q)) {
 		DS45_TRACE("kshim_adopt_applied_unreadable");
 		return;
 	}
 	applied = (uint32_t)(q >> 32);          /* the high word of its big-endian qword */
-	/* which word edits the adopted install recorded as live (bit 0 helper,
-	 * bits 1-2 inline); kshim_adopt_pid_skipped names any not restorable */
+	/* which edits the adopted install recorded as live (bit 0 helper, bits 1-2
+	 * inline, bits 3-6 output); kshim_adopt_pid_skipped names any not restorable */
 	DS45_TRACE_HEX("kshim_adopt_applied", applied);
-	for (i = 0; i < DS45_SHIM_PID_SITES; i++) {
+	for (jj = 0; jj < DS45_SHIM_PID_SITES; jj++) {
+		i = PID_ORDER[jj];
 		if (!(applied & (1u << i)))
 			continue;
-		if (!site_enabled(i)) {             /* never ours to restore: left as found */
+		if (!site_restorable(k, i)) {       /* not ours to restore: left as found */
 			DS45_TRACE_HEX("kshim_adopt_pid_skipped", (uint64_t)i);
 			continue;
 		}
 		p = pid_site(k, i);
 		if (ds45_lv2_read(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * (uint64_t)i,
 		                  &orig) ||
-		    qword_hash(orig) != p->expect ||
-		    !pid_patched_qword(p, orig, base, &want) ||
+		    !site_matches(p, orig) ||
+		    !pid_patched_qword(i, p, orig, base, &want) ||
 		    ds45_lv2_read(p->addr & ~7ULL, &cur) || cur != want) {
 			DS45_TRACE_HEX("kshim_adopt_pid_skipped", (uint64_t)i);
 			continue;
@@ -398,9 +489,10 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	ds45_kpatch_t check[KSHIM_REDIRECTS + 1], final[KSHIM_FINAL_MAX];
 	ds45_kjournal_t j;
 	uint8_t db[sizeof(ds45_shim_data_t)];
-	uint64_t spare_slot, base = 0, size, kernel_toc, flush_opd, target;
+	uint64_t spare_slot, base = 0, size, kernel_toc, flush_opd;
 	uint64_t pid_orig[DS45_SHIM_PID_SITES];
 	uint32_t off, bw, pid_applied;
+	int pid_site_of[DS45_SHIM_PID_SITES];
 	int i, r, npid, nfinal, pid_ok, spare_borrowed = 0;
 
 	g_state = KSHIM_OFF;
@@ -444,7 +536,7 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	put_redirect(&check[3], spare_slot, k->spare_slot_expect, 0);
 
 	r = kpatch_verify(check, KSHIM_REDIRECTS + 1);
-	pid_ok = pid_capture(k, final, &npid, pid_orig, &pid_applied);
+	pid_ok = pid_capture(k, final, pid_site_of, &npid, pid_orig, &pid_applied);
 	if (r != 0 ||
 	    !hash_ok(k->event_code_addr, k->event_code_hash) ||
 	    !hash_ok(k->enable_code_addr, k->enable_code_hash) ||
@@ -509,16 +601,25 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 		}
 	}
 
-	/* 4. a BRANCH row (the helper) must reach shim_pid_ok in the blob within a 26-bit branch. A WORD row is a
-	 * finished instruction that never points at the blob, so it has no range to
+	/* 4. a branch row must reach its target in the blob within a 26-bit
+	 * displacement: the BRANCH helper shim_pid_ok, the BRANCHL output call site
+	 * the output entry. Refused here, before the blob is written, if it cannot
+	 * (out of range, or an address that cannot be encoded). A WORD row is a
+	 * finished instruction and a PTR row a pointer; neither has a range to
 	 * check. */
-	target = base + DS45_SHIM_OFF_PID_OK;
-	for (i = 0; i < npid; i++)
-		if (final[i].kind == DS45_KPATCH_BRANCH &&
-		    kpatch_branch_word(final[i].addr, target, &bw)) {
+	for (i = 0; i < npid; i++) {
+		if (final[i].kind != DS45_KPATCH_BRANCH && final[i].kind != DS45_KPATCH_BRANCHL)
+			continue;
+		r = final[i].kind == DS45_KPATCH_BRANCHL
+		    ? kpatch_branchl_word(final[i].addr,
+		                          pid_value(pid_site_of[i], &final[i], base), &bw)
+		    : kpatch_branch_word(final[i].addr,
+		                         pid_value(pid_site_of[i], &final[i], base), &bw);
+		if (r) {
 			DS45_TRACE("kshim_exec_range");
 			goto fail;
 		}
+	}
 
 	/* 5. copy the blob, rebasing every relocated word to the load base */
 	for (off = 0; off < DS45_SHIM_BLOB_LEN; off += 8) {
@@ -570,14 +671,16 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 		spare_borrowed = 0;
 	}
 
-	/* 8. the product-ID words, then the event, enable and input redirects - one
-	 * transactional apply (verify all, write in order, revert on any failure).
-	 * A WORD row goes in exactly as the table gives it; a BRANCH row would be
-	 * aimed at shim_pid_ok. A site or a slot that changed since step 2 fails
+	/* 8. the product-ID words and output sites, then the event, enable and input
+	 * redirects - one transactional apply (verify all, write in order, revert on
+	 * any failure). The data block (orig_output included) was written in step 6,
+	 * so it is complete before the first of these lands. A WORD row goes in
+	 * exactly as the table gives it; the BRANCH helper is aimed at shim_pid_ok,
+	 * the BRANCHL call site at the output entry, the PTR slots at the packet
+	 * buffer in the blob (pid_value). A site or a slot that changed since step 2 fails
 	 * this verify, so nothing is written. */
 	for (i = 0; i < npid; i++)
-		if (final[i].kind == DS45_KPATCH_BRANCH)
-			final[i].value = target;
+		final[i].value = pid_value(pid_site_of[i], &final[i], base);
 	nfinal = npid;
 	/* The event and enable redirects are each gated like the input one
 	 * (SHIM_EVENT_HOOK / SHIM_ENABLE_HOOK); a gated-off slot is left original and

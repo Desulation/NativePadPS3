@@ -127,10 +127,29 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 
 		/* DS3-route output (rumble, player LEDs, light bar): the four output
 		 * sites (data-block product-ID sites 3-6) and the kernel's Bluetooth
-		 * output sender they lead to. Empty until the installer applies them;
-		 * the rows are filled in then. */
-		{ { 0 }, { 0 }, { 0 }, { 0 } },
-		0ULL,
+		 * output sender they lead to (docs/superpowers/notes/2026-11-03-ds3-route-
+		 * output-facts.md: F1.1 the two TOC slots, F5 the hash rows). Applied only
+		 * with SHIM_OUTPUT_HOOK (the cap word also only outside observe mode):
+		 *   [0] site 3, the output call site: `bl 0x10283C` at 0x2A2DE8 becomes a bl
+		 *       to the blob's output entry (the value is filled in at install);
+		 *       verified by the FNV of the qword 0x2A2DE8.
+		 *   [1] site 4, the send cap: the compare at 0xF8D74 (the low half of the
+		 *       qword 0xF8D70) goes from `cmplwi cr7,r31,0x40` to
+		 *       `cmplwi cr7,r31,0x4D` = 0x2B9F004D; verified by the FNV of the
+		 *       qword 0xF8D70 (0xBF27C253F5228E13).
+		 *   [2] site 5 and [3] site 6, the TOC slots every user of the shared packet
+		 *       buffer 0x4326C8 loads it through (the buffer, and the buffer plus
+		 *       one): PTR rows, verified by their exact current value, redirected at
+		 *       install to the 96-byte packet buffer in the blob (and that plus one).
+		 * orig_output is the sender 0x10283C the output hook tail-calls; 0 would
+		 * switch every output site off. */
+		{
+			{ DS45_KPATCH_BRANCHL, 0x80000000002A2DE8ULL, 0x2A29E6BB7BA10D5EULL, 0ULL },
+			{ DS45_KPATCH_WORD,    0x80000000000F8D74ULL, 0xBF27C253F5228E13ULL, 0x2B9F004DULL },
+			{ DS45_KPATCH_PTR,     0x8000000000372650ULL, 0x80000000004326C8ULL, 0ULL },
+			{ DS45_KPATCH_PTR,     0x8000000000372660ULL, 0x80000000004326C9ULL, 0ULL },
+		},
+		0x800000000010283CULL,
 	},
 };
 const int ds45_shim_table_count =
