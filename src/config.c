@@ -84,7 +84,7 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->shim_enable_hook = 1;
 	c->shim_stable_id = 1;    /* on by default; the counter identity is the fallback */
 	c->shim_output_hook = 1;  /* on by default; the mode below decides what it does */
-	c->shim_output_mode = 0;  /* observe only */
+	c->shim_output_mode = 2;  /* full: rumble, player LEDs, light bar colour */
 #ifdef DS45_LV2DUMP
 	c->dump_lv2 = 0;
 	c->capture_off = 0;
@@ -287,7 +287,7 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 	} else if (match(key, "SHIM_OUTPUT_MODE")) {
 		/* VSH builds only: 0 observe, 1 probe, 2 full. A number outside 0..2 is
 		 * clamped to the nearest end; anything that is not a number keeps the
-		 * default (0). */
+		 * default (2, full). */
 		if (parse_int(val, &n)) c->shim_output_mode = n < 0 ? 0 : (n > 2 ? 2 : n);
 #endif
 #ifdef DS45_LV2DUMP
