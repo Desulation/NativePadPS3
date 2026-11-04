@@ -2622,6 +2622,7 @@ static int test_output_mode0_never_rewrites(void)
 static int test_output_bad_arguments_in_modes(void)
 {
 	uint32_t mode;
+	int sel;
 
 	for (mode = 1; mode <= 2; mode++) {
 		ds45_shim_data_t d = data_out_mode(mode, 4), zero;
@@ -2657,6 +2658,29 @@ static int test_output_bad_arguments_in_modes(void)
 		CHECK(shim_output_filter(&d, buf, 48, &rid, &ob, &ol) == 0);
 		zero.dbg_out_calls = 1;
 		CHECK(memcmp(&d, &zero, sizeof(d)) == 0);
+
+		/* a DualSense in the rewriting stage whose caller passed a NULL out-parameter
+		 * (rid, out_buf, out_len in turn): never rewritten, passed through, nothing
+		 * written through the other two, out_seq not advanced, out_buf untouched,
+		 * counted as one passed call */
+		for (sel = 0; sel < 3; sel++) {
+			ds45_shim_data_t before;
+			uint8_t r2 = RID_SENTINEL;
+			const uint8_t *ob2 = (const uint8_t *)&pad;
+			uint16_t ol2 = OLEN_SENTINEL;
+
+			d = data_out_mode(mode, 4);
+			before = d;
+			CHECK(shim_output_filter(&d, buf, 48, sel == 0 ? NULL : &r2,
+			                         sel == 1 ? NULL : &ob2,
+			                         sel == 2 ? NULL : &ol2) == 0);
+			CHECK(r2 == RID_SENTINEL && ob2 == (const uint8_t *)&pad && ol2 == OLEN_SENTINEL);
+			CHECK(d.out_seq == 4 && d.dbg_out_translated == 0);
+			CHECK(memcmp(d.out_buf, before.out_buf, sizeof(d.out_buf)) == 0);
+			CHECK(d.dbg_out_calls == before.dbg_out_calls + 1 &&
+			      d.dbg_out_ds == before.dbg_out_ds + 1 &&
+			      d.dbg_out_passed == before.dbg_out_passed + 1);
+		}
 
 		CHECK(rid == RID_SENTINEL && ob == (const uint8_t *)&pad && ol == OLEN_SENTINEL);
 		CHECK(d.out_seq == 4 && d.dbg_out_translated == 0);

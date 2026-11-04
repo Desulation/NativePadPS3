@@ -72,7 +72,8 @@ typedef struct {
 	 * site (BRANCHL, aimed at the blob's output entry at install), [1] the send
 	 * cap word (WORD), [2] and [3] the two TOC slots of the packet buffer (PTR rows,
 	 * aimed at the blob's packet buffer and that plus one at install). Applied
-	 * only with SHIM_OUTPUT_HOOK (the cap word also only outside observe mode),
+	 * only with SHIM_OUTPUT_HOOK (the cap word also only outside observe mode and
+	 * only with SHIM_INPUT_HOOK, the bounce that can receive the long report),
 	 * and only when orig_output is non-zero: the code address of the kernel's
 	 * Bluetooth output sender they lead to (0x10283C on DEX 4.92; 0 = none, every
 	 * output site off), which the output hook tail-calls. */
@@ -82,11 +83,12 @@ typedef struct {
 	 * function of the Bluetooth transport, rewritten to `li r7,0x50` so the
 	 * DualSense's 79-byte full report is accepted (the limit goes from 0x41 to
 	 * 0x50). Applied
-	 * exactly when the cap word is - SHIM_OUTPUT_HOOK with SHIM_OUTPUT_MODE 1 or 2
-	 * and a non-zero orig_output - and only together with the two packet-buffer
-	 * slots (sites 5 and 6): the larger read would otherwise run past the kernel's
-	 * packet buffer. All three must be populated for such an install, or it is
-	 * refused. */
+	 * exactly when the cap word is - SHIM_OUTPUT_HOOK with SHIM_OUTPUT_MODE 1 or 2,
+	 * SHIM_INPUT_HOOK on and a non-zero orig_output - and only together with the
+	 * two packet-buffer slots (sites 5 and 6): the larger read would otherwise run
+	 * past the kernel's packet buffer. All three must be populated for such an
+	 * install, or it is refused. They are the last writes of the install (after the
+	 * redirects) and so the first reverts of an unload. */
 	ds45_kpatch_t recv_patches[DS45_SHIM_RECV_PATCHES];
 	uint64_t orig_output;
 } ds45_shim_kernel_t;

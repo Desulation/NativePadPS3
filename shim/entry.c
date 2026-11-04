@@ -137,14 +137,16 @@ int SHIM_HOOK(shim_input)(void *xport, uint8_t *dst, uint16_t len_in, int flag)
 	                         dst, &n);
 }
 
-/* DS3-route output decision (observe mode), called by the shim_output stub
- * below, not by the kernel: the stub is entered by a plain `bl` at the kernel's
- * output call (the Bluetooth sender 0x10283C is called with r3 = connection
- * handle, r4 = 2, r5 = report id, r6 = payload, r7 = length), saves those
- * arguments and passes this body the payload (buf), its length and three
- * out-parameter slots in its own frame. A 1 means "replace report id, payload
- * and length with *rid, *obuf, *olen"; observe mode always answers 0. The
- * original sender is tail-called by the stub, never from here. */
+/* DS3-route output decision, called by the shim_output stub below, not by the
+ * kernel: the stub is entered by a plain `bl` at the kernel's output call (the
+ * Bluetooth sender 0x10283C is called with r3 = connection handle, r4 = 2,
+ * r5 = report id, r6 = payload, r7 = length), saves those arguments and passes
+ * this body the payload (buf), its length and three out-parameter slots in its own
+ * frame. A 1 means "replace report id, payload and length with *rid, *obuf,
+ * *olen"; the body (shim_output_filter) answers 1 only for a DualSense in the
+ * rewriting stages (out_mode 1 and 2) and 0 in observe mode (out_mode 0, which is
+ * also what the plugin writes without the input hook). The original sender is
+ * tail-called by the stub, never from here. */
 int SHIM_HOOK(shim_output)(const uint8_t *buf, uint16_t len, uint8_t *rid,
                            const uint8_t **obuf, uint16_t *olen)
 {

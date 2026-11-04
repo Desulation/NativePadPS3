@@ -143,10 +143,11 @@ typedef struct {
 	/* The input bounce buffer (version 10): with the receive-limit words raised, a
 	 * DualSense sends 79-byte full reports, which the input hook reads into inbuf
 	 * (8-aligned; zero at install) and translates for the caller. The dbg_in_*
-	 * counters are written by the blob, debug only: bounce reads of a DualSense,
-	 * reads of 66-79 bytes, results dropped for not fitting the caller's buffer,
-	 * and errors. Nothing writes them yet (the input hook is a later piece); the
-	 * installer leaves them zero. The size is kept a multiple of 8. */
+	 * counters are written by shim_input_bounce, debug only: every bounce read (any
+	 * pad: in the output modes 1 and 2 every read of the input hook is bounced, not
+	 * just a DualSense's), reads of 66-79 bytes, results dropped for not fitting
+	 * the caller's buffer, and errors. The installer leaves them zero. The size is
+	 * kept a multiple of 8. */
 	uint8_t  inbuf[96];
 	uint32_t dbg_in_bounce, dbg_in_big, dbg_in_drop, dbg_in_err;
 	/* The raw DualSense report capture (version 11), written by the blob, debug
