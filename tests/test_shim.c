@@ -2836,7 +2836,7 @@ static int test_poweroff_wrong_shape_passes(void)
 	fake_obj_t obj;
 	int sel;
 
-	for (sel = 0; sel < 8; sel++) {
+	for (sel = 0; sel < 10; sel++) {
 		ds45_shim_data_t d = data_po(1), before;
 		ds45_po_call_t c;
 
@@ -2852,6 +2852,9 @@ static int test_poweroff_wrong_shape_passes(void)
 		case 5: c.obj = 0; break;
 		case 6: po_obj(&obj, NULL, SHIM_PO_KIND_CLOSE); break;
 		case 7: d.enabled = 0; break;
+		/* the low byte is 3 but the 32-bit kind is not: the decision uses the whole word */
+		case 8: po_obj(&obj, &pad, 0x103); break;
+		case 9: po_obj(&obj, &pad, 0x80000003u); break;
 		}
 		before = d;
 		CHECK(shim_poweroff_filter(&d, &c) == 0);
@@ -2917,24 +2920,70 @@ static int test_poweroff_retry_is_idempotent(void)
 	ds45_shim_data_t d = data_po(1);
 	fake_pad_t pad;
 	fake_obj_t obj;
-	uint8_t first[48];
+	uint8_t first[48], want[48];
 	int i;
 
 	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
 	po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+	memset(want, 0, sizeof(want));
+	ds_poweroff_payload(want);
 	for (i = 0; i < 5; i++) {
 		ds45_po_call_t c = po_call(&obj);
 
 		CHECK(shim_poweroff_filter(&d, &c) == 1);
 		CHECK(c.o_rid == 0x08 && c.o_len == 46 && c.o_buf == (uint64_t)(uintptr_t)d.po_buf);
-		if (i == 0)
+		if (i == 0) {
 			memcpy(first, d.po_buf, sizeof(first));
-		else
+			CHECK(memcmp(first, want, sizeof(want)) == 0);
+		} else
 			CHECK(memcmp(first, d.po_buf, sizeof(first)) == 0);
 	}
 	CHECK(d.po_seq == 5);
 	CHECK(d.dbg_po_calls == 5 && d.dbg_po_ds == 5 && d.dbg_po_rewritten == 5 &&
 	      d.dbg_po_passed == 0);
+	return 0;
+}
+
+/* The report buffer is shared and there is no lock, so a rewrite must never clear
+ * it: once it holds the final bytes, a second rewrite stores the same values over
+ * them and touches nothing past byte 45. A host test cannot see the interleaving;
+ * it pins the outcome (bytes 46-47 keep whatever they held, the 46 bytes are the
+ * payload) for a buffer that starts as garbage, as final and as final + marker. */
+static int test_poweroff_buffer_never_cleared(void)
+{
+	ds45_shim_data_t d = data_po(1);
+	fake_pad_t pad;
+	fake_obj_t obj;
+	ds45_po_call_t c;
+	uint8_t want[48];
+	int i;
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+	memset(want, 0, sizeof(want));
+	ds_poweroff_payload(want);
+
+	/* bytes 46-47 are not part of the report: never written, whatever they hold */
+	memset(d.po_buf, 0xCC, sizeof(d.po_buf));
+	c = po_call(&obj);
+	CHECK(shim_poweroff_filter(&d, &c) == 1);
+	CHECK(memcmp(d.po_buf, want, 46) == 0);
+	CHECK(d.po_buf[46] == 0xCC && d.po_buf[47] == 0xCC);
+
+	/* already final: a rewrite leaves every byte as it was */
+	c = po_call(&obj);
+	CHECK(shim_poweroff_filter(&d, &c) == 1);
+	CHECK(memcmp(d.po_buf, want, 46) == 0);
+	CHECK(d.po_buf[46] == 0xCC && d.po_buf[47] == 0xCC);
+
+	/* a refusal (wrong shape) does not touch the buffer at all */
+	c = po_call(&obj);
+	c.len = 3;
+	CHECK(shim_poweroff_filter(&d, &c) == 0);
+	CHECK(memcmp(d.po_buf, want, 46) == 0);
+	CHECK(d.po_buf[46] == 0xCC && d.po_buf[47] == 0xCC);
+	for (i = 0; i < 48; i++)
+		CHECK(d.po_buf[i] == (i < 46 ? want[i] : 0xCC));
 	return 0;
 }
 
@@ -3141,6 +3190,7 @@ int run_tests(void)
 		test_poweroff_wrong_shape_passes,
 		test_poweroff_observe_mode_never_rewrites,
 		test_poweroff_retry_is_idempotent,
+		test_poweroff_buffer_never_cleared,
 		test_poweroff_two_pads_same_bytes,
 		test_poweroff_ring_records,
 		test_teardown_note_counts_and_disabled,

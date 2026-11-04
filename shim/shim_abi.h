@@ -185,7 +185,8 @@ typedef struct {
 	 *   byte 7      r4
 	 *   byte 8      report id
 	 *   byte 9      length
-	 *   byte 10     kind (0xFF if unreadable)
+	 *   byte 10     kind (0xFF if unreadable; the LOW BYTE of the 32-bit kind, so
+	 *               a kind with low byte 0xFF also reads 0xFF here)
 	 *   byte 11     zero
 	 *   bytes 12-15 the first four payload bytes (zero-padded)
 	 * for site 2:

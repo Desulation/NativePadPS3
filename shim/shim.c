@@ -490,9 +490,18 @@ int shim_poweroff_filter(ds45_shim_data_t *d, ds45_po_call_t *c)
 	 * site is reached with other types and report ids. */
 	if (d->po_mode == 1 && c->type == 3 && c->rid == 0xF4 && c->len == 4 &&
 	    have_kind && kind == SHIM_PO_KIND_CLOSE && is_ds) {
-		for (i = 0; i < (int)sizeof(d->po_buf); i++)
-			d->po_buf[i] = 0;
-		ds_poweroff_payload(d->po_buf);
+		/* d->po_buf is shared by every power-off and there is no lock (two
+		 * pads may be turned off at once, or a retry may overlap a send still
+		 * reading it), so it is never cleared or built in place: the report is
+		 * built in a local array and stored over po_buf byte by byte. After the
+		 * first fill every store writes the value already there, so a reader
+		 * only ever sees the final bytes. Bytes 46-47 are not written (zero
+		 * from install). */
+		uint8_t rep[DS_POWEROFF_PAYLOAD_LEN];
+
+		ds_poweroff_payload(rep);
+		for (i = 0; i < DS_POWEROFF_PAYLOAD_LEN; i++)
+			d->po_buf[i] = rep[i];
 		c->o_rid = DS_POWEROFF_REPORT_ID;
 		c->o_buf = (uint64_t)(uintptr_t)d->po_buf;
 		c->o_len = DS_POWEROFF_PAYLOAD_LEN;
