@@ -1,6 +1,7 @@
 # DS3 route, stage 2 piece 1: output (rumble, player LEDs, light bar)
 
-Status: design, awaiting review. Date: 2026-11-03. Firmware: DEX 4.92 only (the
+Status: implemented and verified on the console (2026-11-04); design date
+2026-11-03. Firmware: DEX 4.92 only (the
 shim is fingerprint-gated, debug VSH builds only, RAM only). Builds on the
 start-up completion spec
 (`2026-11-01-ds45pad-ds3-route-startup-completion-design.md`, Amendments 1-6).
@@ -189,6 +190,20 @@ Success: each DualSense lights its port's colour and player LEDs; rumble works
 and stops; the DS3's own rumble and LEDs are untouched; no freeze, no dropped pad
 and no change to controller numbering across reconnects.
 
+Verified on the DEX 4.92 console (2026-11-04; facts note F12), with the DS3 and
+two DualSense pads, `SHIM_OUTPUT_MODE = 2`:
+
+- [x] Colour and player LEDs by port: port 2 red with two player LEDs, port 3
+  green with three.
+- [x] Rumble works and stops (XMB vibration test, games).
+- [x] The DS3's own rumble and LEDs are unchanged.
+- [x] No freeze, no dropped pad.
+- [x] A force-powered-off DualSense reconnects with the same controller number.
+- [x] The DualSense's input keeps working after the first output report (the
+  Amendment 2 criterion), through the bounce buffer of Amendment 3.
+
+The mode now defaults to 2 (full); `SHIM_OUTPUT_HOOK` stays on by default.
+
 ## Risks and open questions
 
 - The pad may refuse output while in basic input mode. If so, full-report input
@@ -197,8 +212,26 @@ and no change to controller numbering across reconnects.
   the design now moves it.
 - A branch-and-link entry is a new kind of patch; a wrong TOC or `r2` there is
   the same class of fault as the earlier hangs. Hence the observe stage first.
-- The player LED patterns and colours are chosen by eye on the console.
-- Finite rumble durations (see Translation).
+- The player LED patterns and colours are chosen by eye on the console. (Still
+  open: only ports 2 and 3 were seen on the console; ports 1 and 4 come from the
+  same constant table but were not looked at, and the colours are fixed, not
+  configurable.)
+- Finite rumble durations (see Translation). (Resolved by F7: the kernel's
+  reports are stateless, durations are constant, and a zero-motor report ends a
+  rumble.)
+
+Still open after the console verification:
+
+- The newer-firmware rumble flag (`valid_flag2` bit 2) is untried: the tested
+  pads rumble with `valid_flag0 = 0x03`, so it is only the next thing to try if
+  a pad with other firmware does not rumble.
+- The chosen colours (blue, red, green, pink) and the player LED patterns are
+  judged by eye on two pads only.
+- The battery charging and full status bytes (`0xEE` and `0xEF` in the DS3
+  report) have never been seen on hardware: the tested pads reported a plain
+  level (one empty, one full).
+- A Move navigation controller and other devices with long reports were not
+  exercised.
 
 ## Amendment 1 (2026-11-03): the packet buffer is moved
 

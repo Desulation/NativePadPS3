@@ -42,11 +42,22 @@ The newer direction in this project makes a DualSense behave as a **native DualS
 **What has been observed working** (on the one DEX 4.92 console it was developed against): a DualSense completing DS3 start-up and getting a native port over both Bluetooth and USB, across connect and disconnect, with two DualSense pads usable on separate ports at once, buttons and sticks translated, and no system freeze.
 
 **Known limitations (open work):**
-* The controller shows as **charging** when it is not (the battery/charge status byte is not yet translated).
-* If a controller is **forced off** instead of disconnected through the XMB, its controller number can increment on the next connect, and with two pads the numbering can reorder (there is no stable per-pad identity yet).
-* **"Turn Off the controller"** from the PS button menu disconnects the pad but does not power it off (no output/power-off path yet).
-* No rumble or light-bar output, no motion/touchpad, and no USB-cable pairing yet.
+* The battery indicator follows the pad's own status byte (see the output section below); the charging and full indications have not been verified on hardware.
+* **"Turn Off the controller"** from the PS button menu disconnects the pad but does not power it off (no power-off path yet).
+* No touchpad and no USB-cable pairing yet.
 * PlayStation Move device handling is not restored in this mode.
+
+**Output: rumble, player LEDs and light bar.** With the shim on, each DualSense gets what the PS3 asks of a DualShock 3, translated in the kernel's Bluetooth output path. What you see on a DualSense:
+* **Rumble** from games and the XMB vibration test, which stops when the game stops it.
+* **Player LEDs** that show the controller number (one dot for port 1, two for port 2, and so on).
+* **Light bar colour by controller number**: blue, red, green and pink for ports 1 to 4. A real DS3 on another port is untouched.
+* A DualSense that is powered off by force reconnects with the same controller number.
+
+It is controlled by two VSH-only keys (see the table below); like the rest of the shim it needs `ENABLE_SHIM = 1`, exists only in debug VSH builds, is RAM-only and is DEX 4.92-only. Known limits:
+* The light bar colours are fixed constants, not configurable.
+* The battery level is read from the pad's own status byte and shown as the pad reports it; the charging and full values of the DS3 report have not been seen on hardware.
+* The newer-firmware rumble flag (`valid_flag2` bit 2) is untried, because the tested pads rumble with the current flags.
+* Verified on a DEX 4.92 console with one DS3 and two DualSense pads; a Move navigation controller and other long-report devices were not exercised.
 
 **Safety gate.** The shim patches live kernel code, so it is never installed on its own. It is enabled **only** when `ds45pad.txt` contains `ENABLE_SHIM = 1`, and it is built only into debug VSH builds. The way out of a hang is to remove that line (or the plugin) and reboot. Leave `ENABLE_SHIM` unset for normal use.
 
@@ -68,6 +79,8 @@ Edit `/dev_hdd0/plugins/ds45pad/ds45pad.txt`. Common options:
 | `NOTIFY` | `1` | Show an on-screen notification on load/attach. |
 | `DIAG` | `0` | Diagnostic file logging; leave off for best performance. |
 | `ENABLE_SHIM` | `0` | **Experimental.** Install the native DS3-route kernel shim (debug builds only). Leave unset unless you are testing that route. |
+| `SHIM_OUTPUT_HOOK` | `1` | Shim only (needs `ENABLE_SHIM = 1`; debug VSH builds). Install the output hook that gives a DualSense rumble, player LEDs and a light bar colour. `0` = off. |
+| `SHIM_OUTPUT_MODE` | `2` | Shim only. What the output hook does: `0` observe (hook installed, nothing changes), `1` probe (fixed blue light bar and player LED 1, for tests), `2` full (rumble, player LEDs and light bar colour by controller number). |
 
 The configuration parser accepts a number of additional debug and shim-tuning keys used during development of the DS3 route; they default to off/safe and are not needed for normal use.
 

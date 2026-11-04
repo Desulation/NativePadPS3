@@ -777,6 +777,31 @@ bounce buffer is what lets it through; the earlier stall was the over-long recor
 
 The translated reports are full reports, so motion and the real battery level now reach the DS3 report as well.
 
+## F12 - Console full-stage run (2026-11-04, plan task 10) [console]
+
+Build: full mode (`SHIM_OUTPUT_MODE = 2`) with the light bar setup bytes (report byte 41 = `0x02`, byte 44 = `0x02`) and
+`valid_flag0 = 0x03`. Pads: a DS3 over Bluetooth and two DualSense pads (controller numbers 2 and 3).
+
+**How it got to work (three builds).**
+- First full run: both DualSense light bars showed the pad's own blue Bluetooth start-up animation instead of the
+  chosen colour (the light bar setup bytes were missing, so the pad keeps animating and ignores the colour), and there
+  was no rumble (`valid_flag0` had only the compatible-vibration bit; the haptics select bit was missing).
+- After adding the setup bytes the colours showed: #2 red, #3 green.
+- With `valid_flag0 = 0x03` the DualSense rumbled and the player LEDs matched the number (two and three dots).
+
+**Result (passed).** Rumble works and stops, the player LEDs and colour follow the controller number, the DS3 is
+unaffected, no freeze. A force-powered-off #3 reconnected as #3 (the stable identity of stage 1b). The DualSense input
+kept working through the bounce buffer.
+
+**Counters at the end of the run.** About 14,000 DualSense output calls, all rewritten (`outxl` = `outds`); 265
+motor-on reports (`outon`) and 34 captured stops; input about 46,000 reads with about 21,000 full-length ones
+(`inbig`); zero drops, errors and pad misses.
+
+**Battery.** The raw status byte (report byte 54) was `0x00` on one DualSense (shown empty) and `0x09` on the other
+(shown full). The translation is faithful to what the pads send; the level mapping is `max(1, (nibble + 1) / 2)`.
+
+**Console restored to stock** afterwards: the hooks and the helper were verified original.
+
 ## Method (commands)
 
 All from the scratchpad, never from the repo root (`dis.py` there shadows the stdlib), `python -I`:
