@@ -13,6 +13,7 @@
  * The object layouts are the DEX 4.92 ones (shim.h, facts note C1-C3); every
  * object here is synthetic.
  */
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include "fakes.h"
@@ -2710,9 +2711,440 @@ static int test_glue_output(void)
 	return 0;
 }
 
+/* ------------------------------------------------------------------------ */
+/* DS3-route power-off hook: shim_poweroff_filter / shim_teardown_note        */
+/* ------------------------------------------------------------------------ */
+
+/* The close-send call's object (r9): kind (u32) at +0x38, the pad pointer at
+ * +0x48, garbage elsewhere. */
+typedef union { uint64_t q[0x60 / 8]; uint8_t b[0x60]; } fake_obj_t;
+
+#define PO_RID_SENTINEL  0xA7A7A7A7A7A7A7A7ULL
+#define PO_BUF_SENTINEL  0xBEEFBEEFBEEFBEEFULL
+#define PO_LEN_SENTINEL  0x1234123412341234ULL
+
+static void po_obj(fake_obj_t *o, const fake_pad_t *pad, uint32_t kind)
+{
+	memset(o->b, 0x5A, sizeof(o->b));
+	*(uint32_t *)(void *)(o->b + SHIM_PO_OBJ_KIND) = kind;
+	put_native(o->b + SHIM_PO_OBJ_PAD, pad ? pad->b : NULL);
+}
+
+/* The close-connection call of a DualSense's power-off request: handle 5,
+ * type 3, report 0xF4, 4 bytes F4 payload "42 08 00 00". */
+static const uint8_t po_payload[4] = { 0x42, 0x08, 0x00, 0x00 };
+
+static ds45_po_call_t po_call(const fake_obj_t *obj)
+{
+	ds45_po_call_t c;
+
+	memset(&c, 0, sizeof(c));
+	c.handle = 5;
+	c.type = 3;
+	c.rid = 0xF4;
+	c.payload = (uint64_t)(uintptr_t)po_payload;
+	c.len = 4;
+	c.cookie = 0x1122;
+	c.obj = (uint64_t)(uintptr_t)obj;
+	c.o_rid = PO_RID_SENTINEL;
+	c.o_buf = PO_BUF_SENTINEL;
+	c.o_len = PO_LEN_SENTINEL;
+	return c;
+}
+
+static ds45_shim_data_t data_po(uint32_t mode)
+{
+	ds45_shim_data_t d = data_enabled();
+
+	d.po_mode = mode;
+	return d;
+}
+
+static int po_untouched(const ds45_po_call_t *c)
+{
+	return c->o_rid == PO_RID_SENTINEL && c->o_buf == PO_BUF_SENTINEL &&
+	       c->o_len == PO_LEN_SENTINEL;
+}
+
+static int test_poweroff_rewrites_dualsense(void)
+{
+	ds45_shim_data_t d = data_po(1);
+	fake_pad_t pad;
+	fake_obj_t obj;
+	ds45_po_call_t c;
+	uint8_t want[48];
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+	c = po_call(&obj);
+
+	memset(want, 0, sizeof(want));
+	ds_poweroff_payload(want);
+
+	CHECK(SHIM_PO_OBJ_KIND == 0x38 && SHIM_PO_OBJ_PAD == 0x48 && SHIM_PO_KIND_CLOSE == 3);
+	CHECK(shim_poweroff_filter(&d, &c) == 1);
+	CHECK(c.o_rid == DS_POWEROFF_REPORT_ID && c.o_rid == 0x08);
+	CHECK(c.o_buf == (uint64_t)(uintptr_t)d.po_buf);
+	CHECK(c.o_len == DS_POWEROFF_PAYLOAD_LEN && c.o_len == 46);
+	CHECK(memcmp(d.po_buf, want, sizeof(want)) == 0);
+	CHECK(d.po_buf[0] == 0x02 && d.po_buf[46] == 0 && d.po_buf[47] == 0);
+	CHECK(d.dbg_po_calls == 1 && d.dbg_po_ds == 1 && d.dbg_po_rewritten == 1 &&
+	      d.dbg_po_passed == 0);
+	CHECK(d.po_seq == 1);
+	/* the call's own arguments are never changed */
+	CHECK(c.handle == 5 && c.type == 3 && c.rid == 0xF4 && c.len == 4 &&
+	      c.payload == (uint64_t)(uintptr_t)po_payload && c.cookie == 0x1122 &&
+	      c.obj == (uint64_t)(uintptr_t)&obj);
+	/* nothing else of the data block moved */
+	CHECK(d.dbg_td_calls == 0 && d.out_seq == 0 && d.dbg_out_calls == 0);
+	return 0;
+}
+
+static int test_poweroff_ds3_untouched(void)
+{
+	ds45_shim_data_t d = data_po(1);
+	fake_pad_t pad;
+	fake_obj_t obj;
+	ds45_po_call_t c;
+	static const uint8_t zero[48];
+	int variant;
+
+	/* a DualShock 3 (Sony class, PID 0x0268), then a pad of another class with the
+	 * DualSense PID: neither is rewritten */
+	for (variant = 0; variant < 2; variant++) {
+		d = data_po(1);
+		if (variant == 0)
+			pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DS3);
+		else
+			pad_make(&pad, PAD_VTABLE + 8, VID_SONY, PID_DUALSENSE);
+		po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+		c = po_call(&obj);
+		CHECK(shim_poweroff_filter(&d, &c) == 0);
+		CHECK(po_untouched(&c));
+		CHECK(memcmp(d.po_buf, zero, sizeof(zero)) == 0);
+		CHECK(d.dbg_po_calls == 1 && d.dbg_po_ds == 0 && d.dbg_po_rewritten == 0 &&
+		      d.dbg_po_passed == 1);
+		CHECK(d.po_seq == 1);
+	}
+	return 0;
+}
+
+static int test_poweroff_wrong_shape_passes(void)
+{
+	static const uint8_t zero[48];
+	fake_pad_t pad;
+	fake_obj_t obj;
+	int sel;
+
+	for (sel = 0; sel < 8; sel++) {
+		ds45_shim_data_t d = data_po(1), before;
+		ds45_po_call_t c;
+
+		pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+		po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+		c = po_call(&obj);
+		switch (sel) {
+		case 0: c.type = 2; break;
+		case 1: c.rid = 0xF3; break;
+		case 2: c.len = 3; break;
+		case 3: c.len = 5; break;
+		case 4: po_obj(&obj, &pad, 4); break;
+		case 5: c.obj = 0; break;
+		case 6: po_obj(&obj, NULL, SHIM_PO_KIND_CLOSE); break;
+		case 7: d.enabled = 0; break;
+		}
+		before = d;
+		CHECK(shim_poweroff_filter(&d, &c) == 0);
+		CHECK(po_untouched(&c));
+		CHECK(memcmp(d.po_buf, zero, sizeof(zero)) == 0);
+		CHECK(d.dbg_po_rewritten == 0);
+		if (sel == 7) {
+			/* a disabled shim: nothing counted, nothing recorded */
+			CHECK(memcmp(&d, &before, sizeof(d)) == 0);
+			CHECK(d.dbg_po_calls == 0 && d.dbg_po_passed == 0 && d.po_seq == 0);
+		} else {
+			CHECK(d.dbg_po_calls == 1 && d.dbg_po_passed == 1 && d.po_seq == 1);
+		}
+	}
+
+	/* NULL d or NULL c: 0, nothing written */
+	{
+		ds45_shim_data_t d = data_po(1), before = d;
+		ds45_po_call_t c;
+
+		pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+		po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+		c = po_call(&obj);
+		CHECK(shim_poweroff_filter(NULL, &c) == 0);
+		CHECK(po_untouched(&c));
+		CHECK(shim_poweroff_filter(&d, NULL) == 0);
+		CHECK(memcmp(&d, &before, sizeof(d)) == 0);
+	}
+	return 0;
+}
+
+static int test_poweroff_observe_mode_never_rewrites(void)
+{
+	static const uint8_t zero[48];
+	static const uint32_t modes[] = { 0, 2, 3, 0xFFFFFFFFu };
+	unsigned i;
+
+	for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+		ds45_shim_data_t d = data_po(modes[i]);
+		fake_pad_t pad;
+		fake_obj_t obj;
+		ds45_po_call_t c;
+		static const uint8_t rec[16] = { 0, 0, 0, 1, 1, 1, 5, 3, 0xF4, 4, 3, 0,
+		                                 0x42, 0x08, 0, 0 };
+
+		pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+		po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+		c = po_call(&obj);
+		CHECK(shim_poweroff_filter(&d, &c) == 0);
+		CHECK(po_untouched(&c));
+		CHECK(memcmp(d.po_buf, zero, sizeof(zero)) == 0);
+		/* still observed: counted and recorded */
+		CHECK(d.dbg_po_calls == 1 && d.dbg_po_ds == 1 && d.dbg_po_rewritten == 0 &&
+		      d.dbg_po_passed == 1);
+		CHECK(d.po_seq == 1);
+		CHECK(memcmp(d.po_ring[0], rec, 16) == 0);
+	}
+	return 0;
+}
+
+static int test_poweroff_retry_is_idempotent(void)
+{
+	ds45_shim_data_t d = data_po(1);
+	fake_pad_t pad;
+	fake_obj_t obj;
+	uint8_t first[48];
+	int i;
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+	for (i = 0; i < 5; i++) {
+		ds45_po_call_t c = po_call(&obj);
+
+		CHECK(shim_poweroff_filter(&d, &c) == 1);
+		CHECK(c.o_rid == 0x08 && c.o_len == 46 && c.o_buf == (uint64_t)(uintptr_t)d.po_buf);
+		if (i == 0)
+			memcpy(first, d.po_buf, sizeof(first));
+		else
+			CHECK(memcmp(first, d.po_buf, sizeof(first)) == 0);
+	}
+	CHECK(d.po_seq == 5);
+	CHECK(d.dbg_po_calls == 5 && d.dbg_po_ds == 5 && d.dbg_po_rewritten == 5 &&
+	      d.dbg_po_passed == 0);
+	return 0;
+}
+
+static int test_poweroff_two_pads_same_bytes(void)
+{
+	ds45_shim_data_t d = data_po(1);
+	fake_pad_t pad_a, pad_b;
+	fake_obj_t obj_a, obj_b;
+	uint8_t first[48];
+	int i;
+
+	pad_make(&pad_a, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	pad_make(&pad_b, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	po_obj(&obj_a, &pad_a, SHIM_PO_KIND_CLOSE);
+	po_obj(&obj_b, &pad_b, SHIM_PO_KIND_CLOSE);
+	for (i = 0; i < 6; i++) {
+		ds45_po_call_t c = po_call((i & 1) ? &obj_b : &obj_a);
+
+		c.handle = (i & 1) ? 6 : 5;
+		CHECK(shim_poweroff_filter(&d, &c) == 1);
+		CHECK(c.o_buf == (uint64_t)(uintptr_t)d.po_buf && c.o_len == 46 && c.o_rid == 0x08);
+		if (i == 0)
+			memcpy(first, d.po_buf, sizeof(first));
+		else
+			CHECK(memcmp(first, d.po_buf, sizeof(first)) == 0);
+	}
+	CHECK(d.dbg_po_rewritten == 6 && d.po_seq == 6);
+	return 0;
+}
+
+static int test_poweroff_ring_records(void)
+{
+	ds45_shim_data_t d = data_po(1);
+	fake_pad_t pad;
+	fake_obj_t obj;
+	ds45_po_call_t c;
+	int i;
+	static const uint8_t rec_close[16] = { 0, 0, 0, 1, 1, 1, 5, 3, 0xF4, 4, 3, 0,
+	                                       0x42, 0x08, 0, 0 };
+	static const uint8_t rec_td[16] = { 0, 0, 0, 2, 2, 0, 1, 0, 0x55, 0x66, 0x77, 0x88,
+	                                    0x11, 0x22, 0x33, 0x44 };
+	static const uint8_t zero16[16];
+
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+
+	/* golden: a close send, then a teardown */
+	c = po_call(&obj);
+	CHECK(shim_poweroff_filter(&d, &c) == 1);
+	CHECK(memcmp(d.po_ring[0], rec_close, 16) == 0);
+	shim_teardown_note(&d, 0xAABBCCDD11223344ULL, 1, 0x1122334455667788ULL);
+	CHECK(memcmp(d.po_ring[1], rec_td, 16) == 0);
+	CHECK(d.po_seq == 2 && d.dbg_td_calls == 1);
+	for (i = 2; i < 8; i++)
+		CHECK(memcmp(d.po_ring[i], zero16, 16) == 0);
+
+	/* a non-DualSense close send: flag 0, kind of the object, unreadable fields */
+	d = data_po(1);
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DS3);
+	po_obj(&obj, &pad, 4);
+	c = po_call(&obj);
+	c.handle = 0x1234;     /* byte 6 is the low byte */
+	c.type = 2;
+	c.rid = 0x1F4;         /* byte 8 is the low byte */
+	c.len = 0x104;         /* byte 9 is the low byte; 0x104 > 4 reads 4 payload bytes */
+	CHECK(shim_poweroff_filter(&d, &c) == 0);
+	{
+		const uint8_t want[16] = { 0, 0, 0, 1, 1, 0, 0x34, 2, 0xF4, 0x04, 4, 0,
+		                           0x42, 0x08, 0, 0 };
+		CHECK(memcmp(d.po_ring[0], want, 16) == 0);
+	}
+
+	/* NULL object: kind 0xFF, no pad */
+	d = data_po(1);
+	c = po_call(NULL);
+	CHECK(shim_poweroff_filter(&d, &c) == 0);
+	{
+		const uint8_t want[16] = { 0, 0, 0, 1, 1, 0, 5, 3, 0xF4, 4, 0xFF, 0,
+		                           0x42, 0x08, 0, 0 };
+		CHECK(memcmp(d.po_ring[0], want, 16) == 0);
+	}
+
+	/* payload: NULL pointer -> zeros; len 2 -> two bytes then zeros; len 0 -> zeros */
+	{
+		const uint8_t p[2] = { 0x11, 0x22 };
+		static const uint8_t w_null[16] = { 0, 0, 0, 1, 1, 0, 5, 3, 0xF4, 4, 3, 0, 0, 0, 0, 0 };
+		static const uint8_t w_two[16] = { 0, 0, 0, 2, 1, 0, 5, 3, 0xF4, 2, 3, 0,
+		                                   0x11, 0x22, 0, 0 };
+		static const uint8_t w_none[16] = { 0, 0, 0, 3, 1, 0, 5, 3, 0xF4, 0, 3, 0, 0, 0, 0, 0 };
+
+		d = data_po(1);
+		po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+		c = po_call(&obj);
+		c.payload = 0;
+		CHECK(shim_poweroff_filter(&d, &c) == 0);
+		CHECK(memcmp(d.po_ring[0], w_null, 16) == 0);
+		c = po_call(&obj);
+		c.payload = (uint64_t)(uintptr_t)p;
+		c.len = 2;
+		CHECK(shim_poweroff_filter(&d, &c) == 0);
+		CHECK(memcmp(d.po_ring[1], w_two, 16) == 0);
+		c = po_call(&obj);
+		c.len = 0;
+		CHECK(shim_poweroff_filter(&d, &c) == 0);
+		CHECK(memcmp(d.po_ring[2], w_none, 16) == 0);
+	}
+
+	/* the ring wraps its 8 slots: record n lands in slot (n - 1) & 7 */
+	d = data_po(1);
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+	for (i = 1; i <= 10; i++) {
+		c = po_call(&obj);
+		c.handle = (uint64_t)i;
+		CHECK(shim_poweroff_filter(&d, &c) == 1);
+	}
+	CHECK(d.po_seq == 10);
+	for (i = 0; i < 8; i++) {
+		/* slots 0 and 1 hold 9 and 10; slots 2..7 hold 3..8 */
+		unsigned seq = i < 2 ? (unsigned)(9 + i) : (unsigned)(1 + i);
+
+		CHECK(d.po_ring[i][0] == 0 && d.po_ring[i][1] == 0 && d.po_ring[i][2] == 0);
+		CHECK(d.po_ring[i][3] == seq && d.po_ring[i][4] == 1 && d.po_ring[i][6] == seq);
+	}
+
+	/* the sequence is stored big-endian, byte by byte */
+	d = data_po(1);
+	d.po_seq = 0x000001FF;
+	c = po_call(&obj);
+	CHECK(shim_poweroff_filter(&d, &c) == 1);
+	CHECK(d.po_seq == 0x200);
+	CHECK(d.po_ring[7][0] == 0 && d.po_ring[7][1] == 0 && d.po_ring[7][2] == 0x02 &&
+	      d.po_ring[7][3] == 0x00 && d.po_ring[7][4] == 1);
+	d.po_seq = 0x01020303;
+	shim_teardown_note(&d, 0, 0, 0);
+	CHECK(d.po_seq == 0x01020304);
+	CHECK(d.po_ring[(0x01020304 - 1) & 7][0] == 0x01 && d.po_ring[(0x01020304 - 1) & 7][1] == 0x02 &&
+	      d.po_ring[(0x01020304 - 1) & 7][2] == 0x03 && d.po_ring[(0x01020304 - 1) & 7][3] == 0x04);
+	return 0;
+}
+
+static int test_teardown_note_counts_and_disabled(void)
+{
+	ds45_shim_data_t d = data_po(1), before;
+	static const uint8_t zero16[16];
+
+	shim_teardown_note(NULL, 1, 2, 3);        /* no crash */
+
+	CHECK(d.dbg_td_calls == 0);
+	shim_teardown_note(&d, 0x80000000001234ULL, 0, 0x8000000000ABCDULL);
+	CHECK(d.dbg_td_calls == 1 && d.po_seq == 1);
+	shim_teardown_note(&d, 7, 1, 9);
+	CHECK(d.dbg_td_calls == 2 && d.po_seq == 2);
+	/* teardown is observed in every power-off stage and touches no other counter */
+	CHECK(d.dbg_po_calls == 0 && d.dbg_po_ds == 0 && d.dbg_po_rewritten == 0 &&
+	      d.dbg_po_passed == 0);
+	CHECK(d.po_ring[0][3] == 1 && d.po_ring[0][4] == 2 && d.po_ring[0][5] == 0 &&
+	      d.po_ring[0][6] == 0 && d.po_ring[0][7] == 0);
+	CHECK(d.po_ring[0][8] == 0x00 && d.po_ring[0][9] == 0x00 && d.po_ring[0][10] == 0xAB &&
+	      d.po_ring[0][11] == 0xCD);
+	CHECK(d.po_ring[0][12] == 0x00 && d.po_ring[0][13] == 0x00 && d.po_ring[0][14] == 0x12 &&
+	      d.po_ring[0][15] == 0x34);
+	CHECK(d.po_ring[1][6] == 1 && d.po_ring[1][15] == 7 && d.po_ring[1][11] == 9);
+	CHECK(memcmp(d.po_ring[2], zero16, 16) == 0);
+
+	/* disabled: nothing at all */
+	d = data_po(1);
+	d.enabled = 0;
+	before = d;
+	shim_teardown_note(&d, 7, 1, 9);
+	CHECK(memcmp(&d, &before, sizeof(d)) == 0);
+	return 0;
+}
+
+/* The glue for the power-off hooks arrives with the blob stubs (the SHIM_HOOK(
+ * shim_poweroff) / SHIM_HOOK(shim_teardown) bodies); until then this pins what
+ * exists: the pure functions' signatures and the call record's layout, which the
+ * stub's frame offsets will be asserted against. */
+static int test_glue_poweroff(void)
+{
+	int (*pf)(ds45_shim_data_t *, ds45_po_call_t *) = shim_poweroff_filter;
+	void (*tf)(ds45_shim_data_t *, uint64_t, uint64_t, uint64_t) = shim_teardown_note;
+
+	CHECK(pf != NULL && tf != NULL);
+	CHECK(sizeof(ds45_po_call_t) == 80);
+	CHECK(offsetof(ds45_po_call_t, handle) == 0);
+	CHECK(offsetof(ds45_po_call_t, type) == 8);
+	CHECK(offsetof(ds45_po_call_t, rid) == 16);
+	CHECK(offsetof(ds45_po_call_t, payload) == 24);
+	CHECK(offsetof(ds45_po_call_t, len) == 32);
+	CHECK(offsetof(ds45_po_call_t, cookie) == 40);
+	CHECK(offsetof(ds45_po_call_t, obj) == 48);
+	CHECK(offsetof(ds45_po_call_t, o_rid) == 56);
+	CHECK(offsetof(ds45_po_call_t, o_buf) == 64);
+	CHECK(offsetof(ds45_po_call_t, o_len) == 72);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int (*const tests[])(void) = {
+		test_poweroff_rewrites_dualsense,
+		test_poweroff_ds3_untouched,
+		test_poweroff_wrong_shape_passes,
+		test_poweroff_observe_mode_never_rewrites,
+		test_poweroff_retry_is_idempotent,
+		test_poweroff_two_pads_same_bytes,
+		test_poweroff_ring_records,
+		test_teardown_note_counts_and_disabled,
+		test_glue_poweroff,
 		test_output_counts_and_captures,
 		test_output_ds3_pad_untouched,
 		test_output_bad_arguments,
