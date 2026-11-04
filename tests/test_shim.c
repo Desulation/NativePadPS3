@@ -79,6 +79,7 @@ static void ds3_neutral(uint8_t e[DS3_REPORT_LEN])
 	e[0] = 0x01;
 	for (i = 6; i <= 9; i++)
 		e[i] = 0x80;
+	e[30] = 0x01;                  /* battery: status 0 is level 1 */
 	for (i = 0; i < 4; i++)
 		e[41 + 2 * i] = 0x02;      /* 512 = 0x0200, big-endian */
 }

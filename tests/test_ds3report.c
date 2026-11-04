@@ -72,8 +72,17 @@ static void ds3_neutral(uint8_t e[DS3_REPORT_LEN])
 	e[0] = 0x01;
 	for (i = 6; i <= 9; i++)
 		e[i] = 0x80;
+	e[30] = 0x01;                       /* status 0 = battery under 10%: level 1 */
 	for (i = 0; i < 4; i++)
 		e[41 + 2 * i] = 0x02;           /* 512 = 0x0200, big-endian */
+}
+
+/* The same for the basic report 0x01, which carries no battery data: byte 30
+ * reads "full, not charging". */
+static void ds3_neutral_basic(uint8_t e[DS3_REPORT_LEN])
+{
+	ds3_neutral(e);
+	e[30] = 0x05;
 }
 
 static ds45_shim_cfg_t cfg_plain(void)
@@ -750,7 +759,7 @@ static int test_no_read_past_len(void)
 static int layout_byte(int i)
 {
 	return i == 0 || i == 2 || i == 3 || i == 4 || (i >= 6 && i <= 9) ||
-	       (i >= 14 && i <= 25) || (i >= 41 && i <= 48);
+	       (i >= 14 && i <= 25) || i == 30 || (i >= 41 && i <= 48);
 }
 
 static int test_fuzz(void)
@@ -795,6 +804,8 @@ static int test_fuzz(void)
 		for (i = 0; i < DS3_REPORT_LEN; i++)
 			if (!layout_byte(i))
 				CHECK(out[i] == 0);
+		/* the battery byte is a level 1..5, charging or charged */
+		CHECK((out[30] >= 1 && out[30] <= 5) || out[30] == 0xEE || out[30] == 0xEF);
 		/* every pressure byte but the triggers' is 0 or 255, and it is 255
 		 * exactly when its digital bit is set */
 		for (i = 14; i <= 25; i++)
@@ -886,7 +897,7 @@ static int test_basic_neutral(void)
 		CHECK(out[41 + 2 * i] == 0x02 && out[42 + 2 * i] == 0x00);
 
 	/* every other byte is 0: the same report the 0x31 path gives at rest */
-	ds3_neutral(want);
+	ds3_neutral_basic(want);
 	CHECK(memcmp(out, want, sizeof(want)) == 0);
 
 	/* the basic report has no motion data: centre whatever cfg->sixaxis says */
@@ -915,7 +926,7 @@ static int test_basic_buttons(void)
 	/* Cross: its bit and its full pressure byte, nothing else */
 	basic_neutral(r);
 	r[5] = 0x28;
-	ds3_neutral(want);
+	ds3_neutral_basic(want);
 	want[3] = 0x40;
 	want[24] = 255;
 	CHECK(basic_translates_to(r, &c, want, "basic Cross"));
@@ -925,7 +936,7 @@ static int test_basic_buttons(void)
 	r[6] = 0x20;
 	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
 	CHECK(out[2] & 0x08);
-	ds3_neutral(want);
+	ds3_neutral_basic(want);
 	want[2] = 0x08;
 	CHECK(memcmp(out, want, sizeof(want)) == 0);
 
@@ -934,7 +945,7 @@ static int test_basic_buttons(void)
 	r[7] = 0x01;
 	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
 	CHECK(out[4] & 0x01);
-	ds3_neutral(want);
+	ds3_neutral_basic(want);
 	want[4] = 0x01;
 	CHECK(memcmp(out, want, sizeof(want)) == 0);
 
@@ -943,7 +954,7 @@ static int test_basic_buttons(void)
 	r[5] = 0x02;
 	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
 	CHECK(out[2] & 0x20);
-	ds3_neutral(want);
+	ds3_neutral_basic(want);
 	want[2] = 0x20;
 	want[15] = 255;
 	CHECK(memcmp(out, want, sizeof(want)) == 0);
@@ -952,7 +963,7 @@ static int test_basic_buttons(void)
 	basic_neutral(r);
 	r[5] = 0x08 | 0x10 | 0x40 | 0x80;            /* Square Circle Triangle */
 	r[6] = 0x01 | 0x02 | 0x10 | 0x40 | 0x80;     /* L1 R1 Create L3 R3 */
-	ds3_neutral(want);
+	ds3_neutral_basic(want);
 	want[2] = 0x01 | 0x02 | 0x04;                 /* Select L3 R3 */
 	want[3] = 0x04 | 0x08 | 0x10 | 0x20 | 0x80;   /* L1 R1 Triangle Circle Square */
 	want[20] = want[21] = want[22] = want[23] = want[25] = 255;
@@ -961,7 +972,7 @@ static int test_basic_buttons(void)
 	/* touchpad click follows cfg->map_touchpad */
 	basic_neutral(r);
 	r[7] = 0x02;
-	ds3_neutral(want);
+	ds3_neutral_basic(want);
 	CHECK(basic_translates_to(r, &c, want, "basic touchpad, map NONE"));
 	c.map_touchpad = DS45_MAP_PS;
 	want[4] = 0x01;
@@ -973,7 +984,7 @@ static int test_basic_buttons(void)
 	c.map_mute = DS45_MAP_PS;
 	basic_neutral(r);
 	r[7] = 0xFC;
-	ds3_neutral(want);
+	ds3_neutral_basic(want);
 	CHECK(basic_translates_to(r, &c, want, "basic byte 7 upper bits"));
 	return 0;
 }
@@ -990,7 +1001,7 @@ static int test_basic_triggers(void)
 	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
 	CHECK(out[18] == 0x40);
 	CHECK(out[19] == 0xFF);
-	ds3_neutral(want);
+	ds3_neutral_basic(want);
 	want[18] = 0x40;
 	want[19] = 0xFF;
 	CHECK(memcmp(out, want, sizeof(want)) == 0);
@@ -1411,6 +1422,73 @@ static int test_parse_links_agree(void)
 	return 0;
 }
 
+/* Byte 30 of the DS3 report is the battery byte the kernel hands to the game
+ * unchanged: 1..5 the level, 0xEE charging, 0xEF fully charged. Nothing else is
+ * ever put in the report's status bytes. */
+#define DS3_BATTERY 30
+
+static uint8_t battery_byte_31(uint8_t status0)
+{
+	uint8_t r[RPT_LEN], out[DS3_REPORT_LEN];
+	ds45_shim_cfg_t c = cfg_plain();
+
+	report_neutral(r);
+	r[BT(DS_C_STATUS)] = status0;
+	if (ds3_report_from_dualsense(r, RPT_LEN, &c, out) != 0)
+		return 0x7F;
+	return out[DS3_BATTERY];
+}
+
+static int test_battery_basic(void)
+{
+	uint8_t r[DS_BASIC_LEN], out[DS3_REPORT_LEN];
+	ds45_shim_cfg_t c = cfg_plain();
+	int i;
+
+	/* no battery data in the basic report: "full, not charging", never 0 or 0xEE */
+	basic_neutral(r);
+	memset(out, SENTINEL, sizeof(out));
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
+	CHECK(out[DS3_BATTERY] == 0x05);
+
+	/* whatever the other bytes hold */
+	for (i = 1; i < DS_BASIC_LEN; i++)
+		r[i] = 0xFF;
+	CHECK(ds3_report_from_dualsense_basic(r, DS_BASIC_LEN, &c, out) == 0);
+	CHECK(out[DS3_BATTERY] == 0x05);
+	return 0;
+}
+
+static int test_battery_31(void)
+{
+	int level;
+
+	/* the DualSense's level nibble 0..10 -> 1..5, rounded up, never 0 */
+	CHECK(battery_byte_31(0x00) == 1);
+	CHECK(battery_byte_31(0x01) == 1);
+	CHECK(battery_byte_31(0x02) == 1);
+	CHECK(battery_byte_31(0x03) == 2);
+	CHECK(battery_byte_31(0x04) == 2);
+	CHECK(battery_byte_31(0x05) == 3);
+	CHECK(battery_byte_31(0x06) == 3);
+	CHECK(battery_byte_31(0x07) == 4);
+	CHECK(battery_byte_31(0x08) == 4);
+	CHECK(battery_byte_31(0x09) == 5);
+	CHECK(battery_byte_31(0x0A) == 5);
+	CHECK(battery_byte_31(0x0F) == 5);          /* the parser clamps to 10 */
+
+	/* charging -> 0xEE, whatever the level; full -> 0xEF */
+	for (level = 0; level <= 0x0F; level++) {
+		CHECK(battery_byte_31((uint8_t)(0x10 | level)) == 0xEE);
+		CHECK(battery_byte_31((uint8_t)(0x20 | level)) == 0xEF);
+	}
+
+	/* any other charge nibble is "not charging": the level */
+	CHECK(battery_byte_31(0x39) == 5);
+	CHECK(battery_byte_31(0xF3) == 2);
+	return 0;
+}
+
 int run_tests(void)
 {
 	int (*const tests[])(void) = {
@@ -1422,6 +1500,7 @@ int run_tests(void)
 		test_fuzz, test_basic_neutral, test_basic_buttons, test_basic_triggers,
 		test_basic_refuses, test_basic_in_place, test_basic_fuzz_all_lengths,
 		test_abi_layout, test_parse_fields, test_parse_links_agree,
+		test_battery_basic, test_battery_31,
 	};
 	unsigned i;
 	int line;

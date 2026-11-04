@@ -19,7 +19,13 @@
 #define DS3_PS          4
 #define DS3_STICKS      6     /* LX, LY, RX, RY */
 #define DS3_PRESS       14    /* 12 pressure bytes, see the PR_* names */
+#define DS3_BATTERY     30    /* the battery byte the kernel passes on as is */
 #define DS3_SENSORS     41    /* accel X, Y, Z, gyro: 16 bit big-endian */
+
+/* DS3_BATTERY values */
+#define BATT_FULL_LEVEL 0x05  /* top of the 1..5 level scale */
+#define BATT_CHARGING   0xEE
+#define BATT_CHARGED    0xEF
 
 /* DS3_DIGITAL1 */
 #define D1_SELECT       0x01
@@ -173,6 +179,27 @@ static void write_ds3(const ds45_state_t *st, const ds45_shim_cfg_t *cfg,
 	out[DS3_STICKS + 3] = stick(st->ry, cfg->deadzone);
 }
 
+/* The DS3 battery byte for a decoded report: 0xEE while charging, 0xEF when
+ * full, otherwise the level 1..5 (the DualSense's 0..10 halved, rounded up; 0
+ * is never sent because on the DS3 scale it means empty, and the DualSense's 0
+ * only means under 10%). */
+static uint8_t battery_byte(const ds45_state_t *st)
+{
+	int level;
+
+	if (st->charging)
+		return BATT_CHARGING;
+	if (st->full)
+		return BATT_CHARGED;
+
+	level = ((int)st->battery + 1) / 2;
+	if (level < 1)
+		level = 1;
+	if (level > BATT_FULL_LEVEL)
+		level = BATT_FULL_LEVEL;
+	return (uint8_t)level;
+}
+
 /* All four sensor words at the DS3's rest value. */
 static void sensors_centre(uint8_t *out)
 {
@@ -197,6 +224,7 @@ int ds3_report_from_dualsense(const uint8_t *in, int in_len,
 	/* st has all of the report now, so from here on out may be the buffer
 	 * in points into. */
 	write_ds3(&st, cfg, out);
+	out[DS3_BATTERY] = battery_byte(&st);
 
 	/* --- motion -------------------------------------------------------- */
 	if (cfg->sixaxis) {
@@ -251,5 +279,6 @@ int ds3_report_from_dualsense_basic(const uint8_t *in, int in_len,
 	/* everything is read: out may be the buffer in points into */
 	write_ds3(&st, cfg, out);
 	sensors_centre(out);
+	out[DS3_BATTERY] = BATT_FULL_LEVEL;   /* the basic report has no battery data */
 	return 0;
 }
