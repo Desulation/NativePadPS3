@@ -359,7 +359,11 @@ typedef struct {
 	 * clamped; default 2) picks the stage: 0 observe only (capture and count, pass
 	 * the call through), 1 probe (fixed blue light bar and player LED 1, for
 	 * tests), 2 full translation (rumble, player LEDs and light bar colour by
-	 * controller number). */
+	 * controller number). Modes 1 and 2 need the input hook (SHIM_INPUT_HOOK, default
+	 * 1): they let the DualSense switch to its 79-byte input report, which only the
+	 * input redirect can take in safely. With SHIM_INPUT_HOOK = 0 the output hook
+	 * only observes (the shim writes out_mode 0 and installs neither the send-length
+	 * cap nor the receive limits), whatever SHIM_OUTPUT_MODE says. */
 	int      shim_output_hook;
 	int      shim_output_mode;
 #ifdef DS45_LV2DUMP

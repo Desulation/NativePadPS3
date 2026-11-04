@@ -59,6 +59,8 @@ It is controlled by two VSH-only keys (see the table below); like the rest of th
 * The battery level is read from the pad's own status byte and shown as the pad reports it; the charging and full values of the DS3 report have not been seen on hardware.
 * The newer-firmware rumble flag (`valid_flag2` bit 2) is untried, because the tested pads rumble with the current flags.
 * Verified on a DEX 4.92 console with one DS3 and two DualSense pads; a Move navigation controller and other long-report devices were not exercised.
+* The rewriting stages (modes 1 and 2) need the input hook (`SHIM_INPUT_HOOK`, default `1`): the DualSense switches to a longer input report that only the input hook can take in. With `SHIM_INPUT_HOOK = 0` the output hook only observes, whatever `SHIM_OUTPUT_MODE` says.
+* Stopping or unloading the plugin leaves a DualSense that is already in the longer (full) report mode without input until it reconnects: the pad cannot be switched back from the console side.
 
 **Safety gate.** The shim patches live kernel code, so it is never installed on its own. It is enabled **only** when `ds45pad.txt` contains `ENABLE_SHIM = 1`, and it is built only into debug VSH builds. The way out of a hang is to remove that line (or the plugin) and reboot. Leave `ENABLE_SHIM` unset for normal use.
 
@@ -80,8 +82,8 @@ Edit `/dev_hdd0/plugins/ds45pad/ds45pad.txt`. Common options:
 | `NOTIFY` | `1` | Show an on-screen notification on load/attach. |
 | `DIAG` | `0` | Diagnostic file logging; leave off for best performance. |
 | `ENABLE_SHIM` | `0` | **Experimental.** Install the native DS3-route kernel shim (debug builds only). Leave unset unless you are testing that route. |
-| `SHIM_OUTPUT_HOOK` | `1` | Shim only (needs `ENABLE_SHIM = 1`; debug VSH builds). Install the output hook that gives a DualSense rumble, player LEDs and a light bar colour. `0` = off. |
-| `SHIM_OUTPUT_MODE` | `2` | Shim only. What the output hook does: `0` observe (hook installed, nothing changes), `1` probe (fixed blue light bar and player LED 1, for tests), `2` full (rumble, player LEDs and light bar colour by controller number). |
+| `SHIM_OUTPUT_HOOK` | `1` | Shim only (needs `ENABLE_SHIM = 1`; debug VSH builds). Install the output hook that gives a DualSense rumble, player LEDs and a light bar colour. `0` = off. The rewriting stages need the input hook (`SHIM_INPUT_HOOK`, default `1`); with `SHIM_INPUT_HOOK = 0` the output hook only observes. |
+| `SHIM_OUTPUT_MODE` | `2` | Shim only. What the output hook does: `0` observe (hook installed, nothing changes), `1` probe (fixed blue light bar and player LED 1, for tests), `2` full (rumble, player LEDs and light bar colour by controller number). Modes 1 and 2 only take effect with the input hook on (`SHIM_INPUT_HOOK`, default `1`); without it the hook stays an observer. |
 
 The configuration parser accepts a number of additional debug and shim-tuning keys used during development of the DS3 route; they default to off/safe and are not needed for normal use.
 

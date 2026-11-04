@@ -233,6 +233,20 @@ Still open after the console verification:
   level (one empty, one full).
 - A Move navigation controller and other devices with long reports were not
   exercised.
+- The output hook's rewritten report is built in one shared buffer (`out_buf`,
+  with the counter `out_seq`) that is not locked. If two DualSense output calls
+  ever interleaved, one report could in theory be swapped for the other's for one
+  period (about 18 ms). Nothing like it has been seen; a per-handle buffer is the
+  fix if a flicker is ever observed.
+- Unload cannot switch a DualSense back to its basic input report: a pad that is
+  already in the full-report mode stays without input after the plugin stops or
+  unloads, until it reconnects. (The unload order itself is safe: the receive
+  limits are lowered first, while the bounce is still in place, then the
+  redirects are undone.)
+- The rewriting stages need the input hook (`SHIM_INPUT_HOOK`): without the
+  bounce the full report would be read into the pad driver's 64-byte stack
+  buffer, so with `SHIM_INPUT_HOOK = 0` the cap word and the receive limits are
+  not installed and the blob runs as `out_mode` 0 (observe).
 
 ## Amendment 1 (2026-11-03): the packet buffer is moved
 
