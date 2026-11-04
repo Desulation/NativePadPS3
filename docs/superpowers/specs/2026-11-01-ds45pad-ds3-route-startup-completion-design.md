@@ -423,10 +423,30 @@ capture observes; webMAN polled at no more than 2-3 requests per second):
    identities, both ported); reconnect cycles; plugin unload restores the
    redirects.
 
+## Amendment 6 (2026-11-04): the Move navigation controller is restored (stage 1b)
+
+Stage 1 accepted the DualSense by turning the helper's `xori 0x042F` into
+`xori 0x0CE6`, which made the helper refuse the Move navigation controller
+(`0x042F`) while the shim ran. The helper row is now a BRANCH row: the first
+instruction of the helper `0x29E2B4` becomes a branch to `shim_pid_ok` in the
+blob, which accepts `0x0268`, `0x042F` and `0x0CE6` for VID `0x054C`. The helper
+is a leaf with `shim_pid_ok`'s ABI (VID in `r3`, PID in `r4`, answer in `r3`)
+and its six callers assume nothing preserved but the usual non-volatiles (note
+2026-10-31-ds3-route-pid-patch-fix.md, 1.2); the compiled function compares only
+the low 32 bits, as the original does. The row is verified by the FNV of the
+qword `0x29E2B0`, retargeted with the blob's load base, adopted and reverted like
+a word row. `DS45_SHIM_VERSION` is 7 so a build that applied the old word edit is
+never adopted. The two optional inline rows (`SHIM_INLINE_PID`) are unchanged
+and stay off by default: the Move motion controller (`0x03D5`) is untouched
+unless they are on.
+
+Console check: the first live run of a branch into the blob on this path, so it
+is run with the pads that are known to work (regression) and then with a Move
+navigation controller, which must get a pad object.
+
 ## Later stages
 
-- **Stage 1b** (before any release build): restore Move devices (see
-  "Product-ID acceptance").
+- **Stage 1b** (before any release build): restore Move devices (Amendment 6).
 - **Stage 2:** full reports and USB-cable pairing, specified together after
   stage 1 proves a native port.
   - Full reports `0x31` (motion, touchpad), which needs a request sent from the

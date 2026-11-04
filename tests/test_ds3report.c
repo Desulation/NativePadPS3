@@ -1161,7 +1161,7 @@ static int test_abi_layout(void)
 	/* 5: the debug diagnostic counters (Amendment 3) appended after the
 	 * product-ID originals - 248 bytes. 4 was the 208-byte layout, 3 the 176-byte
 	 * one without the product-ID originals. */
-	CHECK(DS45_SHIM_VERSION == 6);
+	CHECK(DS45_SHIM_VERSION == 7);
 	CHECK(DS45_SHIM_INFO_LEN == 0x56);
 
 	/* The plugin and the blob compile this header separately and meet in

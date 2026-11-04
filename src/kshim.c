@@ -15,7 +15,7 @@
  *      verify the whole region [base, base + blob + flush OPD) currently reads
  *      zero, that it ends at or before exec_bound, and that base is 8-aligned
  *      inside the window - writing nothing if any fails;
- *   4. range-check a BRANCH row against base (should a row carry one it must
+ *   4. range-check a BRANCH row against base (the helper row must
  *      reach shim_pid_ok - WORD rows hold a finished instruction, no range);
  *   5. copy the blob qword by qword, rebasing relocated words;
  *   6. fill the data block (originals, pad class and manager, info template,
@@ -212,10 +212,8 @@ static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int *n,
  * instruction replaces the high half when (addr & 4) == 0, the low half
  * otherwise (kpatch.h). A BRANCH row targets shim_pid_ok in the blob at base.
  * 0 if the row's instruction cannot be formed.
- * The BRANCH arm here (and the BRANCH range check and retargeting in
- * kshim_install_from) has no row and no test today: stage 1 is WORD rows only.
- * It is kept on purpose for stage 1b, which may add a BRANCH row to
- * shim_pid_ok - do not delete it; test it with that row. */
+ * The BRANCH arm serves the helper row (tests/test_kshim.c
+ * test_helper_branch_row). */
 static int pid_patched_qword(const ds45_kpatch_t *p, uint64_t orig, uint64_t base,
                              uint64_t *out)
 {
@@ -486,8 +484,7 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 		}
 	}
 
-	/* 4. a BRANCH row (none today; kept for stage 1b - see pid_patched_qword)
-	 * must reach shim_pid_ok in the blob within a 26-bit branch. A WORD row is a
+	/* 4. a BRANCH row (the helper) must reach shim_pid_ok in the blob within a 26-bit branch. A WORD row is a
 	 * finished instruction that never points at the blob, so it has no range to
 	 * check. */
 	target = base + DS45_SHIM_OFF_PID_OK;

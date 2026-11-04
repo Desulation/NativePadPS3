@@ -22,8 +22,10 @@
  * (pid_orig, pid_applied: 176 -> 208); 3 was the start-up completion layout
  * without them and never reached a console. The installer adopts a blob left by
  * an earlier load only if its version matches, since the plugin reaches into the
- * data block by these offsets - so any change to this struct bumps the number. */
-#define DS45_SHIM_VERSION 6
+ * data block by these offsets - so any change to this struct bumps the number.
+ * 7: the helper product-ID row became a branch to shim_pid_ok (same layout), so a
+ * build that applied the old word edit is not adopted. */
+#define DS45_SHIM_VERSION 7
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56

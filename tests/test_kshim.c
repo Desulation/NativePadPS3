@@ -472,7 +472,7 @@ static int check_blob_image(void)
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 6 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 7 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
 	          EVENT_ORIG ? 0 : __LINE__);
@@ -1413,6 +1413,70 @@ static int test_word_rows_do_not_follow_the_load_base(void)
 	return 0;
 }
 
+/* "b target" as PowerPC encodes it (AA = 0, LK = 0), worked out here
+ * independently of kpatch_branch_word. */
+static uint32_t ppc_b(uint64_t from, uint64_t to)
+{
+	return 0x48000000u | (uint32_t)((to - from) & 0x03FFFFFCu);
+}
+
+/* Stage 1b: the helper row is a BRANCH to shim_pid_ok in the blob (a leaf that
+ * accepts 0x0268, 0x042F and 0x0CE6), so the Move navigation controller keeps its
+ * pad object. The branch follows the blob's load base, is verified against the
+ * row's hash like a word edit, adopted and reverted like one. */
+static int test_helper_branch_row(void)
+{
+	static const uint64_t base[2] = { BLOB_BASE, BLOB_BASE + 0x40000 };
+	struct snap pristine, after;
+	uint64_t h[2];
+	int i;
+
+	for (i = 0; i < 2; i++) {
+		setup();
+		g_ent.pid_patches[0].kind = DS45_KPATCH_BRANCH;
+		g_ent.pid_patches[0].value = 0;
+		g_ent.exec_base = base[i];
+		g_ent.exec_bound = base[i] + 0x4000;
+		take_snap(&pristine);
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+
+		/* the instruction in the helper's qword is now a branch to shim_pid_ok in
+		 * the blob; the other half of the qword is untouched */
+		h[i] = rd(HELPER_QA);
+		CHECK((h[i] & 0xFFFFFFFFULL) ==
+		      ppc_b(HELPER_SITE, base[i] + DS45_SHIM_OFF_PID_OK));
+		CHECK((h[i] & HI32) == (HELPER_Q & HI32));
+
+		/* the recorded original is the helper's qword, and only that site is live */
+		CHECK(rd(base[i] + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_orig)) ==
+		      HELPER_Q);
+		CHECK((uint32_t)(rd(base[i] + DS45_SHIM_OFF_DATA +
+		                    offsetof(ds45_shim_data_t, pid_applied)) >> 32) == 1u);
+
+		/* the next load adopts it, and removing the adopted install restores the
+		 * helper exactly (a branch row must adopt like a word row) */
+		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+		CHECK(rd(HELPER_QA) == h[i]);
+		kshim_remove();
+		take_snap(&after);
+		CHECK(snap_eq(&pristine, &after));
+		CHECK(rd(HELPER_QA) == HELPER_Q);
+	}
+	/* a different load base gives a different branch */
+	CHECK(h[0] != h[1]);
+
+	/* a helper that no longer holds the researched qword is refused, nothing written */
+	setup();
+	g_ent.pid_patches[0].kind = DS45_KPATCH_BRANCH;
+	g_ent.pid_patches[0].value = 0;
+	put_q(HELPER_QA, HELPER_Q ^ 1);
+	take_snap(&pristine);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+	take_snap(&after);
+	CHECK(snap_eq(&pristine, &after));
+	return 0;
+}
+
 /* The DS3 info block of the facts note, section C1.5 (Bluetooth variant). */
 static const uint8_t c15_template[0x56] = {
 	0x00, 0x05, 0x03, 0x50, 0x00, 0x00, 0x00, 0x00,
@@ -1465,14 +1529,15 @@ static int test_builtin_table(void)
 	for (i = 8; i < 16; i++)
 		CHECK(k->info_tmpl[i] == 0);
 
-	/* acceptance: the helper word always, the two inline words only with
-	 * SHIM_INLINE_PID - all WORD rows, never a branch */
+	/* acceptance: the helper always, as a branch at its first instruction to
+	 * shim_pid_ok (its value is the blob address, filled in at install); the two
+	 * inline words only with SHIM_INLINE_PID, which are WORD rows */
 	CHECK(DS45_SHIM_PID_PATCHES == 1);
 	CHECK(DS45_SHIM_INLINE_PATCHES == 2);
-	CHECK(k->pid_patches[0].kind == DS45_KPATCH_WORD);
-	CHECK(k->pid_patches[0].addr == 0x800000000029E2CCULL);
-	CHECK(k->pid_patches[0].expect == 0x8D1047F832C76096ULL);
-	CHECK(k->pid_patches[0].value == 0x68800CE6ULL);
+	CHECK(k->pid_patches[0].kind == DS45_KPATCH_BRANCH);
+	CHECK(k->pid_patches[0].addr == 0x800000000029E2B4ULL);
+	CHECK(k->pid_patches[0].expect == 0xF1B8B3EFF22A78FCULL);
+	CHECK(k->pid_patches[0].value == 0);
 	CHECK(k->inline_patches[0].kind == DS45_KPATCH_WORD);
 	CHECK(k->inline_patches[0].addr == 0x800000000011B5E4ULL);
 	CHECK(k->inline_patches[0].expect == 0xE8ADD0EDF3B2B3C1ULL);
@@ -1649,6 +1714,7 @@ int run_tests(void)
 		test_adopt_remove_zeroes_blob,
 		test_remove_restores_all,
 		test_word_rows_do_not_follow_the_load_base,
+		test_helper_branch_row,
 		test_builtin_table,
 		test_builtin_row_on_pristine_image,
 	};
