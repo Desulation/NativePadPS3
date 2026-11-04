@@ -153,6 +153,75 @@ int SHIM_HOOK(shim_output)(const uint8_t *buf, uint16_t len, uint8_t *rid,
 	return shim_output_filter(&ds45_shim_data, buf, len, rid, obuf, olen);
 }
 
+/* DS3-route power-off decision, called by the shim_poweroff stub below, not by the
+ * kernel: the stub is entered by a plain `bl` at the kernel's close-connection
+ * send (0x102750 on DEX 4.92, called as (handle, type, report id, payload, length,
+ * cookie, object)), stores r3..r9 in a ds45_po_call_t in its own frame and passes
+ * its address. A 1 means "replace report id, payload and length with c->o_rid,
+ * c->o_buf, c->o_len" (a DualSense's close request in po_mode 1); 0 leaves the
+ * call alone. The original sender is tail-called by the stub, never from here. */
+int SHIM_HOOK(shim_poweroff)(ds45_po_call_t *c)
+{
+	return shim_poweroff_filter(&ds45_shim_data, c);
+}
+
+/* Pad teardown observation, called by the shim_teardown stub below: the stub is
+ * entered at the kernel's pad teardown routine 0x1174FC(address, flag) and passes
+ * its two arguments and its link register (the caller's return address) on. It
+ * only notes them; the stub tail-calls the original with every register as it
+ * came in. */
+void SHIM_HOOK(shim_teardown)(uint64_t addr, uint64_t flag, uint64_t lr)
+{
+	shim_teardown_note(&ds45_shim_data, addr, flag, lr);
+}
+
+/* Stub frame slots (shim.h has the frame layout): the numbers the assembly below
+ * uses, checked against the call record and the frame constants in both the blob
+ * and the host build, so a layout change cannot silently desynchronise the stubs
+ * from ds45_po_call_t. */
+#define SHIM_STATIC_ASSERT(n, c) typedef char shim_assert_##n[(c) ? 1 : -1]
+#define PO_S_HANDLE  0x70
+#define PO_S_TYPE    0x78
+#define PO_S_RID     0x80
+#define PO_S_PAYLOAD 0x88
+#define PO_S_LEN     0x90
+#define PO_S_COOKIE  0x98
+#define PO_S_OBJ     0xA0
+#define PO_S_ORID    0xA8
+#define PO_S_OBUF    0xB0
+#define PO_S_OLEN    0xB8
+SHIM_STATIC_ASSERT(po_handle,  SHIM_PO_CALL + __builtin_offsetof(ds45_po_call_t, handle)  == PO_S_HANDLE);
+SHIM_STATIC_ASSERT(po_type,    SHIM_PO_CALL + __builtin_offsetof(ds45_po_call_t, type)    == PO_S_TYPE);
+SHIM_STATIC_ASSERT(po_rid,     SHIM_PO_CALL + __builtin_offsetof(ds45_po_call_t, rid)     == PO_S_RID);
+SHIM_STATIC_ASSERT(po_payload, SHIM_PO_CALL + __builtin_offsetof(ds45_po_call_t, payload) == PO_S_PAYLOAD);
+SHIM_STATIC_ASSERT(po_len,     SHIM_PO_CALL + __builtin_offsetof(ds45_po_call_t, len)     == PO_S_LEN);
+SHIM_STATIC_ASSERT(po_cookie,  SHIM_PO_CALL + __builtin_offsetof(ds45_po_call_t, cookie)  == PO_S_COOKIE);
+SHIM_STATIC_ASSERT(po_obj,     SHIM_PO_CALL + __builtin_offsetof(ds45_po_call_t, obj)     == PO_S_OBJ);
+SHIM_STATIC_ASSERT(po_o_rid,   SHIM_PO_CALL + __builtin_offsetof(ds45_po_call_t, o_rid)   == PO_S_ORID);
+SHIM_STATIC_ASSERT(po_o_buf,   SHIM_PO_CALL + __builtin_offsetof(ds45_po_call_t, o_buf)   == PO_S_OBUF);
+SHIM_STATIC_ASSERT(po_o_len,   SHIM_PO_CALL + __builtin_offsetof(ds45_po_call_t, o_len)   == PO_S_OLEN);
+SHIM_STATIC_ASSERT(po_call_fills_frame,
+                   SHIM_PO_CALL + sizeof(ds45_po_call_t) == SHIM_PO_SAVED_LR &&
+                   SHIM_PO_SAVED_LR + 8 == SHIM_PO_SAVED_R2 &&
+                   SHIM_PO_SAVED_R2 + 8 == SHIM_PO_FRAME &&
+                   SHIM_PO_CALL == SHIM_STUB_PARAM_HI && SHIM_PO_FRAME % 16 == 0);
+#define TD_S_R3  0x80
+#define TD_S_R4  0x88
+#define TD_S_R5  0x90
+#define TD_S_R6  0x98
+#define TD_S_R7  0xA0
+#define TD_S_R8  0xA8
+#define TD_S_R9  0xB0
+#define TD_S_R10 0xB8
+SHIM_STATIC_ASSERT(td_args_contiguous,
+                   TD_S_R3 == SHIM_TD_ARGS && TD_S_R4 == TD_S_R3 + 8 && TD_S_R5 == TD_S_R4 + 8 &&
+                   TD_S_R6 == TD_S_R5 + 8 && TD_S_R7 == TD_S_R6 + 8 && TD_S_R8 == TD_S_R7 + 8 &&
+                   TD_S_R9 == TD_S_R8 + 8 && TD_S_R10 == TD_S_R9 + 8);
+SHIM_STATIC_ASSERT(td_frame,
+                   SHIM_TD_SAVED_LR == SHIM_STUB_PARAM_HI && SHIM_TD_SAVED_R2 == SHIM_TD_SAVED_LR + 8 &&
+                   SHIM_TD_ARGS == SHIM_TD_SAVED_R2 + 8 && TD_S_R10 + 8 == SHIM_TD_FRAME &&
+                   SHIM_TD_FRAME % 16 == 0);
+
 #ifndef DS45_HOST_TEST
 /* orig_output's offset in the data block, spelled out for the stub below (an
  * asm block cannot take offsetof). The typedef fails the build if the ABI
@@ -160,6 +229,13 @@ int SHIM_HOOK(shim_output)(const uint8_t *buf, uint16_t len, uint8_t *rid,
 #define SHIM_OFF_ORIG_OUTPUT 360   /* 328 until version 12 grew pid_orig by 32 bytes (304 before version 10) */
 typedef char shim_off_orig_output_matches_abi[
 	(__builtin_offsetof(ds45_shim_data_t, orig_output) == SHIM_OFF_ORIG_OUTPUT) ? 1 : -1];
+/* The same for the two power-off hooks' originals (version 12). */
+#define SHIM_OFF_ORIG_POWEROFF 984
+#define SHIM_OFF_ORIG_TEARDOWN 992
+typedef char shim_off_orig_poweroff_matches_abi[
+	(__builtin_offsetof(ds45_shim_data_t, orig_poweroff) == SHIM_OFF_ORIG_POWEROFF) ? 1 : -1];
+typedef char shim_off_orig_teardown_matches_abi[
+	(__builtin_offsetof(ds45_shim_data_t, orig_teardown) == SHIM_OFF_ORIG_TEARDOWN) ? 1 : -1];
 #define SHIM_XSTR_(x) #x
 #define SHIM_XSTR(x) SHIM_XSTR_(x)
 
@@ -188,6 +264,8 @@ __asm__(
 "\t.globl shim_enable\n" "shim_enable:\n" "\t.quad .Ltr_enable, .TOC.@tocbase, .TOC.@tocbase\n"
 "\t.globl shim_input\n"  "shim_input:\n"  "\t.quad .Ltr_input, .TOC.@tocbase, .TOC.@tocbase\n"
 "\t.globl shim_output\n" "shim_output:\n" "\t.quad .Ltr_output, .TOC.@tocbase, .TOC.@tocbase\n"
+"\t.globl shim_poweroff\n" "shim_poweroff:\n" "\t.quad .Ltr_poweroff, .TOC.@tocbase, .TOC.@tocbase\n"
+"\t.globl shim_teardown\n" "shim_teardown:\n" "\t.quad .Ltr_teardown, .TOC.@tocbase, .TOC.@tocbase\n"
 "\t.text\n"
 "\t.p2align 2\n"
 ".Ltr_event:\n"
@@ -291,6 +369,150 @@ __asm__(
 "\tbctr\n"
 "\t.p2align 3\n"
 ".Ltr_output_toc:\n"
+"\t.quad .TOC.@tocbase\n"
+);
+
+/* shim_poweroff: the close-connection hook, entered by a PLAIN `bl` from the
+ * kernel's code at 0xCA9BC (DEX 4.92; gate note G2), replacing the call
+ * `bl 0x102750` (the Bluetooth close/send routine, kernel code address stored in
+ * ds45_shim_data.orig_poweroff). Like shim_output it has a descriptor only so
+ * tools/shim_pack.py finds its code entry (DS45_SHIM_OFF_POWEROFF); nothing
+ * dispatches through it, r11 is NOT the blob TOC and r2 is the KERNEL TOC.
+ *
+ * On entry: r2 kernel TOC, r3 connection handle, r4 type, r5 report id, r6 payload
+ * pointer, r7 length, r8 cookie, r9 the request object (r10 is not an argument);
+ * LR = 0xCA9C0, the instruction after the kernel's bl; r1 the kernel caller's frame;
+ * r14..r31 live. On exit it BRANCHES (bctr) to the original, which must see exactly
+ * what the kernel's bl would have given it: r2 = kernel TOC, LR = 0xCA9C0, r1 = the
+ * kernel's frame, r3, r4, r8, r9 unchanged and r5, r6, r7 unchanged - or, when the
+ * decision rewrote the call, replaced by o_rid, o_buf, o_len. The original then
+ * returns straight to the kernel. Written: r0, r2 (restored), r3..r9 (restored,
+ * r5..r7 possibly replaced), r10 (by the C body), r11, r12, CTR, cr0 and cr7, LR
+ * (restored); gate note G2: the original reads none of r0, r10, r11, r12, CR or CTR
+ * before writing them. The C body keeps r14..r31 intact by itself. The frame is
+ * below r1: nothing above it is touched.
+ *
+ * Steps: 1. save LR, r2 and r3..r9 in a new frame (r3..r9 straight into the
+ * ds45_po_call_t at SHIM_PO_CALL); 2. adopt the BLOB TOC into r2 exactly as
+ * shim_output does (`bcl 20,31` + mflr, the 8-byte literal beside the stub, an
+ * R_PPC64_TOC word the packer rebases); 3. call shim_poweroff_impl(&call) (the nop is
+ * the TOC-restore slot a linker may rewrite; r2 stays the blob TOC); 4. with r2
+ * still the blob TOC, load ds45_shim_data.orig_poweroff (TOC-relative) into CTR;
+ * 5. restore the kernel r2, r3, r4, r8, r9, then r5..r7 from o_rid, o_buf, o_len if
+ * the result was non-zero, else from rid, payload, len; 6. restore LR, pop the
+ * frame, bctr.
+ *
+ * Frame (SHIM_PO_FRAME = 0xD0 bytes, 16-aligned; the stdu keeps the back chain):
+ *   0x00 back chain   0x08 CR   0x10 LR slot (the callee's)   0x18..0x2F reserved
+ *   0x30..0x6F parameter save area for the callee (8 doublewords, ELFv1)
+ *   0x70 handle  0x78 type  0x80 rid  0x88 payload  0x90 len  0x98 cookie  0xA0 obj
+ *   0xA8 o_rid   0xB0 o_buf 0xB8 o_len (the ds45_po_call_t, 0x70..0xBF)
+ *   0xC0 saved LR   0xC8 saved r2 */
+__asm__(
+"\t.text\n"
+"\t.p2align 2\n"
+".Ltr_poweroff:\n"
+"\tmflr 0\n"
+"\tstdu 1, -" SHIM_XSTR(SHIM_PO_FRAME) "(1)\n"
+"\tstd 0, " SHIM_XSTR(SHIM_PO_SAVED_LR) "(1)\n"
+"\tstd 2, " SHIM_XSTR(SHIM_PO_SAVED_R2) "(1)\n"
+"\tstd 3, " SHIM_XSTR(PO_S_HANDLE) "(1)\n"
+"\tstd 4, " SHIM_XSTR(PO_S_TYPE) "(1)\n"
+"\tstd 5, " SHIM_XSTR(PO_S_RID) "(1)\n"
+"\tstd 6, " SHIM_XSTR(PO_S_PAYLOAD) "(1)\n"
+"\tstd 7, " SHIM_XSTR(PO_S_LEN) "(1)\n"
+"\tstd 8, " SHIM_XSTR(PO_S_COOKIE) "(1)\n"
+"\tstd 9, " SHIM_XSTR(PO_S_OBJ) "(1)\n"
+"\tbcl 20, 31, .Ltr_poweroff_pc\n"
+".Ltr_poweroff_pc:\n"
+"\tmflr 12\n"
+"\tld 2, .Ltr_poweroff_toc-.Ltr_poweroff_pc(12)\n"
+"\taddi 3, 1, " SHIM_XSTR(PO_S_HANDLE) "\n"
+"\tbl shim_poweroff_impl\n" "\tnop\n"
+"\taddis 12, 2, ds45_shim_data+" SHIM_XSTR(SHIM_OFF_ORIG_POWEROFF) "@toc@ha\n"
+"\tld 12, ds45_shim_data+" SHIM_XSTR(SHIM_OFF_ORIG_POWEROFF) "@toc@l(12)\n"
+"\tmtctr 12\n"
+"\tcmpwi 7, 3, 0\n"
+"\tld 2, " SHIM_XSTR(SHIM_PO_SAVED_R2) "(1)\n"
+"\tld 3, " SHIM_XSTR(PO_S_HANDLE) "(1)\n"
+"\tld 4, " SHIM_XSTR(PO_S_TYPE) "(1)\n"
+"\tld 8, " SHIM_XSTR(PO_S_COOKIE) "(1)\n"
+"\tld 9, " SHIM_XSTR(PO_S_OBJ) "(1)\n"
+"\tbeq 7, .Ltr_poweroff_keep\n"
+"\tld 5, " SHIM_XSTR(PO_S_ORID) "(1)\n"
+"\tld 6, " SHIM_XSTR(PO_S_OBUF) "(1)\n"
+"\tld 7, " SHIM_XSTR(PO_S_OLEN) "(1)\n"
+"\tb .Ltr_poweroff_done\n"
+".Ltr_poweroff_keep:\n"
+"\tld 5, " SHIM_XSTR(PO_S_RID) "(1)\n"
+"\tld 6, " SHIM_XSTR(PO_S_PAYLOAD) "(1)\n"
+"\tld 7, " SHIM_XSTR(PO_S_LEN) "(1)\n"
+".Ltr_poweroff_done:\n"
+"\tld 0, " SHIM_XSTR(SHIM_PO_SAVED_LR) "(1)\n"
+"\tmtlr 0\n"
+"\taddi 1, 1, " SHIM_XSTR(SHIM_PO_FRAME) "\n"
+"\tbctr\n"
+"\t.p2align 3\n"
+".Ltr_poweroff_toc:\n"
+"\t.quad .TOC.@tocbase\n"
+);
+
+/* shim_teardown: the pad teardown hook. It is entered at the kernel's teardown
+ * routine 0x1174FC(r3 = the 48-bit Bluetooth address as a VALUE, r4 = flag) by `bl`
+ * from 0xF4D94 and 0xFDB44 and by a plain tail `b` from 0xF722C (so LR is then the
+ * return address of the caller's caller; gate note G2/G6). It observes and changes
+ * nothing: it calls shim_teardown_impl(r3, r4, LR) and then branches (bctr) to the
+ * original with r1, r2, r3..r10 and LR exactly as they came in. Written: r0, r2
+ * (restored), r3..r10 (restored), r11, r12, CTR, cr0 and cr7 and the other
+ * volatile CR fields by the C body, LR (restored); the original reads none of r0,
+ * r11, r12, CR or CTR before writing them (G2). Same TOC technique as the
+ * stubs above (the literal is the packer's R_PPC64_TOC word).
+ *
+ * Frame (SHIM_TD_FRAME = 0xC0 bytes, 16-aligned; back chain kept by the stdu):
+ *   0x00 back chain   0x08 CR   0x10 LR slot (the callee's)   0x18..0x2F reserved
+ *   0x30..0x6F parameter save area for the callee (8 doublewords)
+ *   0x70 saved LR   0x78 saved r2   0x80..0xBF r3..r10 (one doubleword each)
+ * LR is copied to r5 (third argument) before the `bcl` overwrites it. */
+__asm__(
+"\t.text\n"
+"\t.p2align 2\n"
+".Ltr_teardown:\n"
+"\tmflr 0\n"
+"\tstdu 1, -" SHIM_XSTR(SHIM_TD_FRAME) "(1)\n"
+"\tstd 0, " SHIM_XSTR(SHIM_TD_SAVED_LR) "(1)\n"
+"\tstd 2, " SHIM_XSTR(SHIM_TD_SAVED_R2) "(1)\n"
+"\tstd 3, " SHIM_XSTR(TD_S_R3) "(1)\n"
+"\tstd 4, " SHIM_XSTR(TD_S_R4) "(1)\n"
+"\tstd 5, " SHIM_XSTR(TD_S_R5) "(1)\n"
+"\tstd 6, " SHIM_XSTR(TD_S_R6) "(1)\n"
+"\tstd 7, " SHIM_XSTR(TD_S_R7) "(1)\n"
+"\tstd 8, " SHIM_XSTR(TD_S_R8) "(1)\n"
+"\tstd 9, " SHIM_XSTR(TD_S_R9) "(1)\n"
+"\tstd 10, " SHIM_XSTR(TD_S_R10) "(1)\n"
+"\tmr 5, 0\n"
+"\tbcl 20, 31, .Ltr_teardown_pc\n"
+".Ltr_teardown_pc:\n"
+"\tmflr 12\n"
+"\tld 2, .Ltr_teardown_toc-.Ltr_teardown_pc(12)\n"
+"\tbl shim_teardown_impl\n" "\tnop\n"
+"\taddis 12, 2, ds45_shim_data+" SHIM_XSTR(SHIM_OFF_ORIG_TEARDOWN) "@toc@ha\n"
+"\tld 12, ds45_shim_data+" SHIM_XSTR(SHIM_OFF_ORIG_TEARDOWN) "@toc@l(12)\n"
+"\tmtctr 12\n"
+"\tld 2, " SHIM_XSTR(SHIM_TD_SAVED_R2) "(1)\n"
+"\tld 3, " SHIM_XSTR(TD_S_R3) "(1)\n"
+"\tld 4, " SHIM_XSTR(TD_S_R4) "(1)\n"
+"\tld 5, " SHIM_XSTR(TD_S_R5) "(1)\n"
+"\tld 6, " SHIM_XSTR(TD_S_R6) "(1)\n"
+"\tld 7, " SHIM_XSTR(TD_S_R7) "(1)\n"
+"\tld 8, " SHIM_XSTR(TD_S_R8) "(1)\n"
+"\tld 9, " SHIM_XSTR(TD_S_R9) "(1)\n"
+"\tld 10, " SHIM_XSTR(TD_S_R10) "(1)\n"
+"\tld 0, " SHIM_XSTR(SHIM_TD_SAVED_LR) "(1)\n"
+"\tmtlr 0\n"
+"\taddi 1, 1, " SHIM_XSTR(SHIM_TD_FRAME) "\n"
+"\tbctr\n"
+"\t.p2align 3\n"
+".Ltr_teardown_toc:\n"
 "\t.quad .TOC.@tocbase\n"
 );
 #endif

@@ -31,6 +31,8 @@ int shim_enable(void *drv, long status, long len);
 int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag);
 int shim_output(const uint8_t *buf, uint16_t len, uint8_t *rid,
                 const uint8_t **obuf, uint16_t *olen);
+int shim_poweroff(ds45_po_call_t *c);
+void shim_teardown(uint64_t addr, uint64_t flag, uint64_t lr);
 
 /* Sony USB identity. */
 #define VID_SONY        0x054C
@@ -3158,12 +3160,18 @@ static int test_teardown_note_counts_and_disabled(void)
 	return 0;
 }
 
-/* The glue for the power-off hooks arrives with the blob stubs (the SHIM_HOOK(
- * shim_poweroff) / SHIM_HOOK(shim_teardown) bodies); until then this pins what
- * exists: the pure functions' signatures and the call record's layout, which the
- * stub's frame offsets will be asserted against. */
+/* The glue for the power-off hooks: on the host shim_poweroff / shim_teardown are
+ * the C bodies of the blob stubs (entry.c), and they decide on the one shared data
+ * object. Also pins the pure functions' signatures, the call record's layout and
+ * the stubs' frame offsets (shim.h) against it; entry.c asserts the same offsets
+ * at compile time against the numbers its assembly uses. */
 static int test_glue_poweroff(void)
 {
+	fake_pad_t pad, ds3;
+	fake_obj_t obj, ds3_obj;
+	ds45_po_call_t c;
+	int i;
+
 	int (*pf)(ds45_shim_data_t *, ds45_po_call_t *) = shim_poweroff_filter;
 	void (*tf)(ds45_shim_data_t *, uint64_t, uint64_t, uint64_t) = shim_teardown_note;
 
@@ -3179,6 +3187,65 @@ static int test_glue_poweroff(void)
 	CHECK(offsetof(ds45_po_call_t, o_rid) == 56);
 	CHECK(offsetof(ds45_po_call_t, o_buf) == 64);
 	CHECK(offsetof(ds45_po_call_t, o_len) == 72);
+
+	/* stub frame offsets: both frames 16-aligned; the call record fills the frame
+	 * from SHIM_PO_CALL (0x70) to 0xBF, then saved LR 0xC0 and saved r2 0xC8; the
+	 * parameter save area 0x30..0x6F sits below it; teardown keeps saved LR 0x70,
+	 * saved r2 0x78 and r3..r10 at 0x80..0xBF; no slot overlaps another or the frame
+	 * header (0x00..0x2F) or runs past the frame */
+	CHECK(SHIM_STUB_PARAM_LO == 0x30 && SHIM_STUB_PARAM_HI == 0x70);
+	CHECK(SHIM_STUB_PARAM_HI - SHIM_STUB_PARAM_LO >= 8 * 8);
+	CHECK(SHIM_PO_FRAME == 0xD0 && SHIM_PO_FRAME % 16 == 0);
+	CHECK(SHIM_PO_CALL == 0x70 && SHIM_PO_CALL >= SHIM_STUB_PARAM_HI);
+	CHECK(SHIM_PO_CALL + sizeof(ds45_po_call_t) == 0xC0);
+	CHECK(SHIM_PO_SAVED_LR == 0xC0 && SHIM_PO_SAVED_R2 == 0xC8);
+	CHECK(SHIM_PO_CALL + sizeof(ds45_po_call_t) <= SHIM_PO_SAVED_LR);
+	CHECK(SHIM_PO_SAVED_R2 + 8 == SHIM_PO_FRAME);
+	CHECK(SHIM_TD_FRAME == 0xC0 && SHIM_TD_FRAME % 16 == 0);
+	CHECK(SHIM_TD_SAVED_LR == 0x70 && SHIM_TD_SAVED_R2 == 0x78 && SHIM_TD_ARGS == 0x80);
+	CHECK(SHIM_TD_SAVED_LR >= SHIM_STUB_PARAM_HI);
+	CHECK(SHIM_TD_SAVED_R2 == SHIM_TD_SAVED_LR + 8 && SHIM_TD_ARGS == SHIM_TD_SAVED_R2 + 8);
+	CHECK(SHIM_TD_ARGS + 8 * 8 == SHIM_TD_FRAME);
+
+	/* shim_poweroff: the body of the stub, deciding on the shared data object */
+	CHECK(shim_poweroff(NULL) == 0);
+	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
+	pad_make(&ds3, PAD_VTABLE, VID_SONY, PID_DS3);
+	po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
+	po_obj(&ds3_obj, &ds3, SHIM_PO_KIND_CLOSE);
+
+	ds45_shim_data = data_po(1);
+	c = po_call(&obj);
+	CHECK(shim_poweroff(&c) == 1);
+	CHECK(c.o_rid == 0x08 && c.o_len == 46);
+	CHECK(c.o_buf == (uint64_t)(uintptr_t)ds45_shim_data.po_buf);
+	CHECK(c.handle == 5 && c.type == 3 && c.rid == 0xF4 && c.len == 4 && c.cookie == 0x1122);
+	CHECK(c.payload == (uint64_t)(uintptr_t)po_payload && c.obj == (uint64_t)(uintptr_t)&obj);
+	CHECK(ds45_shim_data.dbg_po_calls == 1 && ds45_shim_data.dbg_po_ds == 1 &&
+	      ds45_shim_data.dbg_po_rewritten == 1 && ds45_shim_data.dbg_po_passed == 0);
+
+	c = po_call(&ds3_obj);                      /* a DualShock 3 is left alone */
+	CHECK(shim_poweroff(&c) == 0 && po_untouched(&c));
+	CHECK(ds45_shim_data.dbg_po_calls == 2 && ds45_shim_data.dbg_po_passed == 1);
+
+	ds45_shim_data = data_po(0);                /* observe mode never rewrites */
+	c = po_call(&obj);
+	CHECK(shim_poweroff(&c) == 0 && po_untouched(&c));
+	CHECK(ds45_shim_data.dbg_po_ds == 1 && ds45_shim_data.dbg_po_passed == 1);
+
+	/* shim_teardown: the body of the stub, noting (addr, flag, lr) and nothing else */
+	ds45_shim_data = data_po(1);
+	shim_teardown(0x80000000001234ULL, 1, 0x8000000000ABCDULL);
+	CHECK(ds45_shim_data.dbg_td_calls == 1 && ds45_shim_data.po_seq == 1);
+	CHECK(ds45_shim_data.po_ring[0][3] == 1 && ds45_shim_data.po_ring[0][4] == 2 &&
+	      ds45_shim_data.po_ring[0][6] == 1);
+	CHECK(ds45_shim_data.po_ring[0][10] == 0xAB && ds45_shim_data.po_ring[0][11] == 0xCD);
+	CHECK(ds45_shim_data.po_ring[0][14] == 0x12 && ds45_shim_data.po_ring[0][15] == 0x34);
+	CHECK(ds45_shim_data.dbg_po_calls == 0 && ds45_shim_data.dbg_po_rewritten == 0);
+	for (i = 1; i < 8; i++) {
+		static const uint8_t zero16[16];
+		CHECK(memcmp(ds45_shim_data.po_ring[i], zero16, 16) == 0);
+	}
 	return 0;
 }
 

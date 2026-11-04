@@ -203,6 +203,25 @@ typedef struct {
 	uint64_t o_rid, o_buf, o_len;
 } ds45_po_call_t;
 
+/* Stack frame layout of the shim_poweroff and shim_teardown stubs (shim/entry.c),
+ * fixed here so the host test can pin them against the call record. Both frames are
+ * 16-byte aligned, keep the back chain (stdu) and a 0x30..0x6F parameter save area
+ * (eight doublewords) for the C body they call; nothing above the frame is touched.
+ *   power-off, frame SHIM_PO_FRAME: the ds45_po_call_t at SHIM_PO_CALL (the stub
+ *     stores r3..r9 into its first seven fields, the body writes o_*), then the
+ *     saved LR and the saved kernel r2.
+ *   teardown, frame SHIM_TD_FRAME: saved LR, saved kernel r2, then r3..r10. */
+#define SHIM_STUB_PARAM_LO 0x30
+#define SHIM_STUB_PARAM_HI 0x70  /* end of the parameter save area (exclusive) */
+#define SHIM_PO_FRAME      0xD0
+#define SHIM_PO_CALL       0x70
+#define SHIM_PO_SAVED_LR   0xC0
+#define SHIM_PO_SAVED_R2   0xC8
+#define SHIM_TD_FRAME      0xC0
+#define SHIM_TD_SAVED_LR   0x70
+#define SHIM_TD_SAVED_R2   0x78
+#define SHIM_TD_ARGS       0x80  /* r3..r10, eight doublewords */
+
 #define SHIM_PO_OBJ_KIND   0x38  /* u32 in the call's object: the kind of request */
 #define SHIM_PO_OBJ_PAD    0x48  /* u64 in the call's object: the pad */
 #define SHIM_PO_KIND_CLOSE 3     /* the kind of the Bluetooth close (power-off) request */
