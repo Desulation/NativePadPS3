@@ -761,6 +761,22 @@ two buffer-slot rows.
   dispatch at `0x2A13CC`; the mapping from the stored type word to the factory's device type was not traced).
 - Whether the application's poll rate is the one that the probe run counted (needs the extra counter, F10.6).
 
+## F11 - Console probe run 2, with the receive path (2026-11-04, plan task 9 retry) [console]
+
+Build: probe mode (`SHIM_OUTPUT_MODE = 1`) with the three channel-1 read-limit rows (`li r7,0x50` at 0xF9094, 0xF9134,
+0xF91F4; the channel-3 limit at 0xF8484 untouched), the moved 96-byte packet buffer, the cap word `0x4D`, and the
+bounce-buffer input hook for every read (R12), data block v10. Read back after install: the three limit words, the cap
+word, the call site and both buffer slots as intended. Pads: a DS3 over Bluetooth and one DualSense.
+
+**Result (passed).** The DualSense's light bar turned blue and **its input kept working** (user), the DS3 unaffected. No
+hang. Counters after about 100 s: 6,407 transport reads in total, 2,946 on the DualSense, **2,917 translated**
+(`xl` rising steadily), **2,916 reads longer than 65 bytes** (`inbig`: the full 0x31 reports now arrive through the
+bounce buffer), `indrop` 0, `inerr` 0, `padmiss` 0, `outxl` 11 of 23 output calls rewritten. This confirms the
+explanation of F8: the first rewritten output makes the pad switch to the full report, and the raised limit plus the
+bounce buffer is what lets it through; the earlier stall was the over-long record desynchronising the ring.
+
+The translated reports are full reports, so motion and the real battery level now reach the DS3 report as well.
+
 ## Method (commands)
 
 All from the scratchpad, never from the repo root (`dis.py` there shadows the stdlib), `python -I`:
