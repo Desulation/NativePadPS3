@@ -41,6 +41,11 @@
 #define SHIM_MGR_OBJS     0x60   /* pad manager: u64 object pointers */
 #define SHIM_MGR_NOBJS    16
 #define SHIM_ID_OFF       0x08   /* identity bytes in the info block: +0x08..+0x0F */
+#define SHIM_DRV_HANDLE   0xAC   /* u8, start-up driver: the Bluetooth connection handle */
+#define SHIM_CONN_NHANDLES 7     /* connection table: handles 0..6 */
+#define SHIM_CONN_HANDLE  0x10   /* u8 in a connection entry: its own handle */
+#define SHIM_CONN_ID      0x08   /* a connection entry's +0x08..+0x0F: the controller's
+                                  * Bluetooth address in the pad-identity layout */
 
 /* 1 only for a DualSense (VID 0x054C, PID 0x0CE6). */
 int shim_is_dualsense(uint16_t vid, uint16_t pid);
@@ -59,9 +64,20 @@ int shim_pad_is_dualsense(const ds45_shim_data_t *d, const uint8_t *pad);
 /* Start-up event decision. For an enabled shim and a DualSense driver whose
  * substate != 9 and whose info pointer (drv+0x58) is exactly its pad + 0x80:
  * copy d->info_tmpl[0..DS45_SHIM_INFO_LEN) to the info block,
- * bump stat_completed and write the identity bytes info+0x08..+0x0F =
- * stat_completed (u32 big-endian), 0xD5, 0x00, 0x44, 0x53; store status 0
- * (4 bytes) and substate 9; return 1 (the caller returns 0 to the framework).
+ * bump stat_completed and write the identity bytes info+0x08..+0x0F; store
+ * status 0 (4 bytes) and substate 9; return 1 (the caller returns 0 to the
+ * framework).
+ *
+ * The identity is, when d->stable_id is set and d->conn_tbl is not 0, the
+ * controller's own Bluetooth address: h = drv[0xAC] (the connection handle),
+ * entry = the u64 at conn_tbl + 8*h, and info+0x08..+0x0F = entry+0x08..+0x0F with
+ * the unused byte +0x0D forced to 0. It is taken only if h < 7, entry is non-NULL,
+ * entry[0x10] == h, the address is not all zero and is not the kernel's
+ * alternate-branch pattern (info+0x0C == 0x18 with the u16 at +0x0E == 0x000D);
+ * otherwise (and when stable_id is 0 or conn_tbl is 0) the identity is the
+ * per-boot counter form stat_completed (u32 big-endian), 0xD5, 0x00, 0x44, 0x53.
+ * dbg_id_bd counts addresses taken, dbg_id_fallback counts attempts that fell
+ * back, dbg_last_handle records the handle looked up. Pure loads.
  * Otherwise write nothing and return 0 (the caller tail-calls the original).
  * drv NULL -> 0. */
 int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv);

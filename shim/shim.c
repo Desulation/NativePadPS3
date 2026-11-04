@@ -99,11 +99,42 @@ static inline void put_status_ok(uint8_t *drv)
 	drv[SHIM_DRV_STATUS + 3] = 0;
 }
 
+/* The controller's own Bluetooth address from its connection entry (see
+ * shim_event_complete's contract); 1 and id[0..7] on success, else 0 with id
+ * untouched. The byte at +0x0D is unused by the kernel's compare and is forced to
+ * 0, so the identity does not depend on stale heap there. */
+static int stable_identity(const ds45_shim_data_t *d, const uint8_t *drv, uint8_t id[8])
+{
+	const uint8_t *tbl, *ent;
+	uint8_t h;
+	int i, nonzero = 0;
+
+	h = drv[SHIM_DRV_HANDLE];
+	if (h >= SHIM_CONN_NHANDLES)
+		return 0;
+	tbl = (const uint8_t *)(uintptr_t)d->conn_tbl;
+	ent = ld_ptr(tbl + 8 * h);
+	if (!ent || ent[SHIM_CONN_HANDLE] != h)
+		return 0;
+	for (i = 0; i < 8; i++)
+		id[i] = ent[SHIM_CONN_ID + i];
+	id[5] = 0;
+	for (i = 0; i < 8; i++)
+		nonzero |= id[i];
+	if (!nonzero)
+		return 0;
+	/* info+0x0C is id[4]; the u16 at info+0x0E is id[6..7] */
+	if (id[4] == 0x18 && id[6] == 0x00 && id[7] == 0x0D)
+		return 0;
+	return 1;
+}
+
 int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv)
 {
 	uint8_t *pad, *info;
+	uint8_t bd[8];
 	uint32_t n;
-	int i;
+	int i, have_bd = 0;
 
 	if (!d || !drv || !d->enabled)
 		return 0;
@@ -127,20 +158,37 @@ int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv)
 	for (i = 0; i < DS45_SHIM_INFO_LEN; i++)
 		info[i] = d->info_tmpl[i];
 
-	/* 2. this pad's identity: the completion count, then the fixed tag. The
-	 * start-up framework runs driver events one at a time, so a plain
-	 * increment numbers every DualSense of a boot uniquely. stat_completed is
-	 * therefore not just a debug counter: nothing may ever reset it (see
-	 * shim_abi.h), or two pads of one boot could get the same identity. */
+	/* 2. this pad's identity. Preferred: the controller's own Bluetooth address,
+	 * read from its connection (the handle is the start-up driver's, which is the
+	 * very byte the kernel's senders resolve the connection with), so the same
+	 * controller keeps the same identity across reconnects. Fallback: the
+	 * completion count, then the fixed tag. The start-up framework runs driver
+	 * events one at a time, so a plain increment numbers every fallback DualSense
+	 * of a boot uniquely. stat_completed is therefore not just a debug counter:
+	 * nothing may ever reset it (see shim_abi.h), or two pads of one boot could
+	 * get the same identity. It counts every completion, address-based or not. */
 	n = ++d->stat_completed;
-	info[SHIM_ID_OFF + 0] = (uint8_t)(n >> 24);
-	info[SHIM_ID_OFF + 1] = (uint8_t)(n >> 16);
-	info[SHIM_ID_OFF + 2] = (uint8_t)(n >> 8);
-	info[SHIM_ID_OFF + 3] = (uint8_t)n;
-	info[SHIM_ID_OFF + 4] = SHIM_ID_TAG0;
-	info[SHIM_ID_OFF + 5] = SHIM_ID_TAG1;
-	info[SHIM_ID_OFF + 6] = SHIM_ID_TAG2;
-	info[SHIM_ID_OFF + 7] = SHIM_ID_TAG3;
+	if (d->stable_id && d->conn_tbl) {
+		d->dbg_last_handle = drv[SHIM_DRV_HANDLE];
+		have_bd = stable_identity(d, drv, bd);
+		if (have_bd)
+			d->dbg_id_bd++;
+		else
+			d->dbg_id_fallback++;
+	}
+	if (have_bd) {
+		for (i = 0; i < 8; i++)
+			info[SHIM_ID_OFF + i] = bd[i];
+	} else {
+		info[SHIM_ID_OFF + 0] = (uint8_t)(n >> 24);
+		info[SHIM_ID_OFF + 1] = (uint8_t)(n >> 16);
+		info[SHIM_ID_OFF + 2] = (uint8_t)(n >> 8);
+		info[SHIM_ID_OFF + 3] = (uint8_t)n;
+		info[SHIM_ID_OFF + 4] = SHIM_ID_TAG0;
+		info[SHIM_ID_OFF + 5] = SHIM_ID_TAG1;
+		info[SHIM_ID_OFF + 6] = SHIM_ID_TAG2;
+		info[SHIM_ID_OFF + 7] = SHIM_ID_TAG3;
+	}
 
 	/* 3. status 0 and "done": the framework then calls the ready callback with
 	 * status 0 and the kernel's own version check runs on the block above. */

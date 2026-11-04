@@ -61,7 +61,8 @@ typedef struct {
 	uint64_t input_slot, input_expect;          /* 0x37CE38 / 0x33A010 OPD */
 	uint64_t pad_vtable;                        /* 0x800000000038CDC8 */
 	uint64_t pad_mgr;                           /* 0x80000000004A1CB8 */
-	const uint8_t *info_tmpl;                   /* DS45_SHIM_INFO_LEN bytes (facts note C1.5) */
+	uint64_t conn_tbl;                          /* 0x8000000000432690: Bluetooth connection table (7 entry pointers, by handle) */
+	const uint8_t *info_tmpl;                  /* DS45_SHIM_INFO_LEN bytes (facts note C1.5) */
 	ds45_kpatch_t pid_patches[DS45_SHIM_PID_PATCHES];
 	ds45_kpatch_t inline_patches[DS45_SHIM_INLINE_PATCHES];
 } ds45_shim_kernel_t;

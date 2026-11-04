@@ -1150,7 +1150,7 @@ static int test_abi_layout(void)
 	/* 5: the debug diagnostic counters (Amendment 3) appended after the
 	 * product-ID originals - 248 bytes. 4 was the 208-byte layout, 3 the 176-byte
 	 * one without the product-ID originals. */
-	CHECK(DS45_SHIM_VERSION == 5);
+	CHECK(DS45_SHIM_VERSION == 6);
 	CHECK(DS45_SHIM_INFO_LEN == 0x56);
 
 	/* The plugin and the blob compile this header separately and meet in
@@ -1198,7 +1198,14 @@ static int test_abi_layout(void)
 	CHECK(offsetof(ds45_shim_data_t, dbg_input_ds) == 232);
 	CHECK(offsetof(ds45_shim_data_t, dbg_last_pid) == 236);
 	CHECK(offsetof(ds45_shim_data_t, dbg_last_vtable) == 240);
-	CHECK(sizeof(ds45_shim_data_t) == 248);
+	/* stage 1b stable identity, appended after dbg_last_vtable: the connection
+	 * table address, the on/off switch and three counters; 248 -> 272 */
+	CHECK(offsetof(ds45_shim_data_t, conn_tbl) == 248);
+	CHECK(offsetof(ds45_shim_data_t, stable_id) == 256);
+	CHECK(offsetof(ds45_shim_data_t, dbg_id_bd) == 260);
+	CHECK(offsetof(ds45_shim_data_t, dbg_id_fallback) == 264);
+	CHECK(offsetof(ds45_shim_data_t, dbg_last_handle) == 268);
+	CHECK(sizeof(ds45_shim_data_t) == 272);
 	return 0;
 }
 

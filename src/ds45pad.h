@@ -347,6 +347,12 @@ typedef struct {
 	 * from the helper patch while finding the DS3 interaction on hardware. */
 	int      shim_event_hook;
 	int      shim_enable_hook;
+	/* SHIM_STABLE_ID (0/1, VSH builds only): give each DualSense the identity of its
+	 * own Bluetooth address, read by the shim from the kernel's connection table, so
+	 * the same controller keeps the same identity across reconnects (stage 1b). On by
+	 * default; 0 makes the shim use its per-boot counter identity instead, which is
+	 * also what it falls back to whenever the address cannot be read safely. */
+	int      shim_stable_id;
 #ifdef DS45_LV2DUMP
 	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
 	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */

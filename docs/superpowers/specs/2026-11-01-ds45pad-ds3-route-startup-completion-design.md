@@ -202,6 +202,49 @@ release behaviour do not change (the packer already rebases the env word because
 it is a TOC-base reloc like the descriptor's toc word). All three hooks get the
 trampoline. See plan Task 8 for the exact assembly.
 
+## Amendment 5 (2026-11-03): stable identity from the Bluetooth address (stage 1b)
+
+The per-boot counter identity (C1 above) gives a reconnecting DualSense a new
+identity every time, so the kernel's "same controller" matching never applies to
+it and the two-pad numbering can reorder. Stage 1b replaces it with the
+controller's own Bluetooth address, with the counter kept as the fallback.
+
+**The pad-to-connection link exists (corrects "the handle byte is 0 for every
+Bluetooth pad", which came from dumps with only one Bluetooth pad that had a
+handle).** The Bluetooth attach code (`0xF9618..0xF97A0`) builds each attach
+event's device id as `0x200 | handle`, where the handle is the byte at `+0x10` of
+the connection table entry. The factory `0x2A128C` passes it to the pad
+constructor, whose base `0xC9C38` stores it at `pad+0x20`; the start-up driver
+constructor `0xCB1D0` copies it to `drv+0xAC`. The stock senders feed that same
+byte to the connection lookup `0x1010B8`, so it is the real handle. The lookup
+(`0xF719C`) indexes an array of seven entry pointers at `0x432690` (TOC slot
+`-0x3410`) and checks `entry[0x10] == handle`. A real DS3's identity bytes
+(`pad+0x88..+0x8F`) equal its entry's `+0x08..+0x0F` byte for byte (verified in the
+dumps), and a DualSense's entry holds its address in the same layout.
+
+**Behaviour.** In `shim_event`, with `stable_id` set and `conn_tbl` known:
+`h = drv[0xAC]`; `entry = *(conn_tbl + 8*h)`; the identity is `entry[8..0xF]` with
+the unused byte `+0x0D` forced to 0. It is used only if `h < 7`, `entry` is
+non-NULL, `entry[0x10] == h`, the address is not all zero and is not the kernel's
+alternate-branch pattern (`+0x8C == 0x18` with the u16 at `+0x8E == 0x000D`).
+Anything else, and `stable_id == 0`, uses the counter form unchanged. Only loads,
+no lock, no call: the same rules as the other hooks.
+
+**Plumbing.** Data block version 6 (248 to 272 bytes) appends `conn_tbl`,
+`stable_id` and the debug counters `dbg_id_bd`, `dbg_id_fallback`,
+`dbg_last_handle`. The firmware row gains `conn_tbl` (DEX 4.92: `0x432690`), the
+config key `SHIM_STABLE_ID` (VSH builds only, default 1) fills `stable_id`, and the
+debug trace line gains `idbd`, `idfb` and `hnd`.
+
+**Open risk, decided on the console.** With a stable identity the kernel's
+duplicate search closes a reconnecting Bluetooth pad as "the same controller"
+while a stale pad with that identity still holds a port (assign `0x2A0B98..0x2A0BE0`).
+After a force-off with no disconnect event this could refuse the reconnect until
+the old pad goes away, which may be worse than the counter's new port. The
+console check must cover force-off and reconnect; `SHIM_STABLE_ID = 0` is the way
+back. The handle path itself is proven from code, not yet on hardware with two
+Bluetooth pads (`idbd`/`idfb`/`hnd` answer that).
+
 ## Design
 
 ### 1. Start-up completion (kernel side)

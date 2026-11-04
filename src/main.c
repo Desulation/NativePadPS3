@@ -356,7 +356,7 @@ static char *shim_dbg_hex(char *p, uint32_t v)
 static void shim_dbg_trace(void)
 {
 	uint64_t base = 0, vt = 0;
-	char line[256];
+	char line[320];   /* the longest line is ~235 bytes */
 	char *p = line;
 
 	if (!kshim_dbg_data_base(&base))
@@ -386,6 +386,14 @@ static void shim_dbg_trace(void)
 	(void)ds45_lv2_read(base + offsetof(ds45_shim_data_t, dbg_last_vtable), &vt);
 	p = shim_dbg_hex(p, (uint32_t)(vt >> 32));
 	p = shim_dbg_hex(p, (uint32_t)vt);
+	/* stage 1b: identities taken from a Bluetooth address, completions that fell
+	 * back to the counter, and the last connection handle looked up */
+	p = shim_dbg_tag(p, " idbd=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_id_bd)));
+	p = shim_dbg_tag(p, " idfb=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_id_fallback)));
+	p = shim_dbg_tag(p, " hnd=");
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_last_handle)));
 	*p++ = '\n';
 
 	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));

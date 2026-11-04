@@ -16,13 +16,14 @@
 #include <stdint.h>
 
 #define DS45_SHIM_MAGIC   0x4453343553484D31ULL   /* "DS45SHM1" */
-/* 5: the debug diagnostic counters (design Amendment 3) appended after the
+/* 6: stage 1b's stable identity appended after the debug counters (conn_tbl,
+ * stable_id and three counters: 248 -> 272 bytes). 5: the debug diagnostic counters (design Amendment 3) appended after the
  * product-ID originals (208 -> 248 bytes). 4 added the product-ID originals
  * (pid_orig, pid_applied: 176 -> 208); 3 was the start-up completion layout
  * without them and never reached a console. The installer adopts a blob left by
  * an earlier load only if its version matches, since the plugin reaches into the
  * data block by these offsets - so any change to this struct bumps the number. */
-#define DS45_SHIM_VERSION 5
+#define DS45_SHIM_VERSION 6
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56
@@ -77,6 +78,18 @@ typedef struct {
 	uint32_t dbg_event_calls, dbg_enable_calls, dbg_input_calls, dbg_input_padmiss;
 	uint32_t dbg_event_ds, dbg_enable_ds, dbg_input_ds, dbg_last_pid;
 	uint64_t dbg_last_vtable;
+	/* Stable pad identity (stage 1b). conn_tbl is the address of the kernel's
+	 * Bluetooth connection table (an array of 7 u64 entry pointers indexed by the
+	 * connection handle; 0 = not available). Written by the plugin from the
+	 * firmware row. stable_id (the SHIM_STABLE_ID config key, 0/1) asks the start-up
+	 * hook to take a DualSense's identity from its connection's Bluetooth address
+	 * instead of the per-boot counter; the counter stays the fallback. The three
+	 * counters are written by the blob, debug only: identities taken from an
+	 * address, completions that fell back to the counter, and the last handle
+	 * looked up. */
+	uint64_t conn_tbl;
+	uint32_t stable_id;
+	uint32_t dbg_id_bd, dbg_id_fallback, dbg_last_handle;
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */
