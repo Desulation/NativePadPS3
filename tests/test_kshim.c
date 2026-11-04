@@ -615,6 +615,30 @@ static int test_no_entry_writes_nothing(void)
 	return 0;
 }
 
+/* Whether every power-off field of a data block image (version 12) is zero: the
+ * two original code addresses, the mode and sequence, the debug counters, the
+ * frame buffer and the ring. Returns 0 if all are, else the failing line. */
+static int poweroff_block_clear(const uint8_t *db)
+{
+	int i;
+
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_poweroff)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_teardown)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, po_mode)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, po_seq)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_po_calls)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_po_ds)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_po_rewritten)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_po_passed)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_td_calls)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_td_rsvd)) == 0 ? 0 : __LINE__);
+	for (i = 0; i < 48; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, po_buf) + i] == 0 ? 0 : __LINE__);
+	for (i = 0; i < 128; i++)
+		CHECK_SUB(db[offsetof(ds45_shim_data_t, po_ring) + i] == 0 ? 0 : __LINE__);
+	return 0;
+}
+
 /* Verify the installed blob image: relocated words rebased, every other word
  * copied verbatim, the data block filled, and the flush OPD built. */
 static int check_blob_image(void)
@@ -635,7 +659,7 @@ static int check_blob_image(void)
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
 	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 11 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 12 ? 0 : __LINE__);
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
 	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
 	          EVENT_ORIG ? 0 : __LINE__);
@@ -689,8 +713,11 @@ static int check_blob_image(void)
 	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_raw_seq)) == 0 ? 0 : __LINE__);
 	for (i = 0; i < 64; i++)
 		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_in_raw) + i] == 0 ? 0 : __LINE__);
+	/* version 12: the power-off state starts cleared (nothing selects sites 10-13
+	 * yet, and the installer seeds none of it) */
+	CHECK_SUB(poweroff_block_clear(db) == 0 ? 0 : __LINE__);
 
-	cfg = db + offsetof(ds45_shim_data_t, cfg);
+	cfg =db + offsetof(ds45_shim_data_t, cfg);
 	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, deadzone)] == 12 ? 0 : __LINE__);
 	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, map_touchpad)] == 3 ? 0 : __LINE__);
 	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, map_mute)] == 5 ? 0 : __LINE__);
@@ -2457,7 +2484,7 @@ static int test_output_adopt_v8(void)
 	g_cfg.shim_output_hook = 1;
 	g_cfg.shim_output_mode = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(DS45_SHIM_VERSION == 11);
+	CHECK(DS45_SHIM_VERSION == 12);
 	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)7 << 32) | 1);
 	g_spare_calls = 0;
 	pokes = fake_lv2_poke_count;
@@ -2579,9 +2606,9 @@ static int test_recv_rows_exact(void)
 	int i;
 
 	CHECK(DS45_SHIM_RECV_PATCHES == 3);
-	CHECK(DS45_SHIM_PID_SITES == 10);
+	CHECK(DS45_SHIM_PID_SITES == 14);
 	CHECK(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES +
-	      DS45_SHIM_RECV_PATCHES == DS45_SHIM_PID_SITES);
+	      DS45_SHIM_RECV_PATCHES + DS45_SHIM_POWEROFF_PATCHES == DS45_SHIM_PID_SITES);
 	for (i = 0; i < 3; i++) {
 		CHECK(k->recv_patches[i].kind == DS45_KPATCH_WORD);
 		CHECK(k->recv_patches[i].addr == addr[i]);
@@ -2859,7 +2886,7 @@ static int test_recv_adopt_v10(void)
 	struct snap pristine, after;
 	int pokes, g, i;
 
-	CHECK(DS45_SHIM_VERSION == 11);
+	CHECK(DS45_SHIM_VERSION == 12);
 
 	/* 1. adopt with another config and restore all of it */
 	for (g = 0; g < 2; g++) {
@@ -3018,6 +3045,98 @@ static int test_recv_adopt_v10(void)
 	return 0;
 }
 
+/* ----- the power-off sites (data-block sites 10-13, plumbing only) --------- */
+
+/* Sites 10-13 are the row's poweroff_patches[0..3]. Nothing selects them yet
+ * (site_selected is 0 for all four), so an install - with the most active config
+ * the existing fixtures use or the default one, and with the four rows populated
+ * or not, even pointing at memory that does NOT match them - sets no bit 10-13 of
+ * pid_applied, never reads or writes the rows' qwords, leaves every new data-block
+ * field zero and journals exactly what it journalled before (the unload's pokes
+ * count it). A version-11 block is not adopted (its layout is not ours). */
+#define PO_PATCHES_N 4
+#define PO_QA(i)     (B + 0x7400 + 8 * (i))
+#define PO_Q(i)      (0x7474747400000000ULL + (uint64_t)(i) * 0x0101010101ULL)
+
+static int test_poweroff_sites_unselected_by_default(void)
+{
+	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	uint8_t blk[sizeof(ds45_shim_data_t)];
+	int populate, mismatch, active, g, i, n, pokes;
+	uint32_t applied;
+	struct snap before, after;
+
+	for (populate = 0; populate < 2; populate++)
+		for (mismatch = 0; mismatch < 2; mismatch++)
+			for (active = 0; active < 2; active++)
+				for (g = 0; g < 2; g++) {
+					if (mismatch && !populate)
+						continue;
+					setup();
+					plant_output_rows();
+					g_cfg.shim_inline_pid = g;
+					if (active) {
+						g_cfg.shim_output_hook = 1;
+						g_cfg.shim_output_mode = 2;
+					}
+					if (populate)
+						for (i = 0; i < PO_PATCHES_N; i++) {
+							g_ent.poweroff_patches[i].kind = DS45_KPATCH_WORD;
+							g_ent.poweroff_patches[i].addr = PO_QA(i) + 4;
+							g_ent.poweroff_patches[i].expect = qhash(PO_Q(i));
+							g_ent.poweroff_patches[i].value = 0x60000000u + (uint32_t)i;
+							put_q(PO_QA(i), mismatch ? PO_Q(i) ^ 1 : PO_Q(i));
+						}
+					take_snap(&before);
+
+					wlog_start();
+					CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+					fake_lv2_on_peek = NULL;
+
+					applied = pid_applied_at(BLOB_BASE);
+					CHECK((applied & 0x3C00u) == 0);          /* bits 10-13 clear */
+					/* exactly what was applied before: helper, inline, output, receive */
+					CHECK(applied == (1u | (g ? 6u : 0u) | (active ? 0x3F8u : 0x0u)));
+					CHECK(ds45_lv2_read_bytes(db, blk, (int)sizeof blk) == 0);
+					CHECK(poweroff_block_clear(blk) == 0);
+					for (i = 10; i < 14; i++)
+						CHECK(be64b(blk + offsetof(ds45_shim_data_t, pid_orig) + 8 * i) == 0);
+					for (i = 0; i < PO_PATCHES_N; i++) {
+						CHECK(!wlog_has(PO_QA(i)));          /* never written */
+						if (populate)
+							CHECK(rd(PO_QA(i)) == (mismatch ? PO_Q(i) ^ 1 : PO_Q(i)));
+					}
+
+					/* the journal: helper, [2 inline,] 3 redirects, and with the output
+					 * hook active 3 output sites and (mode 2) the cap word and 3 receive
+					 * words - nothing for sites 10-13 */
+					n = 1 + (g ? 2 : 0) + 3 + (active ? 3 + 4 : 0);
+					pokes = fake_lv2_poke_count;
+					kshim_unhook();
+					CHECK(fake_lv2_poke_count - pokes == n);
+					kshim_scrub();
+					take_snap(&after);
+					CHECK(snap_eq(&before, &after));
+					for (i = 0; i < PO_PATCHES_N && populate; i++)
+						CHECK(rd(PO_QA(i)) == (mismatch ? PO_Q(i) ^ 1 : PO_Q(i)));
+					CHECK(fake_lv2_out_of_bounds == 0);
+				}
+
+	/* a version-11 block (the layout before the power-off fields) is not adopted */
+	setup();
+	plant_output_rows();
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
+	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)11 << 32) | 1);
+	g_spare_calls = 0;
+	pokes = fake_lv2_poke_count;
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
+	CHECK(fake_lv2_poke_count == pokes && g_spare_calls == 0);
+	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
+	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
+	kshim_remove();
+	return 0;
+}
+
 /* The DS3 info block of the facts note, section C1.5 (Bluetooth variant). */
 static const uint8_t c15_template[0x56] = {
 	0x00, 0x05, 0x03, 0x50, 0x00, 0x00, 0x00, 0x00,
@@ -3093,8 +3212,8 @@ static int test_builtin_table(void)
 	CHECK(DS45_SHIM_OUTPUT_PATCHES == 4);
 	CHECK(DS45_SHIM_RECV_PATCHES == 3);
 	CHECK(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES +
-	      DS45_SHIM_RECV_PATCHES == DS45_SHIM_PID_SITES);
-	CHECK(DS45_SHIM_PID_SITES == 10);
+	      DS45_SHIM_RECV_PATCHES + DS45_SHIM_POWEROFF_PATCHES == DS45_SHIM_PID_SITES);
+	CHECK(DS45_SHIM_PID_SITES == 14);
 	CHECK(k->orig_output == 0x800000000010283CULL);
 	/* [0] site 3: the bl to the sender, retargeted at install to the blob's entry */
 	CHECK(k->output_patches[0].kind == DS45_KPATCH_BRANCHL);
@@ -3375,6 +3494,7 @@ int run_tests(void)
 		test_recv_site_mismatch_fails_clean,
 		test_recv_remove_restores_all,
 		test_recv_adopt_v10,
+		test_poweroff_sites_unselected_by_default,
 		test_builtin_table,
 		test_builtin_row_on_pristine_image,
 	};

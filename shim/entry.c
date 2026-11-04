@@ -157,7 +157,7 @@ int SHIM_HOOK(shim_output)(const uint8_t *buf, uint16_t len, uint8_t *rid,
 /* orig_output's offset in the data block, spelled out for the stub below (an
  * asm block cannot take offsetof). The typedef fails the build if the ABI
  * header ever moves the field. */
-#define SHIM_OFF_ORIG_OUTPUT 328   /* 304 until version 10 grew pid_orig by 24 bytes */
+#define SHIM_OFF_ORIG_OUTPUT 360   /* 328 until version 12 grew pid_orig by 32 bytes (304 before version 10) */
 typedef char shim_off_orig_output_matches_abi[
 	(__builtin_offsetof(ds45_shim_data_t, orig_output) == SHIM_OFF_ORIG_OUTPUT) ? 1 : -1];
 #define SHIM_XSTR_(x) #x

@@ -32,6 +32,7 @@
 #define DS45_SHIM_INLINE_PATCHES  2   /* inline words, only with SHIM_INLINE_PID = 1 */
 #define DS45_SHIM_OUTPUT_PATCHES  4   /* output call site, cap word, two TOC slots (SHIM_OUTPUT_HOOK) */
 #define DS45_SHIM_RECV_PATCHES    3   /* receive-limit words (SHIM_OUTPUT_HOOK, probe and full mode) */
+#define DS45_SHIM_POWEROFF_PATCHES 4  /* power-off hook sites (data-block sites 10-13; not selected by any install yet) */
 
 /* One firmware. The fingerprint is the same (fp_addr, fp_hash) scheme
  * ds45_kernel_t uses, so a row is only ever applied to the kernel it was
@@ -91,6 +92,18 @@ typedef struct {
 	 * redirects) and so the first reverts of an unload. */
 	ds45_kpatch_t recv_patches[DS45_SHIM_RECV_PATCHES];
 	uint64_t orig_output;
+	/* Appended after orig_output so the built-in row's positional initializer
+	 * (kshim_table.c) still lines up; they default to zero there.
+	 * The power-off hook's sites (data-block product-ID sites 10-13): plumbing
+	 * only for now - the rows are carried like the others, but no install selects
+	 * them yet, so they are never read or written. */
+	ds45_kpatch_t poweroff_patches[DS45_SHIM_POWEROFF_PATCHES];
+	/* The code addresses of the kernel's Bluetooth close-connection sender
+	 * (0x102750 on DEX 4.92) and of the pad teardown routine (0x1174FC), which the
+	 * power-off hooks will tail-call; 0 = none. Carried into the data block
+	 * (orig_poweroff, orig_teardown). */
+	uint64_t orig_poweroff;
+	uint64_t orig_teardown;
 } ds45_shim_kernel_t;
 extern const ds45_shim_kernel_t ds45_shim_table[];
 extern const int ds45_shim_table_count;

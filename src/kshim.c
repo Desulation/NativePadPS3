@@ -61,13 +61,13 @@
 /* The final transactional apply: the helper word, the inline words (when
  * enabled), the output sites (when enabled), then the event, enable and input
  * redirects, then the receive-limit words (when enabled). The journal holds one
- * entry for each: at most 13, within the patcher's 16. */
+ * entry for each: at most 17, within the patcher's 20. */
 #define KSHIM_REDIRECTS 3
 #define KSHIM_FINAL_MAX (DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + \
                          DS45_SHIM_OUTPUT_PATCHES + DS45_SHIM_RECV_PATCHES + \
-                         KSHIM_REDIRECTS)
+                         DS45_SHIM_POWEROFF_PATCHES + KSHIM_REDIRECTS)
 typedef char kshim_final_fits_kpatch[(KSHIM_FINAL_MAX <= DS45_KPATCH_MAX) ? 1 : -1];
-typedef char kshim_final_is_thirteen[(KSHIM_FINAL_MAX == 13) ? 1 : -1];
+typedef char kshim_final_is_seventeen[(KSHIM_FINAL_MAX == 17) ? 1 : -1];
 
 /* The data block exactly fills the blob's tail (OFF_DATA .. BLOB_LEN); it is
  * written qword by qword, so its size must be a multiple of 8. */
@@ -82,7 +82,8 @@ typedef char kshim_tmpl_fits[(sizeof(((ds45_shim_data_t *)0)->info_tmpl) >=
 /* The data block records one original qword per product-ID site a row can
  * edit, and an adopted install journals those sites plus the redirects. */
 typedef char kshim_pid_sites_match[(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES +
-                                    DS45_SHIM_OUTPUT_PATCHES + DS45_SHIM_RECV_PATCHES ==
+                                    DS45_SHIM_OUTPUT_PATCHES + DS45_SHIM_RECV_PATCHES +
+                                    DS45_SHIM_POWEROFF_PATCHES ==
                                     DS45_SHIM_PID_SITES) ? 1 : -1];
 typedef char kshim_adopt_fits_journal[(DS45_SHIM_PID_SITES + KSHIM_REDIRECTS <=
                                        DS45_KPATCH_MAX) ? 1 : -1];
@@ -179,9 +180,25 @@ static int hash_ok(uint64_t addr, uint64_t expect)
 	return qword_hash(cur) == expect;
 }
 
+/* The output sites by index (the data-block site numbers, shim_abi.h). */
+#define SITE_OUT_CALL 3   /* the bl to the output sender, retargeted at the blob's entry */
+#define SITE_OUT_CAP  4   /* the send-length cap compare */
+#define SITE_BUF      5   /* TOC slot holding the packet buffer's address */
+#define SITE_BUF1     6   /* TOC slot holding that address plus one */
+#define SITE_RECV0    7   /* the receive-limit words are sites 7, 8 and 9 */
+#define SITE_PO0      10  /* the power-off patches are sites 10-13 (above the receive words) */
+
+/* Whether site i is one of the receive-limit words (7-9). NOT `i >= SITE_RECV0`:
+ * the power-off sites 10-13 sit above the receive sites. */
+static int site_is_recv(int i)
+{
+	return i >= SITE_RECV0 && i < SITE_PO0;
+}
+
 /* Product-ID site i of a row, in data-block order: the helper rows, then the
  * inline rows, then the output rows (sites 3-6 = output_patches[0..3]), then the
- * receive-limit rows (sites 7-9 = recv_patches[0..2]). */
+ * receive-limit rows (sites 7-9 = recv_patches[0..2]), then the power-off rows
+ * (sites 10-13 = poweroff_patches[0..3]). */
 static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
 {
 	if (i < DS45_SHIM_PID_PATCHES)
@@ -190,20 +207,16 @@ static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
 		return &k->inline_patches[i - DS45_SHIM_PID_PATCHES];
 	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES)
 		return &k->output_patches[i - DS45_SHIM_PID_PATCHES - DS45_SHIM_INLINE_PATCHES];
-	return &k->recv_patches[i - DS45_SHIM_PID_PATCHES - DS45_SHIM_INLINE_PATCHES -
-	                        DS45_SHIM_OUTPUT_PATCHES];
+	if (i < SITE_PO0)
+		return &k->recv_patches[i - DS45_SHIM_PID_PATCHES - DS45_SHIM_INLINE_PATCHES -
+		                        DS45_SHIM_OUTPUT_PATCHES];
+	return &k->poweroff_patches[i - SITE_PO0];
 }
-
-/* The output sites by index (the data-block site numbers, shim_abi.h). */
-#define SITE_OUT_CALL 3   /* the bl to the output sender, retargeted at the blob's entry */
-#define SITE_OUT_CAP  4   /* the send-length cap compare */
-#define SITE_BUF      5   /* TOC slot holding the packet buffer's address */
-#define SITE_BUF1     6   /* TOC slot holding that address plus one */
-#define SITE_RECV0    7   /* the receive-limit words are sites 7, 8 and 9 */
 
 /* The order the sites are CAPTURED in (data-block order stays site order): the
  * helper and inline rows as before, then the two buffer slots back to back, then
- * the call site, then the cap word, then the three receive-limit words. The
+ * the call site, then the cap word, then the four power-off sites (10-13), then the
+ * three receive-limit words. The
  * transaction itself applies the sites 0..6 in this order, then the redirects, and
  * only THEN the three receive-limit words (kshim_install_from sets them aside and
  * appends them last; adoption journals them in the same place). So the buffer is
@@ -216,6 +229,7 @@ static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
  * 64-byte stack buffer.) */
 static const uint8_t PID_ORDER[DS45_SHIM_PID_SITES] = {
 	0, 1, 2, SITE_BUF, SITE_BUF1, SITE_OUT_CALL, SITE_OUT_CAP,
+	SITE_PO0, SITE_PO0 + 1, SITE_PO0 + 2, SITE_PO0 + 3,
 	SITE_RECV0, SITE_RECV0 + 1, SITE_RECV0 + 2
 };
 
@@ -236,15 +250,18 @@ static const uint8_t PID_ORDER[DS45_SHIM_PID_SITES] = {
  * buffer slots: an 80-byte read into the kernel's packet buffer, left where it
  * was, would run into the HID client pointer behind it (0x432710). So they are
  * defined as the conjunction of the three sites they depend on, never from the
- * config on its own. With the hook off the install is exactly what data-block
- * version 7 produced. */
+ * config on its own. The power-off sites (10-13) are never selected yet (a later
+ * change adds their rules). With the hook off the install is exactly what
+ * data-block version 7 produced. */
 static int site_selected(const ds45_shim_kernel_t *k, int i)
 {
 	if (i < DS45_SHIM_PID_PATCHES)
 		return 1;
 	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES)
 		return g_cfg.shim_inline_pid != 0;
-	if (i >= SITE_RECV0)
+	if (i >= SITE_PO0)
+		return 0;
+	if (site_is_recv(i))
 		return site_selected(k, SITE_BUF) && site_selected(k, SITE_BUF1) &&
 		       site_selected(k, SITE_OUT_CAP);
 	if (!g_cfg.shim_output_hook || k->orig_output == 0)
@@ -257,13 +274,17 @@ static int site_selected(const ds45_shim_kernel_t *k, int i)
 
 /* Whether an adopter may restore site i that the adopted install recorded as
  * applied: the row must populate it (a non-zero kind), and for an output site the
- * row must still name the output sender. Deliberately NOT the current config:
+ * row must still name the output sender (a power-off site, 10-13, needs only its
+ * populated row for now). Deliberately NOT the current config:
  * what the install applied is what gets restored, like the inline words. */
 static int site_restorable(const ds45_shim_kernel_t *k, int i)
 {
 	if (pid_site(k, i)->kind == 0)
 		return 0;
-	if (i >= DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES && k->orig_output == 0)
+	/* a power-off site (10-13) needs only its populated row for now (a later change
+	 * adds the real rules); the output and receive sites also the sender address */
+	if (i >= DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES && i < SITE_PO0 &&
+	    k->orig_output == 0)
 		return 0;
 	return 1;
 }
@@ -377,7 +398,7 @@ static int pid_patched_qword(int site, const ds45_kpatch_t *p, uint64_t orig,
 
 /* The sites the adopted install recorded as applied (its data block's
  * pid_applied: bit 0 helper, bits 1-2 inline, bits 3-6 output, bits 7-9 receive
- * limits); 0 if the block cannot be read (nothing is then restored but the
+ * limits, bits 10-13 power-off); 0 if the block cannot be read (nothing is then restored but the
  * redirects). */
 static uint32_t adopt_applied(uint64_t base)
 {
@@ -430,7 +451,7 @@ static uint32_t adopt_recv_unsafe(const ds45_shim_kernel_t *k, uint64_t base,
 	uint32_t bad = 0;
 	int i;
 
-	for (i = SITE_RECV0; i < DS45_SHIM_PID_SITES; i++)
+	for (i = SITE_RECV0; i < SITE_PO0; i++)
 		if ((applied & (1u << i)) && !adopt_site_ours(k, base, i, &orig))
 			bad |= 1u << i;
 	return bad;
@@ -442,7 +463,7 @@ static uint32_t adopt_recv_unsafe(const ds45_shim_kernel_t *k, uint64_t base,
  * install applied is what gets restored. Any other site is left as found (traced
  * kshim_adopt_pid_skipped, not journalled); the redirects are adopted regardless.
  *
- * Two calls, mirroring an install's transaction: recv == 0 journals sites 0..6
+ * Two calls, mirroring an install's transaction: recv == 0 journals sites 0..6 and 10..13
  * (before the redirects), recv == 1 the receive-limit words (after them), so unload
  * undoes the limits first, then the redirects, then the rest. The receive words are
  * never skipped here: adopt_recv_unsafe has already refused the whole adoption if
@@ -455,7 +476,7 @@ static void adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
 
 	for (jj = 0; jj < DS45_SHIM_PID_SITES; jj++) {
 		i = PID_ORDER[jj];
-		if (!(applied & (1u << i)) || (i >= SITE_RECV0) != (recv != 0))
+		if (!(applied & (1u << i)) || site_is_recv(i) != (recv != 0))
 			continue;
 		if (!adopt_site_ours(k, base, i, &orig)) {   /* not ours to restore: as found */
 			DS45_TRACE_HEX("kshim_adopt_pid_skipped", (uint64_t)i);
@@ -530,6 +551,10 @@ static void build_data_block(const ds45_shim_kernel_t *k,
 	          g_cfg.shim_output_mode >= 0 && g_cfg.shim_output_mode <= 2)
 	             ? (uint32_t)g_cfg.shim_output_mode : 0);
 	put_be64(buf + offsetof(ds45_shim_data_t, orig_output), k->orig_output);
+	/* the power-off hook's targets (version 12; zero until a row names them, and
+	 * nothing reads them while no install selects sites 10-13) */
+	put_be64(buf + offsetof(ds45_shim_data_t, orig_poweroff), k->orig_poweroff);
+	put_be64(buf + offsetof(ds45_shim_data_t, orig_teardown), k->orig_teardown);
 
 	cfg = buf + offsetof(ds45_shim_data_t, cfg);
 	cfg[offsetof(ds45_shim_cfg_t, deadzone)]     = (uint8_t)g_cfg.stick_deadzone;
@@ -792,7 +817,7 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	 * and, journalled last, the first reverts of an unload or a rollback: the
 	 * limits drop back to 0x41 while the input bounce is still in place. */
 	nfront = npid;
-	while (nfront > 0 && pid_site_of[nfront - 1] >= SITE_RECV0)
+	while (nfront > 0 && site_is_recv(pid_site_of[nfront - 1]))
 		nfront--;
 	for (i = nfront; i < npid; i++)
 		recv_rows[i - nfront] = final[i];

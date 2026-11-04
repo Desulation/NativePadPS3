@@ -167,6 +167,14 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 			{ DS45_KPATCH_WORD, 0x80000000000F91F4ULL, 0x995A6CDC70F64A38ULL, 0x38E00050ULL },
 		},
 		0x800000000010283CULL,
+
+		/* The power-off hook (data-block product-ID sites 10-13): its four rows and
+		 * the two code addresses it tail-calls are not researched into this row yet
+		 * (a later change fills them), so all stay zero - no install selects sites
+		 * 10-13 in any case. */
+		{ { 0 } },
+		0ULL,
+		0ULL,
 	},
 };
 const int ds45_shim_table_count =
