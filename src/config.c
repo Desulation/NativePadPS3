@@ -85,6 +85,8 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->shim_stable_id = 1;    /* on by default; the counter identity is the fallback */
 	c->shim_output_hook = 1;  /* on by default; the mode below decides what it does */
 	c->shim_output_mode = 2;  /* full: rumble, player LEDs, light bar colour */
+	c->shim_poweroff_hook = 1; /* on by default; the mode below decides what it does */
+	c->shim_poweroff_mode = 0; /* observe: record only, nothing is powered off */
 #ifdef DS45_LV2DUMP
 	c->dump_lv2 = 0;
 	c->capture_off = 0;
@@ -289,6 +291,15 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		 * clamped to the nearest end; anything that is not a number keeps the
 		 * default (2, full). */
 		if (parse_int(val, &n)) c->shim_output_mode = n < 0 ? 0 : (n > 2 ? 2 : n);
+	} else if (match(key, "SHIM_POWEROFF_HOOK")) {
+		/* VSH builds only: the DS3-route power-off hook. On by default; 0 = off,
+		 * any other number = on, anything that is not a number keeps the default. */
+		if (parse_int(val, &n)) c->shim_poweroff_hook = n != 0;
+	} else if (match(key, "SHIM_POWEROFF_MODE")) {
+		/* VSH builds only: 0 observe, 1 act. A number outside 0..1 is clamped to
+		 * the nearest end; anything that is not a number keeps the default
+		 * (0, observe). */
+		if (parse_int(val, &n)) c->shim_poweroff_mode = n < 0 ? 0 : (n > 1 ? 1 : n);
 #endif
 #ifdef DS45_LV2DUMP
 	} else if (match(key, "DUMP_LV2")) {
@@ -407,6 +418,8 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	ds45_boot_mark_hex("cfg_shim_stable_id", (uint32_t)c->shim_stable_id);
 	ds45_boot_mark_hex("cfg_shim_output_hook", (uint32_t)c->shim_output_hook);
 	ds45_boot_mark_hex("cfg_shim_output_mode", (uint32_t)c->shim_output_mode);
+	ds45_boot_mark_hex("cfg_shim_poweroff_hook", (uint32_t)c->shim_poweroff_hook);
+	ds45_boot_mark_hex("cfg_shim_poweroff_mode", (uint32_t)c->shim_poweroff_mode);
 #endif
 
 	return 0;
