@@ -114,10 +114,10 @@ foreach ($name in $sources) {
     Invoke-BuildTool $gcc ($flags + @('-c',(Join-Path $PSScriptRoot "$name.c"),'-o',$object))
     $objects += $object
 }
-$sym = Join-Path $objdir 'ds45pad.sym'
-$prx = Join-Path $objdir 'ds45pad.prx'
-$signed = Join-Path $objdir 'ds45pad.signed.tmp'
-$output = Join-Path $PSScriptRoot "ds45pad_$Variant$suffix.sprx"
+$sym = Join-Path $objdir 'nativepadps3.sym'
+$prx = Join-Path $objdir 'nativepadps3.prx'
+$signed = Join-Path $objdir 'nativepadps3.signed.tmp'
+$output = Join-Path $PSScriptRoot "nativepadps3_$Variant$suffix.sprx"
 Invoke-BuildTool $gcc (@('-mprx','-zgenprx','-zgenstub','-ffunction-sections','-fdata-sections') + $objects + @('-L',$lib) + $libs + @('-o',$sym))
 Invoke-BuildTool $strip @('--strip-debug','--strip-section-header',$sym,'-o',$prx)
 $oldPS3 = $env:PS3

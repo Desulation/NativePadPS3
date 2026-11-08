@@ -29,11 +29,11 @@ cd "$SRCDIR"; mkdir -p obj; rm -f obj/*.o
 echo "compilando ($MODE)..."
 for f in $SRCS; do $WINE "$GCC" $CFLAGS -c "$f" -o "obj/${f%.c}.o"; done
 echo "linkando..."
-$WINE "$GCC" $LDFLAGS obj/*.o -L "$LIBDIR" $LDLIBS -o obj/ds45pad.sym
+$WINE "$GCC" $LDFLAGS obj/*.o -L "$LIBDIR" $LDLIBS -o obj/nativepadps3.sym
 echo "strip..."
-$WINE "$PRXSTRIP" --strip-debug --strip-section-header obj/ds45pad.sym -o obj/ds45pad.prx
+$WINE "$PRXSTRIP" --strip-debug --strip-section-header obj/nativepadps3.sym -o obj/nativepadps3.prx
 echo "assinando..."
-PS3="$SCEDIR/data" "$SCEDIR/scetool" $SCEFLAGS -e obj/ds45pad.prx "$OUT" > /dev/null
+PS3="$SCEDIR/data" "$SCEDIR/scetool" $SCEFLAGS -e obj/nativepadps3.prx "$OUT" > /dev/null
 magic=$(od -A n -t x1 -N 4 "$OUT" | tr -d ' ')
 [ "$magic" = "53434500" ] || { echo "ERRORE: $OUT non inizia con SCE ($magic)"; exit 1; }
 echo "ok: $OUT ($(stat -c %s "$OUT") bytes)"

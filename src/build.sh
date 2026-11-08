@@ -7,10 +7,10 @@
 # both simpler and easier to debug.
 #
 # Usage:  ./build.sh [game] [debug]
-#   (no argument) -> ds45pad_vsh.sprx   (boot plugin, runs in the VSH)
-#   game          -> ds45pad_game.sprx  (-DDS45_GAME; injected into a running
+#   (no argument) -> nativepadps3_vsh.sprx   (boot plugin, runs in the VSH)
+#   game          -> nativepadps3_game.sprx  (-DDS45_GAME; injected into a running
 #                                        game to correct the stick curve)
-#   debug         -> the same with -DDS45_DEBUG, named ds45pad_<variant>_debug.sprx
+#   debug         -> the same with -DDS45_DEBUG, named nativepadps3_<variant>_debug.sprx
 #                    (boot trace; the VSH build also gets the LV2 dumper)
 
 set -e
@@ -43,7 +43,7 @@ done
 
 if [ "$VARIANT" = "game" ]; then
 	EXTRA="-DDS45_GAME"
-	OUT="ds45pad_game.sprx"
+	OUT="nativepadps3_game.sprx"
 	AUTH="$AUTH_GAME"
 	# A game process loads libio and libfs but *not* libusbd, so the in-game
 	# build must not contain a single reference to it - otherwise the loader
@@ -52,7 +52,7 @@ if [ "$VARIANT" = "game" ]; then
 	LDLIBS="-lio_stub -lfs_stub"
 else
 	EXTRA=""
-	OUT="ds45pad_vsh.sprx"
+	OUT="nativepadps3_vsh.sprx"
 	AUTH="$AUTH_VSH"
 	SRCS="libc.c util.c hook.c config.c paths.c ds4.c dualsense.c ds_body.c sixaxis.c \
 	      sticks.c padldd.c usb.c passthru.c lv2.c kernel.c btcheck.c \
@@ -151,18 +151,18 @@ for f in $SRCS; do
 done
 
 echo "linkando..."
-"$GCC" $LDFLAGS obj/*.o -L "$LIBDIR" $LDLIBS -o obj/ds45pad.sym
+"$GCC" $LDFLAGS obj/*.o -L "$LIBDIR" $LDLIBS -o obj/nativepadps3.sym
 
 echo "strip..."
 "$PRXSTRIP" --strip-debug --strip-section-header \
-            obj/ds45pad.sym -o obj/ds45pad.prx
+            obj/nativepadps3.sym -o obj/nativepadps3.prx
 
 echo "assinando..."
 if [ -n "$TOOLS" ]; then
-	"$SCETOOL" $SCEFLAGS -e obj/ds45pad.prx "$OUT" > /dev/null
+	"$SCETOOL" $SCEFLAGS -e obj/nativepadps3.prx "$OUT" > /dev/null
 else
 	# make_fself takes no auth id (loading on DEX is confirmed on console, Task 11).
-	"$MAKE_FSELF" obj/ds45pad.prx "$OUT" > /dev/null
+	"$MAKE_FSELF" obj/nativepadps3.prx "$OUT" > /dev/null
 fi
 
 # A SPRX that still starts with 7F 45 4C 46 ("ELF") means signing silently did

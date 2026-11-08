@@ -3,12 +3,12 @@
 # Requires the Cell SDK PPU toolchain (ppu-lv2-gcc) and scetool on PATH, the
 # same combination webMAN MOD and PS3xPAD are built with. See ../docs/BUILD.md.
 #
-#   make            -> ds45pad_vsh.sprx  (plugin loader / XMB build)
-#   make game       -> ds45pad_game.sprx (optional in-game build)
+#   make            -> nativepadps3_vsh.sprx  (plugin loader / XMB build)
+#   make game       -> nativepadps3_game.sprx (optional in-game build)
 #   make all-builds -> both
 #   make clean
 #   make DEBUG=1 ... -> same targets with -DDS45_DEBUG (boot trace, LV2 dumper),
-#                       output named ds45pad_<variant>_debug.sprx
+#                       output named nativepadps3_<variant>_debug.sprx
 
 CELL_MK_DIR = $(CELL_SDK)/samples/mk
 include $(CELL_MK_DIR)/sdk.makedef.mk
@@ -75,7 +75,7 @@ LIBS_GAME = -lio_stub -lfs_stub -llv2_stub
 PPU_SRCS       = $(SRCS_VSH)
 PPU_PRX_LDLIBS = $(LIBS_VSH)
 
-PPU_PRX_TARGET = ds45pad.prx
+PPU_PRX_TARGET = nativepadps3.prx
 
 # Signing parameters.
 #
@@ -101,8 +101,8 @@ AUTH_GAME = 1010000001000003
 # DEX/debug firmware loads, and it takes no auth id.
 SIGN ?= scetool
 
-SPRX_VSH  = ds45pad_vsh$(DEBUG_SUFFIX).sprx
-SPRX_GAME = ds45pad_game$(DEBUG_SUFFIX).sprx
+SPRX_VSH  = nativepadps3_vsh$(DEBUG_SUFFIX).sprx
+SPRX_GAME = nativepadps3_game$(DEBUG_SUFFIX).sprx
 
 all: vsh
 
@@ -170,7 +170,7 @@ shim-blob:
 clean-obj:
 	-rm -f *.o $(PPU_PRX_TARGET)
 
-CLEANFILES = ds45pad_vsh.sprx ds45pad_game.sprx ds45pad_vsh_debug.sprx \
-             ds45pad_game_debug.sprx $(PPU_PRX_TARGET)
+CLEANFILES = nativepadps3_vsh.sprx nativepadps3_game.sprx nativepadps3_vsh_debug.sprx \
+             nativepadps3_game_debug.sprx $(PPU_PRX_TARGET)
 
 include $(CELL_MK_DIR)/sdk.target.mk
