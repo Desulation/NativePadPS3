@@ -1,7 +1,7 @@
 # Compilando o plugin
 
 > **Já está compilado.** O `.sprx` assinado está em
-> `release/plugins/ds45pad/`. Este documento é para quando você quiser
+> `release/plugins/nativepadps3/`. Este documento é para quando você quiser
 > recompilar depois de mexer no código.
 
 ## Recompilar
@@ -11,7 +11,7 @@ cd src
 ./build.sh
 ```
 
-Sai `ds45pad_vsh.sprx`, já assinado e com o magic conferido. O script assume
+Sai `nativepadps3_vsh.sprx`, já assinado e com o magic conferido. O script assume
 o SDK em `C:/ps3sdk/cell` e as ferramentas em `C:/ps3sdk/tools`; se você mudar
 de lugar, exporte `CELL_SDK` e `DS45_TOOLS`.
 
@@ -155,7 +155,7 @@ cd C:\Users\victo\Desktop\Geral\GOW\TestePlugin\src
 make
 ```
 
-Sai `ds45pad_vsh.sprx`.
+Sai `nativepadps3_vsh.sprx`.
 
 ### 6. Conferir o resultado
 
@@ -163,7 +163,7 @@ O arquivo tem que ter alguns dezenas de KB e começar com a assinatura `SCE\0`.
 Para checar:
 
 ```powershell
-Format-Hex -Path ds45pad_vsh.sprx -Count 4
+Format-Hex -Path nativepadps3_vsh.sprx -Count 4
 ```
 
 Deve mostrar `53 43 45 00`. Se mostrar `7F 45 4C 46` (`ELF`), o `scetool` não

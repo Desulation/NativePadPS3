@@ -8,13 +8,13 @@ O modo diagnóstico responde as duas.
 
 ## Ligando
 
-Em `ds45pad.txt`:
+Em `nativepadps3.txt`:
 
 ```
 DIAG = 1
 ```
 
-Reinicie o plugin. Tudo vai para `/dev_hdd0/tmp/ds45pad_diag.txt` — puxe pelo
+Reinicie o plugin. Tudo vai para `/dev_hdd0/tmp/nativepadps3_diag.txt` — puxe pelo
 FTP do webMAN. Toda vez que um código do relatório muda, uma linha é gravada.
 
 Ele amostra `cellPadGetData()` **e** `cellPadGetRawData()`, porque a variante
@@ -50,7 +50,7 @@ Agora procure o que mudou quando você apertou PS:
 data porta 6:  [2]=0x0100
 ```
 
-Isso é um achado: código **2**, bit **0x0100**. Coloque no `ds45pad.txt`:
+Isso é um achado: código **2**, bit **0x0100**. Coloque no `nativepadps3.txt`:
 
 ```
 BT_PS_CODE = 2
@@ -81,7 +81,7 @@ Teste rápido, sem ler arquivo nenhum: pegue um jogo com sixaxis evidente
 (qualquer um com minigame de inclinação; o menu do *flOw* ou *Super Stardust HD*
 servem bem) e observe:
 
-| Sintoma | Correção em `ds45pad.txt` |
+| Sintoma | Correção em `nativepadps3.txt` |
 |---|---|
 | Inclinar para a esquerda move para a direita | `INVERT_X = 1` |
 | Inclinar para frente move para trás | `INVERT_Y = 1` |
@@ -101,7 +101,7 @@ o valor atual é uma estimativa deliberada.
 Ligue `DIAG = 1`, plugue o controle e procure no arquivo. Se o plugin não o
 reconheceu, ele não aparece — nesse caso use um PC (`lsusb` no Linux, o
 Gerenciador de Dispositivos no Windows) e adicione a linha em
-`ds45pad_devices.txt`:
+`nativepadps3_devices.txt`:
 
 ```
 0x054c, 0x0ce6, DUALSENSE

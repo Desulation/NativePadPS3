@@ -1,4 +1,4 @@
-# Building DS45Pad
+# Building NativePadPS3
 
 ## Prerequisites
 
@@ -43,8 +43,8 @@ cd src
 
 ### GNU Make
 ```bash
-make            # builds ds45pad_vsh.sprx
-make game       # builds ds45pad_game.sprx
+make            # builds nativepadps3_vsh.sprx
+make game       # builds nativepadps3_game.sprx
 make all-builds # builds both
 make SIGN=fself # sign with the SDK's make_fself instead of scetool (DEX only)
 ```
@@ -60,7 +60,7 @@ Plugins must be signed with retail keys to execute on consumer consoles:
 ```bash
 scetool -0 SELF -1 TRUE -s FALSE -2 0A -3 1070000052000001 \
         -4 01000002 -5 APP -6 0003004000000000 -A 0001000000000000 \
-        -e ds45pad.prx ds45pad_vsh.sprx
+        -e nativepadps3.prx nativepadps3_vsh.sprx
 ```
 
 - **`-2 0A`**: Key revision 3.55. **Mandatory for PS3HEN.** Plugins signed with older revisions (e.g. `04`) will cause HEN to hang during boot.
@@ -74,12 +74,12 @@ The build script validates that the resulting file starts with the magic bytes `
 
 Copy the output files to your console's hard drive:
 ```text
-/dev_hdd0/plugins/ds45pad/ds45pad_vsh.sprx
-/dev_hdd0/plugins/ds45pad/ds45pad.txt
-/dev_hdd0/plugins/ds45pad/ds45pad_devices.txt
+/dev_hdd0/plugins/nativepadps3/nativepadps3_vsh.sprx
+/dev_hdd0/plugins/nativepadps3/nativepadps3.txt
+/dev_hdd0/plugins/nativepadps3/nativepadps3_devices.txt
 ```
 
 Add the path to `/dev_hdd0/boot_plugins.txt`:
 ```text
-/dev_hdd0/plugins/ds45pad/ds45pad_vsh.sprx
+/dev_hdd0/plugins/nativepadps3/nativepadps3_vsh.sprx
 ```

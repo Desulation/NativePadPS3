@@ -16,7 +16,7 @@ no GitHub é o ideal, porque aí a pessoa clona e compila direto.
 
 ## Texto para copiar
 
-> **[Request] Build help: DS45PAD — DualShock 4 / DualSense VSH plugin**
+> **[Request] Build help: NativePadPS3 — DualShock 4 / DualSense VSH plugin**
 >
 > I wrote a PS3 VSH plugin that gives DS4 and DualSense controllers proper
 > DualShock 3 behaviour — working PS button, PS3 conformity so games that
@@ -47,7 +47,7 @@ no GitHub é o ideal, porque aí a pessoa clona e compila direto.
 > ```
 > scetool -0 SELF -1 TRUE -s FALSE -2 0A -3 1070000052000001 \
 >         -4 01000002 -5 APP -6 0003004000000000 -A 0001000000000000 \
->         -e ds45pad.prx ds45pad_vsh.sprx
+>         -e nativepadps3.prx nativepadps3_vsh.sprx
 > ```
 >
 > `make` alone produces the VSH build, which is the only one needed. There's
