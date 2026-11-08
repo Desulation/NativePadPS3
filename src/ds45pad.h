@@ -368,7 +368,7 @@ typedef struct {
 	int      shim_output_mode;
 	/* SHIM_POWEROFF_HOOK (0/1, VSH builds only): install the hook that lets the
 	 * console turn a DualSense off, the way it turns a DualShock 3 off. On by
-	 * default. SHIM_POWEROFF_MODE (0..1, clamped; default 0) picks what it does:
+	 * default. SHIM_POWEROFF_MODE (0..1, clamped; default 1) picks what it does:
 	 * 0 observe only (record the request, pass the call through), 1 act (power the
 	 * DualSense off). Debug VSH builds on DEX 4.92 only, like the rest of the shim. */
 	int      shim_poweroff_hook;

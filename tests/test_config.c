@@ -294,7 +294,7 @@ static int test_shim_output_keys(void)
 
 /* SHIM_POWEROFF_HOOK gates the power-off hook and SHIM_POWEROFF_MODE picks what
  * it does: 0 observe (record only), 1 act (power a DualSense off). The hook is on
- * by default and the mode defaults to 0 (observe); the mode is clamped to 0..1
+ * by default and the mode defaults to 1 (act); the mode is clamped to 0..1
  * and junk leaves either default. */
 static int test_shim_poweroff_keys(void)
 {
@@ -302,14 +302,14 @@ static int test_shim_poweroff_keys(void)
 
 	ds45_config_defaults(&c);
 	CHECK(c.shim_poweroff_hook == 1);
-	CHECK(c.shim_poweroff_mode == 0);
+	CHECK(c.shim_poweroff_mode == 1);
 	c = cfg_from("ENABLE_SHIM = 1\n");
 	CHECK(c.shim_poweroff_hook == 1);
-	CHECK(c.shim_poweroff_mode == 0);
+	CHECK(c.shim_poweroff_mode == 1);
 
 	c = cfg_from("SHIM_POWEROFF_HOOK = 0\n");
 	CHECK(c.shim_poweroff_hook == 0);
-	CHECK(c.shim_poweroff_mode == 0);
+	CHECK(c.shim_poweroff_mode == 1);
 	CHECK(c.enable_shim == 0);                             /* a separate key */
 	CHECK(c.shim_output_hook == 1);                        /* and not the output keys */
 	CHECK(c.shim_output_mode == 2);
@@ -331,14 +331,17 @@ static int test_shim_poweroff_keys(void)
 	CHECK(c.shim_poweroff_hook == 1);
 	c = cfg_from("shim_poweroff_mode = 1\n");
 	CHECK(c.shim_poweroff_mode == 1);
-	c = cfg_from("SHIM_POWEROFF_MODE = 0\n");
+	c = cfg_from("SHIM_POWEROFF_MODE = 0\n");              /* explicit observe */
+	CHECK(c.shim_poweroff_mode == 0);
+	CHECK(c.shim_poweroff_hook == 1);
+	c = cfg_from("shim_poweroff_mode = 0\n");
 	CHECK(c.shim_poweroff_mode == 0);
 	c = cfg_from("SHIM_POWEROFF_MODE = 7\n");              /* clamped to the top */
 	CHECK(c.shim_poweroff_mode == 1);
 	c = cfg_from("SHIM_POWEROFF_MODE = -3\n");             /* clamped to the bottom */
 	CHECK(c.shim_poweroff_mode == 0);
 	c = cfg_from("SHIM_POWEROFF_MODE = abc\n");            /* junk keeps the default */
-	CHECK(c.shim_poweroff_mode == 0);
+	CHECK(c.shim_poweroff_mode == 1);
 	c = cfg_from("SHIM_POWEROFF_MODE = 1\nSHIM_POWEROFF_MODE = xyz\n");
 	CHECK(c.shim_poweroff_mode == 1);                      /* junk after a good line */
 	c = cfg_from("SHIM_POWEROFF_MODE = 1\nSHIM_POWEROFF_MODE = 0\n");

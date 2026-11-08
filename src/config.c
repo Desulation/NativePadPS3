@@ -86,7 +86,7 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->shim_output_hook = 1;  /* on by default; the mode below decides what it does */
 	c->shim_output_mode = 2;  /* full: rumble, player LEDs, light bar colour */
 	c->shim_poweroff_hook = 1; /* on by default; the mode below decides what it does */
-	c->shim_poweroff_mode = 0; /* observe: record only, nothing is powered off */
+	c->shim_poweroff_mode = 1; /* act: "Turn off the controller" powers a DualSense off */
 #ifdef DS45_LV2DUMP
 	c->dump_lv2 = 0;
 	c->capture_off = 0;
@@ -298,7 +298,7 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 	} else if (match(key, "SHIM_POWEROFF_MODE")) {
 		/* VSH builds only: 0 observe, 1 act. A number outside 0..1 is clamped to
 		 * the nearest end; anything that is not a number keeps the default
-		 * (0, observe). */
+		 * (1, act). */
 		if (parse_int(val, &n)) c->shim_poweroff_mode = n < 0 ? 0 : (n > 1 ? 1 : n);
 #endif
 #ifdef DS45_LV2DUMP
