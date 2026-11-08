@@ -549,7 +549,7 @@ static void load_extra_devices(void)
 	char *line, *p;
 	int n;
 
-	n = ds45_read_file(DS45_DEVICE_FILE, text, sizeof(text) - 1);
+	n = ds45_read_file(ds45_path(DS45_PATH_DEVICES), text, sizeof(text) - 1);
 	if (n <= 0)
 		return;
 	text[n] = 0;

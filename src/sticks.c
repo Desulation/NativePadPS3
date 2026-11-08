@@ -419,7 +419,7 @@ void sticks_load(void)
 
 	sticks_cal_defaults(&cal);
 
-	len = ds45_read_file(DS45_CAL_FILE, text, sizeof(text) - 1);
+	len = ds45_read_file(ds45_path(DS45_PATH_CAL), text, sizeof(text) - 1);
 	if (len > 0) {
 		text[len] = 0;
 
@@ -522,7 +522,7 @@ void sticks_save_if_dirty(int force)
 		text[n++] = '\n';
 	}
 
-	if (cellFsOpen(DS45_CAL_FILE, CELL_FS_O_WRONLY | CELL_FS_O_CREAT |
+	if (cellFsOpen(ds45_path(DS45_PATH_CAL), CELL_FS_O_WRONLY | CELL_FS_O_CREAT |
 	               CELL_FS_O_TRUNC, &fd, NULL, 0) == CELL_FS_SUCCEEDED) {
 		cellFsWrite(fd, text, (uint64_t)n, &written);
 		cellFsClose(fd);

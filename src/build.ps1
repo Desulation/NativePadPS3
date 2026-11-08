@@ -82,7 +82,7 @@ function Build-ShimBlob([string]$Repo) {
                            (Join-Path $src 'shim_blob.h'))
     Write-Output "Regenerated src/shim_blob.h from the freestanding kernel shim blob."
 }
-$sources = @('libc','util','hook','config','sticks','diag','main')
+$sources = @('libc','util','hook','config','paths','sticks','diag','main')
 $libs = @('-lio_stub','-lfs_stub','-llv2_stub')
 $compat = Join-Path $PSScriptRoot '../patches/compat_pad.h'
 $flags = @('-mprx','-Os','-ffunction-sections','-fdata-sections','-fno-builtin-printf','-nodefaultlibs','-std=gnu99','-Wall','-Wno-unused-parameter','-I',$include)

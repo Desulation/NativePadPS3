@@ -1,4 +1,4 @@
-/* SOURCES: lv2.c kernel.c btcheck.c passthru.c */
+/* SOURCES: lv2.c kernel.c btcheck.c passthru.c paths.c */
 #include <stdint.h>
 #include <string.h>
 #include <cell/pad.h>
@@ -204,7 +204,7 @@ static int test_fail_steps_aside(void)
 
 	/* a cache file is present (unparseable, so legacy resolves) */
 	setup();
-	fake_file_set(DS45_KERNEL_CACHE_FILE, "junk\n");
+	fake_file_set(ds45_path(DS45_PATH_KERNEL_CACHE), "junk\n");
 	CHECK(kernel_resolve(NULL) == DS45_KMATCH_LEGACY);
 	put64(LEG_SLOT, BT_WORK);
 	put_report(0x80);
@@ -216,7 +216,7 @@ static int test_fail_steps_aside(void)
 	CHECK(passthru_btcheck_state() == BTCHECK_FAILED);
 
 	CHECK(passthru_scan() == 0);
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 1);
+	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 1);
 	CHECK(kernel_active() == NULL);
 	CHECK(!any_bt_pad());                       /* released */
 
@@ -258,7 +258,7 @@ static int test_fail_after_pass_unregisters(void)
 	set_connected(1);
 	CHECK(passthru_scan() == 0);
 	CHECK(kernel_active() == NULL);
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 1);
+	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 1);
 	CHECK(!any_bt_pad());
 	CHECK(passthru_scan() == 0);
 	CHECK(fake_ldd_registers == 1);
@@ -331,8 +331,8 @@ static int test_null_slot_retried(void)
 	CHECK(passthru_raw_samples() == 1);
 
 	/* nothing about the failure was cached */
-	CHECK(fake_file_size(DS45_KERNEL_CACHE_FILE) == -1);
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 0);
+	CHECK(fake_file_size(ds45_path(DS45_PATH_KERNEL_CACHE)) == -1);
+	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 0);
 	CHECK(kernel_active() != NULL);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	EXPECT(locks_clean());

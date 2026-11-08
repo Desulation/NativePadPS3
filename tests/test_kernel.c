@@ -1,4 +1,4 @@
-/* SOURCES: lv2.c kernel.c */
+/* SOURCES: lv2.c kernel.c paths.c */
 #include <stdint.h>
 #include <string.h>
 #include "fakes.h"
@@ -33,7 +33,7 @@ static void hex16(char *dst, uint64_t v)
 static int load_text(const char *text)
 {
 	ds45_kernel_t out;
-	fake_file_set(DS45_KERNEL_CACHE_FILE, text);
+	fake_file_set(ds45_path(DS45_PATH_KERNEL_CACHE), text);
 	return kernel_cache_load(&out);
 }
 
@@ -138,13 +138,13 @@ static int test_cache_exact_format(void)
 	k.fp_addr = 0x8000000000123400ULL; k.fp_hash = 0xDEADBEEF0123ULL;
 	k.slot_addr = 0x80000000003A2B10ULL; k.report_off = 0xE8;
 	CHECK(kernel_cache_store(&k) == 0);
-	CHECK(strcmp(fake_file_get(DS45_KERNEL_CACHE_FILE),
+	CHECK(strcmp(fake_file_get(ds45_path(DS45_PATH_KERNEL_CACHE)),
 	  "DS45K1 0x8000000000123400 0xdeadbeef0123 0x80000000003a2b10 0xe8\n") == 0);
 
 	/* zero values print as 0x0; a rewrite replaces the old content */
 	k.fp_hash = 0; k.report_off = 0;
 	CHECK(kernel_cache_store(&k) == 0);
-	CHECK(strcmp(fake_file_get(DS45_KERNEL_CACHE_FILE),
+	CHECK(strcmp(fake_file_get(ds45_path(DS45_PATH_KERNEL_CACHE)),
 	  "DS45K1 0x8000000000123400 0x0 0x80000000003a2b10 0x0\n") == 0);
 	return 0;
 }
@@ -158,7 +158,7 @@ static int test_cache_store_rejects_no_fingerprint(void)
 	k.slot_addr = 0x800000000034C530ULL; k.report_off = 0xE8;
 	CHECK(kernel_cache_store(&k) == -1);
 	CHECK(kernel_cache_store(NULL) == -1);
-	CHECK(fake_file_size(DS45_KERNEL_CACHE_FILE) == -1);
+	CHECK(fake_file_size(ds45_path(DS45_PATH_KERNEL_CACHE)) == -1);
 	return 0;
 }
 
@@ -274,7 +274,7 @@ static int test_cache_load_leaves_out_untouched_on_failure(void)
 
 	fake_reset_all();
 	memset(&out, 0xAA, sizeof(out));
-	fake_file_set(DS45_KERNEL_CACHE_FILE, "garbage\n");
+	fake_file_set(ds45_path(DS45_PATH_KERNEL_CACHE), "garbage\n");
 	CHECK(kernel_cache_load(&out) == -1);
 	for (i = 0; i < sizeof(out); i++)
 		CHECK(p[i] == 0xAA);
@@ -289,9 +289,9 @@ static int test_cache_delete(void)
 	memset(&k, 0, sizeof(k));
 	k.fp_addr = FP_ADDR; k.fp_hash = 1; k.slot_addr = 0x80000000003A2B10ULL;
 	CHECK(kernel_cache_store(&k) == 0);
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 0);
+	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 0);
 	kernel_cache_delete();
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 1);
+	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 1);
 	return 0;
 }
 

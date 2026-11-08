@@ -1,4 +1,4 @@
-/* SOURCES: lv2.c kernel.c btcheck.c passthru.c */
+/* SOURCES: lv2.c kernel.c btcheck.c passthru.c paths.c */
 /* CFLAGS: -DDS45_DEBUG */
 #include <stdint.h>
 #include <string.h>

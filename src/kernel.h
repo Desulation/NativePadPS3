@@ -28,7 +28,6 @@ typedef enum {
 } ds45_kmatch_t;
 
 #define DS45_FP_LEN 32
-#define DS45_KERNEL_CACHE_FILE DS45_DIR "/kernel_cache.txt"
 
 /* 1 if the DS45_FP_LEN bytes at fp_addr hash to fp_hash. 0 for fp_addr == 0,
  * and for an unaligned/out-of-window fp_addr (no peek is issued). */

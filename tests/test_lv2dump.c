@@ -1,4 +1,4 @@
-/* SOURCES: lv2.c kernel.c lv2dump.c config.c */
+/* SOURCES: lv2.c kernel.c lv2dump.c config.c paths.c */
 /* CFLAGS: -DDS45_DEBUG */
 #include <stdint.h>
 #include <string.h>

@@ -117,7 +117,7 @@ int kernel_cache_load(ds45_kernel_t *out)
 	if (!out)
 		return -1;
 	/* The real ds45_read_file does not NUL-terminate. */
-	n = ds45_read_file(DS45_KERNEL_CACHE_FILE, buf, (int)sizeof(buf) - 1);
+	n = ds45_read_file(ds45_path(DS45_PATH_KERNEL_CACHE), buf, (int)sizeof(buf) - 1);
 	if (n <= 0)
 		return -1;
 	buf[n] = 0;
@@ -168,12 +168,12 @@ int kernel_cache_store(const ds45_kernel_t *k)
 	*p++ = ' '; p = put_hex(p, k->slot_addr);
 	*p++ = ' '; p = put_hex(p, k->report_off);
 	*p++ = '\n';
-	return ds45_write_file(DS45_KERNEL_CACHE_FILE, buf, (int)(p - buf));
+	return ds45_write_file(ds45_path(DS45_PATH_KERNEL_CACHE), buf, (int)(p - buf));
 }
 
 void kernel_cache_delete(void)
 {
-	ds45_delete_file(DS45_KERNEL_CACHE_FILE);
+	ds45_delete_file(ds45_path(DS45_PATH_KERNEL_CACHE));
 }
 
 /* ------------------------------------------------------------------------ */

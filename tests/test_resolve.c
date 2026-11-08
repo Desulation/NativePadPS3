@@ -1,4 +1,4 @@
-/* SOURCES: lv2.c kernel.c */
+/* SOURCES: lv2.c kernel.c paths.c */
 /* CFLAGS: -DDS45_DEBUG */
 #include <stdint.h>
 #include <string.h>
@@ -120,7 +120,7 @@ static int test_order_table_first(void)
 	make_table(1);
 	store_cache(CACHE_SLOT, 0xF0);
 	put_scan_image(ADDI_E8);
-	before = fake_file_get(DS45_KERNEL_CACHE_FILE);
+	before = fake_file_get(ds45_path(DS45_PATH_KERNEL_CACHE));
 	CHECK(before != NULL);
 
 	memset(&out, 0, sizeof(out));
@@ -128,8 +128,8 @@ static int test_order_table_first(void)
 	CHECK(out.slot_addr == TAB_SLOT && out.report_off == 0x100);
 	EXPECT(expect_active(DS45_KMATCH_TABLE, TAB_SLOT, 0x100));
 	/* a table hit neither rewrites nor deletes the cache */
-	CHECK(fake_file_get(DS45_KERNEL_CACHE_FILE) == before);
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 0);
+	CHECK(fake_file_get(ds45_path(DS45_PATH_KERNEL_CACHE)) == before);
+	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 0);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }
@@ -159,7 +159,7 @@ static int test_scan_writes_cache(void)
 	fake_reset_all();
 	make_table(0);
 	put_scan_image(ADDI_E8);
-	CHECK(fake_file_size(DS45_KERNEL_CACHE_FILE) == -1);
+	CHECK(fake_file_size(ds45_path(DS45_PATH_KERNEL_CACHE)) == -1);
 
 	memset(&out, 0, sizeof(out));
 	CHECK(kernel_resolve_from(g_tab, 2, &pat, &out) == DS45_KMATCH_SCAN);
@@ -187,7 +187,7 @@ static int test_legacy_last(void)
 	CHECK(out.slot_addr == LEG_SLOT && out.report_off == 0xE8);
 	EXPECT(expect_active(DS45_KMATCH_LEGACY, LEG_SLOT, 0xE8));
 	/* a failed scan is never cached */
-	CHECK(fake_file_size(DS45_KERNEL_CACHE_FILE) == -1);
+	CHECK(fake_file_size(ds45_path(DS45_PATH_KERNEL_CACHE)) == -1);
 
 	/* an invalid scan pattern falls through to legacy without any read */
 	fake_reset_all();
@@ -219,7 +219,7 @@ static int test_none_when_all_fail(void)
 	CHECK(kernel_active_source() == DS45_KMATCH_NONE);
 	for (i = 0; i < sizeof(out); i++)
 		CHECK(p[i] == 0xAA);
-	CHECK(fake_file_size(DS45_KERNEL_CACHE_FILE) == -1);
+	CHECK(fake_file_size(ds45_path(DS45_PATH_KERNEL_CACHE)) == -1);
 
 	/* empty table, NULL table */
 	CHECK(kernel_resolve_from(g_tab, 0, &no_pat, NULL) == DS45_KMATCH_NONE);
@@ -238,8 +238,8 @@ static int test_reject_deletes_cache(void)
 	CHECK(kernel_active() != NULL);
 
 	kernel_reject_active();
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 1);
-	CHECK(fake_file_size(DS45_KERNEL_CACHE_FILE) == -1);
+	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 1);
+	CHECK(fake_file_size(ds45_path(DS45_PATH_KERNEL_CACHE)) == -1);
 	CHECK(kernel_active() == NULL);
 	CHECK(kernel_active_source() == DS45_KMATCH_NONE);
 
@@ -249,7 +249,7 @@ static int test_reject_deletes_cache(void)
 	CHECK(kernel_resolve_from(g_tab, 1, &no_pat, NULL) == DS45_KMATCH_LEGACY);
 	kernel_reject_active();
 	CHECK(kernel_active() == NULL);
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 1);
+	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 1);
 	return 0;
 }
 
@@ -262,7 +262,7 @@ static int cache_bad_case(uint64_t slot, uint32_t off)
 	store_cache(slot, off);
 	CHECK(kernel_resolve_from(g_tab, 2, &no_pat, NULL) == DS45_KMATCH_LEGACY);
 	EXPECT(expect_active(DS45_KMATCH_LEGACY, LEG_SLOT, 0xE8));
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 1);
+	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 1);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }
@@ -284,7 +284,7 @@ static int test_cache_bad_record_is_miss(void)
 	store_cache(DS45_LV2_BOUND - 8, DS45_REPORT_OFF_MAX);
 	CHECK(kernel_resolve_from(g_tab, 2, &no_pat, NULL) == DS45_KMATCH_CACHE);
 	EXPECT(expect_active(DS45_KMATCH_CACHE, DS45_LV2_BOUND - 8, DS45_REPORT_OFF_MAX));
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 0);
+	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 0);
 
 	fake_reset_all();
 	make_table(0);
@@ -299,7 +299,7 @@ static int test_scan_bad_record_not_cached(void)
 	make_table(0);
 	put_scan_image(ADDI_E4);             /* scan finds it, but 0xE4 is unusable */
 	CHECK(kernel_resolve_from(g_tab, 2, &pat, NULL) == DS45_KMATCH_LEGACY);
-	CHECK(fake_file_size(DS45_KERNEL_CACHE_FILE) == -1);
+	CHECK(fake_file_size(ds45_path(DS45_PATH_KERNEL_CACHE)) == -1);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }

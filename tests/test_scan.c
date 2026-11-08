@@ -1,4 +1,4 @@
-/* SOURCES: lv2.c kernel.c */
+/* SOURCES: lv2.c kernel.c paths.c */
 #include <stdint.h>
 #include <string.h>
 #include "fakes.h"

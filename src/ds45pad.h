@@ -32,12 +32,25 @@
 #define DS45_LV2DUMP 1
 #endif
 
-/* Where the plugin looks for its data files. */
-#define DS45_DIR          "/dev_hdd0/plugins/ds45pad"
-#define DS45_CONFIG_FILE  DS45_DIR "/ds45pad.txt"
-#define DS45_DEVICE_FILE  DS45_DIR "/ds45pad_devices.txt"
-#define DS45_CAL_FILE     DS45_DIR "/ds45pad_cal.txt"
-#define DS45_DIAG_FILE    "/dev_hdd0/tmp/ds45pad_diag.txt"
+/* Where the plugin looks for its data files (paths.c). The folder is chosen
+ * once, by ds45_paths_init() at plugin start:
+ *   1. DS45_DATADIR_NEW, if its config file exists;
+ *   2. else the legacy folder (old name, old file names), if its config exists;
+ *   3. else DS45_DATADIR_NEW.
+ * ds45_path() never probes and returns the new folder's file before init; an
+ * out-of-range kind gives "". */
+#define DS45_DATADIR_NEW "/dev_hdd0/plugins/nativepadps3"
+typedef enum {
+	DS45_PATH_CONFIG = 0,
+	DS45_PATH_DEVICES,
+	DS45_PATH_CAL,
+	DS45_PATH_KERNEL_CACHE,
+	DS45_PATH_COUNT
+} ds45_path_kind_t;
+void        ds45_paths_init(void);
+const char *ds45_path(ds45_path_kind_t kind);
+
+#define DS45_DIAG_FILE   "/dev_hdd0/tmp/ds45pad_diag.txt"
 #define DS45_BOOT_FILE    "/dev_hdd0/tmp/ds45pad_boot.txt"
 
 /* ------------------------------------------------------------------------ */

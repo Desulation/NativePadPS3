@@ -681,9 +681,10 @@ static void ds45_thread(uint64_t arg)
 	 * the last marker in that file names the step that did it. */
 	ds45_boot_mark("start");
 	ds45_boot_mark(DS45PAD_VERSION);
+	ds45_paths_init();
 
 	ds45_config_defaults(&g_cfg);
-	ds45_config_load(&g_cfg, DS45_CONFIG_FILE);
+	ds45_config_load(&g_cfg, ds45_path(DS45_PATH_CONFIG));
 	ds45_boot_mark("config");
 
 	if (!g_cfg.enable) {
