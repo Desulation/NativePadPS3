@@ -12,13 +12,13 @@
     (a real DS3) are left alone; any other type is refused. A webMAN popup tells the
     person at the console to power the pads on.
 
-    Addresses are 12 hex digits without separators, e.g. 4cb99b1324a8. They belong
+    Addresses are 12 hex digits without separators, e.g. aabbccddeeff. They belong
     to your own controllers, so they are parameters and never stored in the repo.
 
 .EXAMPLE
     pwsh tools/ps3_console_linkkeys.ps1 -Ip 192.168.1.97
 .EXAMPLE
-    pwsh tools/ps3_console_linkkeys.ps1 -Ip 192.168.1.97 -Arm -Bd a0ab51a6c913,4cb99b1324a8
+    pwsh tools/ps3_console_linkkeys.ps1 -Ip 192.168.1.97 -Arm -Bd aabbccddeeff,112233445566
 #>
 param(
     [Parameter(Mandatory)][string]$Ip,
