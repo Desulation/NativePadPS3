@@ -59,4 +59,4 @@ foreach ($e in $entries) {
     $done++
 }
 Say "$done entr$(if ($done -eq 1) { 'y' } else { 'ies' }) flipped. Power the pad(s) on now."
-& curl.exe -s -m 10 -o NUL "http://$Ip/popup.ps3?$([uri]::EscapeDataString('DS45: power the pads on now'))"
+& curl.exe -s -m 10 -o NUL "http://$Ip/popup.ps3?$([uri]::EscapeDataString('NativePadPS3: power the pads on now'))"

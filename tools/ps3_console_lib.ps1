@@ -12,11 +12,44 @@
 if (-not $Ip) { throw 'set $Ip (the console address) before dot-sourcing ps3_console_lib.ps1' }
 $ftp = "ftp://$Ip"
 
+# Console file names (the plugin is NativePadPS3). The boot trace name must match
+# DS45_BOOT_FILE in the plugin header and the plugin name the output of src/build.ps1;
+# tools/test_console_lib.ps1 checks both offline.
+$TraceFile          = '/dev_hdd0/tmp/nativepadps3_boot.txt'
+$RemoteDebugSprx    = '/dev_hdd0/plugins/nativepadps3_vsh_debug.sprx'
+$ConfigFile         = '/dev_hdd0/plugins/nativepadps3/nativepadps3.txt'
+# legacy on-console name, read-only compatibility, do not rename
+$LegacyConfigFile   = '/dev_hdd0/plugins/ds45pad/ds45pad.txt'
+# legacy on-console name, read-only compatibility, do not rename
+$PluginEntryPattern = 'ds45pad|nativepadps3'
+
 function Say([string]$m) { Write-Host ("[{0}] {1}" -f [DateTime]::Now.ToString('HH:mm:ss'), $m) }
 
 function Test-Port([int]$Port) {
     $c = New-Object Net.Sockets.TcpClient
     try { return ($c.ConnectAsync($Ip, $Port).Wait(1500) -and $c.Connected) } catch { return $false } finally { $c.Close() }
+}
+
+# /dev_hdd0/boot_plugins.txt helpers (pure string work, no network). A plugin line is any
+# line naming the plugin under its old or its new name (this also catches a commented-out
+# old line); two of them would install the kernel shim twice at boot. Callers wrap the
+# results in @(...).
+# Blank lines and every plugin line dropped, the other lines kept verbatim in order,
+# $Entry appended once.
+function Set-BootPluginEntry([string[]]$Lines, [string]$Entry) {
+    $keep = @($Lines | Where-Object { $_.Trim() -and $_ -notmatch $PluginEntryPattern })
+    $keep + $Entry
+}
+
+# Blank lines and every plugin line dropped.
+function Remove-BootPluginEntries([string[]]$Lines) {
+    @($Lines | Where-Object { $_.Trim() -and $_ -notmatch $PluginEntryPattern })
+}
+
+# True when exactly one line is a plugin line and it is $Entry.
+function Test-BootPluginSingle([string[]]$Lines, [string]$Entry) {
+    $hits = @($Lines | Where-Object { $_ -match $PluginEntryPattern })
+    ($hits.Count -eq 1) -and ($hits[0].Trim() -ceq $Entry)
 }
 
 function Curl-Ok([string[]]$a) {
@@ -121,7 +154,7 @@ function Wait-Reboot {
 
 # The plugin's on-disk boot trace (one FTP GET), saved to $Dest\$as and returned as lines.
 function Get-Trace([string]$Dest, [string]$as) {
-    Curl-Ok @('-o', (Join-Path $Dest $as), "$ftp/dev_hdd0/tmp/ds45pad_boot.txt")
+    Curl-Ok @('-o', (Join-Path $Dest $as), "$ftp$TraceFile")
     Get-Content -LiteralPath (Join-Path $Dest $as)
 }
 
