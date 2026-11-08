@@ -499,8 +499,11 @@ static uint32_t adopt_recv_unsafe(const ds45_shim_kernel_t *k, uint64_t base,
  * Returns how many applied sites were skipped. A skipped site is not told apart
  * between "someone else changed it" and "still branches or points into the blob",
  * and the unload reverts only what is journalled, so the caller must never scrub
- * the blob of an adoption that skipped anything (R5): the blob stays a pure
- * pass-through (its stubs only tail-call the originals) and its data block intact. */
+ * the blob of an adoption that skipped anything (R5). The kept blob is NOT a pure
+ * pass-through: its stubs still tail-call the originals, but its data block keeps
+ * `enabled` and `po_mode` as the install left them, so until the next reboot the
+ * hooks keep behaving as installed (in act mode a DualSense's close request would
+ * keep being rewritten) wherever a skipped site still branches into the blob. */
 static int adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
                            uint32_t applied, int recv, ds45_kjournal_t *j)
 {
@@ -738,8 +741,14 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 			}
 			/* An applied site that was skipped (not journalled, so not reverted)
 			 * may still branch or point into the blob: never scrub it (R5). The
-			 * redirects and the journalled sites are reverted as usual; the kept
-			 * blob only passes through to the originals. Not a failure. */
+			 * redirects and the journalled sites are reverted as usual. The kept
+			 * blob's stubs still tail-call the originals, but its data block keeps
+			 * enabled and po_mode as installed (no new kernel write is added here),
+			 * so in the kept case the hook keeps behaving as installed until
+			 * reboot: act mode would keep rewriting a DualSense's close request.
+			 * Consequence: g_zero_size = 0 leaves the region non-zero, so a later
+			 * install in the same boot fails its zero-check until reboot (trace
+			 * kshim_adopt_blob_kept). Not a failure of this adoption. */
 			if (skipped) {
 				DS45_TRACE_HEX("kshim_adopt_blob_kept", (uint64_t)skipped);
 				g_zero_size = 0;

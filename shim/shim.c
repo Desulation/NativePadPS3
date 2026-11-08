@@ -490,13 +490,14 @@ int shim_poweroff_filter(ds45_shim_data_t *d, ds45_po_call_t *c)
 	 * site is reached with other types and report ids. */
 	if (d->po_mode == 1 && c->type == 3 && c->rid == 0xF4 && c->len == 4 &&
 	    have_kind && kind == SHIM_PO_KIND_CLOSE && is_ds) {
-		/* d->po_buf is shared by every power-off and there is no lock (two
-		 * pads may be turned off at once, or a retry may overlap a send still
-		 * reading it), so it is never cleared or built in place: the report is
-		 * built in a local array and stored over po_buf byte by byte. After the
-		 * first fill every store writes the value already there, so a reader
-		 * only ever sees the final bytes. Bytes 46-47 are not written (zero
-		 * from install). */
+		/* d->po_buf is shared by every power-off and there is no lock. The
+		 * close-send run method executes on a single worker thread (0xCBD3C) and
+		 * the sender copies the payload before it returns, so two hook
+		 * invocations never overlap and nothing reads po_buf while it is being
+		 * filled. Building the report in a local array and storing it over
+		 * po_buf byte by byte (never clearing or building in place) is belt and
+		 * braces, not a race fix: after the first fill every store writes the
+		 * value already there. Bytes 46-47 are not written (zero from install). */
 		uint8_t rep[DS_POWEROFF_PAYLOAD_LEN];
 
 		ds_poweroff_payload(rep);

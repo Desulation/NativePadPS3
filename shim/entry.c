@@ -463,10 +463,10 @@ __asm__(
  * return address of the caller's caller; gate note G2/G6). It observes and changes
  * nothing: it calls shim_teardown_impl(r3, r4, LR) and then branches (bctr) to the
  * original with r1, r2, r3..r10 and LR exactly as they came in. Written: r0, r2
- * (restored), r3..r10 (restored), r11, r12, CTR, cr0 and cr7 and the other
- * volatile CR fields by the C body, LR (restored); the original reads none of r0,
- * r11, r12, CR or CTR before writing them (G2). Same TOC technique as the
- * stubs above (the literal is the packer's R_PPC64_TOC word).
+ * (restored), r3..r10 (restored), r11, r12, CTR, LR (restored), and any CR field
+ * (the C body may write them all); the original reads none of r0, r11, r12, CR or
+ * CTR before writing them (G2: 0x1174FC reads no CR before writing). Same TOC
+ * technique as the stubs above (the literal is the packer's R_PPC64_TOC word).
  *
  * Frame (SHIM_TD_FRAME = 0xC0 bytes, 16-aligned; back chain kept by the stdu):
  *   0x00 back chain   0x08 CR   0x10 LR slot (the callee's)   0x18..0x2F reserved

@@ -3711,7 +3711,8 @@ static int test_poweroff_adopt_v12(void)
 	/* 2. a power-off site recorded as applied that is no longer ours is skipped (traced),
 	 * the rest restored; the adoption itself is not refused. A skipped site cannot be
 	 * told from one that still points into the blob, so the blob is NOT scrubbed
-	 * afterwards (R5): the redirects are reverted, the stubs stay as pure pass-throughs */
+	 * afterwards (R5): the redirects are reverted, the stubs stay in place (they still
+	 * tail-call the originals, but the data block keeps enabled/po_mode as installed) */
 	for (i = 0; i < PO_PATCHES_N; i++) {
 		uint64_t changed;
 
