@@ -164,6 +164,9 @@ Detalhes que costumam dar problema:
 - O arquivo tem que estar na **raiz** do `dev_hdd0`, não dentro de `plugins/`.
 - Se você já usa webMAN MOD, a linha dele já está aí. Só acrescente a sua
   embaixo, não substitua.
+- Se já existir uma linha do plugin antigo `ds45pad`, **substitua** essa linha
+  pela nova; nunca deixe as duas, senão o plugin é instalado duas vezes no
+  boot. Veja "Upgrading from ds45pad" no README.
 - Se o seu setup usa MAMBA em vez de Cobra, o arquivo se chama
   `mamba_plugins.txt`.
 

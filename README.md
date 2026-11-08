@@ -132,7 +132,7 @@ This repository contains **no binaries** — build the plugin first (below). The
 This project used to be called `ds45pad`. Nothing breaks if you do not migrate:
 
 * The old folder `/dev_hdd0/plugins/ds45pad/` keeps working. When `/dev_hdd0/plugins/nativepadps3/` has no `nativepadps3.txt`, the plugin reads the old folder instead, and the boot trace shows `datadir_legacy`.
-* The plugin itself is new: build `nativepadps3_vsh.sprx` and use it in place of the old build.
+* The plugin itself is new: build `nativepadps3_vsh.sprx` and put it where the old `ds45pad` plugin file was (or keep the old file name), then make sure `/dev_hdd0/boot_plugins.txt` names exactly one plugin path, the one you actually use.
 
 To migrate to the new names:
 

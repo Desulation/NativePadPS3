@@ -1,8 +1,8 @@
 # Compilando o plugin
 
-> **Já está compilado.** O `.sprx` assinado está em
-> `release/plugins/nativepadps3/`. Este documento é para quando você quiser
-> recompilar depois de mexer no código.
+> **Nenhum binário é distribuído neste repositório.** A pasta `ps3_ready/` traz
+> só os arquivos `.txt` prontos para copiar; o `.sprx` assinado você compila
+> com os comandos abaixo (ou com `src/build.ps1`). Este documento explica como.
 
 ## Recompilar
 
