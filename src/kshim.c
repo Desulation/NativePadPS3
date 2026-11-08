@@ -16,8 +16,9 @@
  *      zero, that it ends at or before exec_bound, and that base is 8-aligned
  *      inside the window - writing nothing if any fails;
  *   4. range-check the branch rows against base (the BRANCH helper row must
- *      reach shim_pid_ok, the BRANCHL output call site the output entry - WORD
- *      and PTR rows hold a finished instruction or pointer, no range);
+ *      reach shim_pid_ok, the BRANCHL output call site the output entry, the
+ *      power-off branches their stubs - WORD and PTR rows hold a finished
+ *      instruction or pointer, no range);
  *   5. copy the blob qword by qword, rebasing relocated words;
  *   6. fill the data block (originals, pad class and manager, info template,
  *      cfg, enabled, and each product-ID site's original qword with the set of
@@ -29,9 +30,12 @@
  *      SHIM_INLINE_PID), the output sites (only with SHIM_OUTPUT_HOOK and a row
  *      that names the output sender: the two packet-buffer TOC slots back to
  *      back, the call site, then - in probe and full mode with SHIM_INPUT_HOOK
- *      only - the cap word), the event redirect, the enable redirect and the
- *      input redirect, then (same condition as the cap word) the three
- *      receive-limit words, in that order. The unload mirrors it, last first.
+ *      only - the cap word), the power-off sites (only with SHIM_POWEROFF_HOOK
+ *      and a row that names the power-off sender: its call site, then in observe
+ *      mode and with a row that names the teardown routine the three teardown
+ *      observers), the event redirect, the enable redirect and the input
+ *      redirect, then (same condition as the cap word) the three receive-limit
+ *      words, in that order. The unload mirrors it, last first.
  *
  * Every write is read back. Any failure restores the borrowed spare slot (when
  * it was borrowed) and leaves every pre-existing kernel structure byte-identical
@@ -59,9 +63,9 @@
 #define KSHIM_FLUSH_OPD_LEN 16
 
 /* The final transactional apply: the helper word, the inline words (when
- * enabled), the output sites (when enabled), then the event, enable and input
- * redirects, then the receive-limit words (when enabled). The journal holds one
- * entry for each: at most 17, within the patcher's 20. */
+ * enabled), the output and power-off sites (when enabled), then the event,
+ * enable and input redirects, then the receive-limit words (when enabled). The
+ * journal holds one entry for each: at most 17, within the patcher's 20. */
 #define KSHIM_REDIRECTS 3
 #define KSHIM_FINAL_MAX (DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + \
                          DS45_SHIM_OUTPUT_PATCHES + DS45_SHIM_RECV_PATCHES + \
@@ -216,11 +220,11 @@ static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
 /* The order the sites are CAPTURED in (data-block order stays site order): the
  * helper and inline rows as before, then the two buffer slots back to back, then
  * the call site, then the cap word, then the four power-off sites (10-13), then the
- * three receive-limit words. The
- * transaction itself applies the sites 0..6 in this order, then the redirects, and
- * only THEN the three receive-limit words (kshim_install_from sets them aside and
- * appends them last; adoption journals them in the same place). So the buffer is
- * in the blob before anything can send into it, the longer cap and the redirects
+ * three receive-limit words. The transaction itself applies the sites 0..6 and
+ * 10..13 in this order, then the redirects, and only THEN the three receive-limit
+ * words (kshim_install_from sets them aside and appends them last; adoption
+ * journals them in the same place). So the buffer is in the blob before anything
+ * can send into it, the longer cap and the redirects
  * (the input bounce included) are live before the larger read limits go in, and the
  * unload - which undoes the journal last first - lowers the limits back to 0x41
  * FIRST, while the bounce is still in place, and only then takes the bounce away.
@@ -250,17 +254,31 @@ static const uint8_t PID_ORDER[DS45_SHIM_PID_SITES] = {
  * buffer slots: an 80-byte read into the kernel's packet buffer, left where it
  * was, would run into the HID client pointer behind it (0x432710). So they are
  * defined as the conjunction of the three sites they depend on, never from the
- * config on its own. The power-off sites (10-13) are never selected yet (a later
- * change adds their rules). With the hook off the install is exactly what
- * data-block version 7 produced. */
+ * config on its own. The power-off sites (10-13) are independent of the output hook:
+ * site 10 (the power-off call) with SHIM_POWEROFF_HOOK on and a row that names the
+ * power-off sender (the stub tail-branches to it), sites 11-13 (the teardown
+ * observers) additionally only outside the act stage - anything but
+ * SHIM_POWEROFF_MODE 1 is observe, an out-of-range value included, as in the data
+ * block's po_mode (poweroff_act) - and with a row that names the teardown routine.
+ * With the hook off the install is exactly what data-block version 7 produced. */
+static int poweroff_act(void)
+{
+	return g_cfg.shim_poweroff_hook != 0 && g_cfg.shim_poweroff_mode == 1;
+}
+
 static int site_selected(const ds45_shim_kernel_t *k, int i)
 {
 	if (i < DS45_SHIM_PID_PATCHES)
 		return 1;
 	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES)
 		return g_cfg.shim_inline_pid != 0;
-	if (i >= SITE_PO0)
-		return 0;
+	if (i >= SITE_PO0) {
+		if (!g_cfg.shim_poweroff_hook)
+			return 0;
+		if (i == SITE_PO0)
+			return k->orig_poweroff != 0;
+		return !poweroff_act() && k->orig_teardown != 0;
+	}
 	if (site_is_recv(i))
 		return site_selected(k, SITE_BUF) && site_selected(k, SITE_BUF1) &&
 		       site_selected(k, SITE_OUT_CAP);
@@ -273,18 +291,18 @@ static int site_selected(const ds45_shim_kernel_t *k, int i)
 }
 
 /* Whether an adopter may restore site i that the adopted install recorded as
- * applied: the row must populate it (a non-zero kind), and for an output site the
- * row must still name the output sender (a power-off site, 10-13, needs only its
- * populated row for now). Deliberately NOT the current config:
- * what the install applied is what gets restored, like the inline words. */
+ * applied: the row must populate it (a non-zero kind), and for an output or receive
+ * site the row must still name the output sender, for the power-off site (10) the
+ * power-off sender and for a teardown site (11-13) the teardown routine.
+ * Deliberately NOT the current config: what the install applied is what gets
+ * restored, like the inline words. */
 static int site_restorable(const ds45_shim_kernel_t *k, int i)
 {
 	if (pid_site(k, i)->kind == 0)
 		return 0;
-	/* a power-off site (10-13) needs only its populated row for now (a later change
-	 * adds the real rules); the output and receive sites also the sender address */
-	if (i >= DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES && i < SITE_PO0 &&
-	    k->orig_output == 0)
+	if (i >= SITE_PO0)
+		return (i == SITE_PO0 ? k->orig_poweroff : k->orig_teardown) != 0;
+	if (i >= DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES && k->orig_output == 0)
 		return 0;
 	return 1;
 }
@@ -344,10 +362,18 @@ static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int site
 /* What row p of site `site` writes, once the blob is at base: the finished
  * instruction of a WORD row; shim_pid_ok for the BRANCH helper; the output entry
  * for the BRANCHL call site; the blob's packet buffer (site 5) and that plus one
- * (site 6) for the PTR slots. The final transaction and adoption both go through
- * this, so an adopted install is recomputed exactly as it was written. */
+ * (site 6) for the PTR slots; the power-off entry (site 10) or the teardown entry
+ * (sites 11-13) for the power-off branches. The final transaction and adoption
+ * both go through this, so an adopted install is recomputed exactly as it was
+ * written. */
 static uint64_t pid_value(int site, const ds45_kpatch_t *p, uint64_t base)
 {
+	/* the power-off sites (10-13) are branches into the blob whichever the kind (a
+	 * `bl` or a `b`): site 10 aims at the power-off entry, sites 11-13 at the
+	 * teardown entry */
+	if (site >= SITE_PO0 &&
+	    (p->kind == DS45_KPATCH_BRANCH || p->kind == DS45_KPATCH_BRANCHL))
+		return base + (site == SITE_PO0 ? DS45_SHIM_OFF_POWEROFF : DS45_SHIM_OFF_TEARDOWN);
 	switch (p->kind) {
 	case DS45_KPATCH_BRANCH:
 		return base + DS45_SHIM_OFF_PID_OK;
@@ -398,8 +424,8 @@ static int pid_patched_qword(int site, const ds45_kpatch_t *p, uint64_t orig,
 
 /* The sites the adopted install recorded as applied (its data block's
  * pid_applied: bit 0 helper, bits 1-2 inline, bits 3-6 output, bits 7-9 receive
- * limits, bits 10-13 power-off); 0 if the block cannot be read (nothing is then restored but the
- * redirects). */
+ * limits, bits 10-13 power-off); 0 if the block cannot be read (nothing is then
+ * restored but the redirects). */
 static uint32_t adopt_applied(uint64_t base)
 {
 	uint64_t q;
@@ -551,10 +577,13 @@ static void build_data_block(const ds45_shim_kernel_t *k,
 	          g_cfg.shim_output_mode >= 0 && g_cfg.shim_output_mode <= 2)
 	             ? (uint32_t)g_cfg.shim_output_mode : 0);
 	put_be64(buf + offsetof(ds45_shim_data_t, orig_output), k->orig_output);
-	/* the power-off hook's targets (version 12; zero until a row names them, and
-	 * nothing reads them while no install selects sites 10-13) */
+	/* the power-off hook's targets (the row's two code addresses, zero when it names
+	 * none) and its stage: 1 (act) only with the hook on and SHIM_POWEROFF_MODE
+	 * exactly 1, 0 (observe) for everything else - an out-of-range mode included,
+	 * the same rule site_selected uses to leave the observers out */
 	put_be64(buf + offsetof(ds45_shim_data_t, orig_poweroff), k->orig_poweroff);
 	put_be64(buf + offsetof(ds45_shim_data_t, orig_teardown), k->orig_teardown);
+	put_be32(buf + offsetof(ds45_shim_data_t, po_mode), poweroff_act() ? 1 : 0);
 
 	cfg = buf + offsetof(ds45_shim_data_t, cfg);
 	cfg[offsetof(ds45_shim_cfg_t, deadzone)]     = (uint8_t)g_cfg.stick_deadzone;

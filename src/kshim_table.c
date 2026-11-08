@@ -168,13 +168,30 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		},
 		0x800000000010283CULL,
 
-		/* The power-off hook (data-block product-ID sites 10-13): its four rows and
-		 * the two code addresses it tail-calls are not researched into this row yet
-		 * (a later change fills them), so all stay zero - no install selects sites
-		 * 10-13 in any case. */
-		{ { 0 } },
-		0ULL,
-		0ULL,
+		/* The power-off hook (data-block product-ID sites 10-13; gate note
+		 * docs/superpowers/notes/2026-11-04-ds3-route-poweroff-gate.md, G1 and G6),
+		 * applied only with SHIM_POWEROFF_HOOK. Each patched instruction is the
+		 * SECOND word of its qword (addr & 4 set) and is verified by the FNV of the
+		 * whole 8-aligned qword (0xCA9B8, 0xF4D90, 0xF7228, 0xFDB40), which is why
+		 * the hashes are of the qword before the site:
+		 *   [0] site 10, `bl 0x102750` at 0xCA9BC (the pad run method's close-
+		 *       connection send) becomes a bl to the blob's power-off entry;
+		 *   [1] site 11, `bl 0x1174FC` at 0xF4D94 (the BT control syscall),
+		 *   [2] site 12, `b 0x1174FC` at 0xF722C (a tail branch, so a BRANCH row)
+		 *       and [3] site 13, `bl 0x1174FC` at 0xFDB44 (the HID client slot) become
+		 *       branches to the blob's teardown entry - observers, installed only
+		 *       outside the act stage. The values are filled in at install.
+		 * orig_poweroff is the sender 0x102750 the power-off stub tail-calls and
+		 * orig_teardown the teardown routine 0x1174FC the observers tail-call; 0
+		 * would leave their sites out. */
+		{
+			{ DS45_KPATCH_BRANCHL, 0x80000000000CA9BCULL, 0x6D3B5A2728211E68ULL, 0ULL },
+			{ DS45_KPATCH_BRANCHL, 0x80000000000F4D94ULL, 0x28861307B803CC8EULL, 0ULL },
+			{ DS45_KPATCH_BRANCH,  0x80000000000F722CULL, 0x2965949581F9EB53ULL, 0ULL },
+			{ DS45_KPATCH_BRANCHL, 0x80000000000FDB44ULL, 0x10FC449574975856ULL, 0ULL },
+		},
+		0x8000000000102750ULL,
+		0x80000000001174FCULL,
 	},
 };
 const int ds45_shim_table_count =
