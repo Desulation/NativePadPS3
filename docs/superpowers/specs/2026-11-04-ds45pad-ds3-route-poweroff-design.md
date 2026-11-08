@@ -1,6 +1,8 @@
 # DS3 route, stage 2 piece 2: power-off ("Turn off the controller")
 
-Status: design, awaiting review (2026-11-04). Firmware: DEX 4.92 only (the shim
+Status: implemented and verified on a DEX 4.92 console (2026-11-07); results in
+`docs/superpowers/notes/2026-11-04-ds3-route-poweroff-console.md`, see "Settled on
+hardware" at the end. Designed 2026-11-04. Firmware: DEX 4.92 only (the shim
 is fingerprint-gated, debug VSH builds only, RAM only). Builds on the output spec
 (`2026-11-03-ds45pad-ds3-route-output-design.md`, merged as PR #5) and uses the
 same hook technique, patcher and install rules.
@@ -253,3 +255,18 @@ other device.
   confirm that the retry path re-runs `0xCA90C` (so a rewritten call is rebuilt
   each time) and that the argument registers survive from the hook entry to the
   tail call, and confirm the data block and patch counts, before any feature code.
+
+## Settled on hardware (2026-11-07)
+
+Console stages, DEX 4.92 (details in
+`docs/superpowers/notes/2026-11-04-ds3-route-poweroff-console.md`); the design
+text above is left as written.
+
+- The XMB "Turn off the controller" reaches the close send at `0xCA9BC` for both a
+  DS3 and a DualSense (outcome A); no link teardown fires for either.
+- The `0x08` feature report (CRC seed `0x53`) powers a Bluetooth DualSense off, on
+  the first and only send. The pad comes back with the PS button as the same
+  controller number, with working input, rumble and LEDs; the DS3 is untouched.
+- `SHIM_POWEROFF_MODE` now defaults to 1 (act), as the config section anticipated.
+- Still not verified: two DualSenses turned off at the same moment, and other
+  triggers of the same close request (console shutdown, user switch).

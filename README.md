@@ -62,11 +62,11 @@ It is controlled by two VSH-only keys (see the table below); like the rest of th
 * The rewriting stages (modes 1 and 2) need the input hook (`SHIM_INPUT_HOOK`, default `1`): the DualSense switches to a longer input report that only the input hook can take in. With `SHIM_INPUT_HOOK = 0` the output hook only observes, whatever `SHIM_OUTPUT_MODE` says.
 * Stopping or unloading the plugin leaves a DualSense that is already in the longer (full) report mode without input until it reconnects: the pad cannot be switched back from the console side.
 
-**Turn off the controller.** When the console asks a controller to turn off, a DualSense can follow, the way a DualShock 3 does. It is controlled by two VSH-only keys (see the table below), `SHIM_POWEROFF_HOOK` (default `1`) and `SHIM_POWEROFF_MODE` (default `0`):
-* **Observe (`0`, the default)** only records that the request happened; the DualSense stays connected.
-* **Act (`1`)** powers a DualSense off.
+**Turn off the controller.** Choosing "Turn off the controller" for a Bluetooth DualSense now powers it off, the way it does for a DualShock 3. Verified on a DEX 4.92 console: the pad powers off, and pressing the PS button brings it back as the same controller number, with working input, rumble and LEDs; a DualShock 3 is unaffected. It is controlled by two VSH-only keys (see the table below), `SHIM_POWEROFF_HOOK` (default `1`) and `SHIM_POWEROFF_MODE` (default `1`):
+* **Act (`1`, the default)** powers a DualSense off. Only this mode's hook is installed: one patch, at the console's "turn the controller off" request.
+* **Observe (`0`)** only records that the request happened and the DualSense just stays on. It additionally installs three teardown observers, a debugging aid.
 
-Like the rest of the shim it needs `ENABLE_SHIM = 1`, exists only in debug VSH builds, is RAM-only and is DEX 4.92-only.
+Like the rest of the shim it needs `ENABLE_SHIM = 1`, exists only in debug VSH builds, is RAM-only and is DEX 4.92-only. Not verified on hardware: two DualSenses turned off at the same moment, and other triggers of the same console request (console shutdown, user switch); a DualSense is expected to power off there too, as a DualShock 3 does, but this was not tried.
 
 **Safety gate.** The shim patches live kernel code, so it is never installed on its own. It is enabled **only** when `ds45pad.txt` contains `ENABLE_SHIM = 1`, and it is built only into debug VSH builds. The way out of a hang is to remove that line (or the plugin) and reboot. Leave `ENABLE_SHIM` unset for normal use.
 
@@ -90,8 +90,8 @@ Edit `/dev_hdd0/plugins/ds45pad/ds45pad.txt`. Common options:
 | `ENABLE_SHIM` | `0` | **Experimental.** Install the native DS3-route kernel shim (debug builds only). Leave unset unless you are testing that route. |
 | `SHIM_OUTPUT_HOOK` | `1` | Shim only (needs `ENABLE_SHIM = 1`; debug VSH builds). Install the output hook that gives a DualSense rumble, player LEDs and a light bar colour. `0` = off. The rewriting stages need the input hook (`SHIM_INPUT_HOOK`, default `1`); with `SHIM_INPUT_HOOK = 0` the output hook only observes. |
 | `SHIM_OUTPUT_MODE` | `2` | Shim only. What the output hook does: `0` observe (hook installed, nothing changes), `1` probe (fixed blue light bar and player LED 1, for tests), `2` full (rumble, player LEDs and light bar colour by controller number). Modes 1 and 2 only take effect with the input hook on (`SHIM_INPUT_HOOK`, default `1`); without it the hook stays an observer. |
-| `SHIM_POWEROFF_HOOK` | `1` | Shim only (needs `ENABLE_SHIM = 1`; debug VSH builds). Install the power-off hook that lets the console turn a DualSense off. `0` = off. |
-| `SHIM_POWEROFF_MODE` | `0` | Shim only. What the power-off hook does: `0` observe (records the request, powers nothing off), `1` act (powers a DualSense off when the console asks the controller to turn off). A number outside `0` to `1` is clamped. |
+| `SHIM_POWEROFF_HOOK` | `1` | Shim only (needs `ENABLE_SHIM = 1`; debug VSH builds). Install the power-off hook (one patch at the console's "turn the controller off" request). The hook being installed does not power anything off by itself: only act mode (`SHIM_POWEROFF_MODE = 1`) powers a DualSense off, the mode decides what the hook does. `0` = no power-off patches at all. |
+| `SHIM_POWEROFF_MODE` | `1` | Shim only. What the power-off hook does: `1` act (powers a DualSense off when the console asks the controller to turn off; verified on DEX 4.92), `0` observe (records the request, the DualSense stays on; also installs three teardown observers). A number outside `0` to `1` is clamped. |
 
 The configuration parser accepts a number of additional debug and shim-tuning keys used during development of the DS3 route; they default to off/safe and are not needed for normal use.
 
