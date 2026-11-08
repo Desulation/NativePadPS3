@@ -12,6 +12,11 @@
     Bluetooth address, idfb = completions that fell back to the counter, hnd = last
     connection handle looked up.
 
+    Also printed: the last podbg line (calls/ds/rew/pass = power-off close-send hook
+    entries, DualSense calls, calls rewritten, calls passed through; td = teardown hook
+    entries; mode = the power-off stage) and every poevt line (seq=0x........ then the
+    16-byte ring record as 32 hex digits; the record layout is in shim/shim_abi.h).
+
 .EXAMPLE
     pwsh tools/ps3_console_trace.ps1 -Ip 192.168.1.97 -Dest tools/dumps/dex492/run1
 #>
@@ -30,3 +35,7 @@ Say ('trace lines: {0}' -f $tr.Count)
 $tr | Where-Object { $_ -match '(?i)kshim|exec_probe|gated' } | Select-Object -First 10 | ForEach-Object { "   $_" }
 "--- last $Tail shimdbg lines ---"
 $tr | Where-Object { $_ -match 'shimdbg' } | Select-Object -Last $Tail | ForEach-Object { "   $_" }
+'--- last podbg line (power-off hook counters) ---'
+$tr | Where-Object { $_ -match '^podbg ' } | Select-Object -Last 1 | ForEach-Object { "   $_" }
+'--- poevt lines (power-off event ring, oldest first) ---'
+$tr | Where-Object { $_ -match '^poevt ' } | ForEach-Object { "   $_" }

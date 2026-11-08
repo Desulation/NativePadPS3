@@ -52,6 +52,12 @@ DS45_SHIM_OFF_OUTPUT. Its stub adopts the blob TOC from a literal word in .text
 (`.quad .TOC.@tocbase`, an aligned R_PPC64_TOC word): the generic absolute-word
 rule above rebases it with the descriptors' words, wherever it sits.
 
+shim_poweroff and shim_teardown (the DS3-route power-off hooks, entered by a
+`bl` or `b` from the kernel's code) are the same kind of stub and are exported
+the same way, as DS45_SHIM_OFF_POWEROFF and DS45_SHIM_OFF_TEARDOWN; the pack
+fails if either symbol is missing or its descriptor's entry is not a 4-aligned
+address in an executable section.
+
 Standard library only; it never imports anything from the directory of the ELF
 it is handed.
 """
@@ -117,7 +123,8 @@ class PackError(Exception):
 
 class Packed(object):
     def __init__(self, blob, relocs, off_data, off_event, off_enable,
-                 off_input, off_pid_ok, off_output):
+                 off_input, off_pid_ok, off_output, off_poweroff,
+                 off_teardown):
         self.blob = blob
         self.blob_len = len(blob)
         self.relocs = relocs
@@ -128,6 +135,8 @@ class Packed(object):
         self.off_input = off_input
         self.off_pid_ok = off_pid_ok
         self.off_output = off_output
+        self.off_poweroff = off_poweroff
+        self.off_teardown = off_teardown
 
 
 def _cstr(buf, off):
@@ -330,18 +339,30 @@ def pack(data):
     # exactly as for shim_pid_ok. The stub keeps its blob-TOC literal in .text
     # (an aligned R_PPC64_TOC word); the relocation loop above already rebases it
     # like any other absolute word.
-    output = find("shim_output")
-    desc = output["value"]                           # .opd descriptor address
-    if desc + 8 > len(image):
-        raise PackError("shim_output descriptor is outside the image")
-    off_output = struct.unpack(">Q", bytes(image[desc:desc + 8]))[0]
-    if not in_text(off_output) or off_output % 4 != 0:
-        raise PackError(
-            "shim_output descriptor 0x%x holds entry 0x%x, which is not an "
-            "aligned address in an executable section" % (desc, off_output))
+    def stub_entry(name):
+        sym = find(name)
+        desc = sym["value"]                          # .opd descriptor address
+        if desc + 8 > len(image):
+            raise PackError("%s descriptor is outside the image" % name)
+        entry = struct.unpack(">Q", bytes(image[desc:desc + 8]))[0]
+        if not in_text(entry) or entry % 4 != 0:
+            raise PackError(
+                "%s descriptor 0x%x holds entry 0x%x, which is not an "
+                "aligned address in an executable section" % (name, desc, entry))
+        return entry
+
+    off_output = stub_entry("shim_output")
+
+    # shim_poweroff (entered by `bl` at the kernel's close-connection send) and
+    # shim_teardown (entered by `bl` / `b` at the pad teardown routine) are plain
+    # stubs exactly like shim_output: a descriptor only for the packer, a blob-TOC
+    # literal in .text rebased by the generic absolute-word rule above.
+    off_poweroff = stub_entry("shim_poweroff")
+    off_teardown = stub_entry("shim_teardown")
 
     return Packed(bytes(image), sorted(set(rebase)), off_data, off_event,
-                  off_enable, off_input, off_pid_ok, off_output)
+                  off_enable, off_input, off_pid_ok, off_output, off_poweroff,
+                  off_teardown)
 
 
 def render_header(packed, source):
@@ -394,6 +415,10 @@ def render_header(packed, source):
       % packed.off_pid_ok)
     w("#define DS45_SHIM_OFF_OUTPUT 0x%x /* entry (code) of shim_output, reached by bl */"
       % packed.off_output)
+    w("#define DS45_SHIM_OFF_POWEROFF 0x%x /* entry (code) of shim_poweroff, reached by bl */"
+      % packed.off_poweroff)
+    w("#define DS45_SHIM_OFF_TEARDOWN 0x%x /* entry (code) of shim_teardown, reached by bl / b */"
+      % packed.off_teardown)
     w("")
     w("#endif /* DS45_SHIM_BLOB_H */")
     return "\n".join(out) + "\n"

@@ -1167,7 +1167,12 @@ static int test_abi_layout(void)
 	 * it by 24 bytes: 272 -> 584. 6 and 7 were the 272-byte layout; 5 added the
 	 * debug diagnostic counters (Amendment 3) after the product-ID originals
 	 * (248 bytes), 4 was 208, 3 the 176-byte one without the originals. */
-	CHECK(DS45_SHIM_VERSION == 11);
+	/* 12: the power-off hook's state (the two original code addresses, the mode and
+	 * sequence, the debug counters, a 48-byte frame buffer and an 8 x 16 byte ring)
+	 * appended after dbg_in_raw, and pid_orig grown from 10 to 14 product-ID sites
+	 * (sites 10-13 are the power-off patches), which moves every field after it by
+	 * 32 bytes: 952 -> 984, then 224 appended bytes: 1208. */
+	CHECK(DS45_SHIM_VERSION == 12);
 	CHECK(DS45_SHIM_INFO_LEN == 0x56);
 
 	/* The plugin and the blob compile this header separately and meet in
@@ -1200,47 +1205,48 @@ static int test_abi_layout(void)
 	CHECK(sizeof(((ds45_shim_data_t *)0)->info_tmpl) == 0x58);
 	/* appended after info_tmpl: the product-ID sites' original qwords and
 	 * which of them the install applied (adoption rebuilds its journal) */
-	CHECK(DS45_SHIM_PID_SITES == 10);
+	CHECK(DS45_SHIM_PID_SITES == 14);
 	CHECK(offsetof(ds45_shim_data_t, pid_orig) == 176);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->pid_orig) == 8 * DS45_SHIM_PID_SITES);
-	CHECK(offsetof(ds45_shim_data_t, pid_applied) == 256);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->pid_orig) == 8 * 14);
+	CHECK(offsetof(ds45_shim_data_t, pid_applied) == 288);
 	/* the debug diagnostic counters (Amendment 3), after pid_reserved (which
 	 * keeps the size a multiple of 8) */
-	CHECK(offsetof(ds45_shim_data_t, dbg_event_calls) == 264);
-	CHECK(offsetof(ds45_shim_data_t, dbg_enable_calls) == 268);
-	CHECK(offsetof(ds45_shim_data_t, dbg_input_calls) == 272);
-	CHECK(offsetof(ds45_shim_data_t, dbg_input_padmiss) == 276);
-	CHECK(offsetof(ds45_shim_data_t, dbg_event_ds) == 280);
-	CHECK(offsetof(ds45_shim_data_t, dbg_enable_ds) == 284);
-	CHECK(offsetof(ds45_shim_data_t, dbg_input_ds) == 288);
-	CHECK(offsetof(ds45_shim_data_t, dbg_last_pid) == 292);
-	CHECK(offsetof(ds45_shim_data_t, dbg_last_vtable) == 296);
+	CHECK(offsetof(ds45_shim_data_t, dbg_event_calls) == 296);
+	CHECK(offsetof(ds45_shim_data_t, dbg_enable_calls) == 300);
+	CHECK(offsetof(ds45_shim_data_t, dbg_input_calls) == 304);
+	CHECK(offsetof(ds45_shim_data_t, dbg_input_padmiss) == 308);
+	CHECK(offsetof(ds45_shim_data_t, dbg_event_ds) == 312);
+	CHECK(offsetof(ds45_shim_data_t, dbg_enable_ds) == 316);
+	CHECK(offsetof(ds45_shim_data_t, dbg_input_ds) == 320);
+	CHECK(offsetof(ds45_shim_data_t, dbg_last_pid) == 324);
+	CHECK(offsetof(ds45_shim_data_t, dbg_last_vtable) == 328);
 	/* stage 1b stable identity, appended after dbg_last_vtable: the connection
 	 * table address, the on/off switch and three counters */
-	CHECK(offsetof(ds45_shim_data_t, conn_tbl) == 304);
-	CHECK(offsetof(ds45_shim_data_t, stable_id) == 312);
-	CHECK(offsetof(ds45_shim_data_t, dbg_id_bd) == 316);
-	CHECK(offsetof(ds45_shim_data_t, dbg_id_fallback) == 320);
-	CHECK(offsetof(ds45_shim_data_t, dbg_last_handle) == 324);
+	CHECK(offsetof(ds45_shim_data_t, conn_tbl) == 336);
+	CHECK(offsetof(ds45_shim_data_t, stable_id) == 344);
+	CHECK(offsetof(ds45_shim_data_t, dbg_id_bd) == 348);
+	CHECK(offsetof(ds45_shim_data_t, dbg_id_fallback) == 352);
+	CHECK(offsetof(ds45_shim_data_t, dbg_last_handle) == 356);
 	/* the DS3-route output state, appended last: the original sender's address
 	 * (written from the firmware row), the mode, the report sequence counter,
 	 * the debug counters, the captured payload, the 78-byte DualSense report and
 	 * the moved 96-byte packet buffer (8-aligned); 304 -> 584 in version 8, 24
 	 * bytes later since version 10 grew pid_orig */
-	CHECK(offsetof(ds45_shim_data_t, orig_output) == 328);
-	CHECK(offsetof(ds45_shim_data_t, out_mode) == 336);
-	CHECK(offsetof(ds45_shim_data_t, out_seq) == 340);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_calls) == 344);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_ds) == 348);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_translated) == 352);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_passed) == 356);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_last_len) == 360);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_cap_len) == 364);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_cap) == 368);
+	CHECK(offsetof(ds45_shim_data_t, orig_output) == 360);
+	CHECK(offsetof(ds45_shim_data_t, out_mode) == 368);
+	CHECK(offsetof(ds45_shim_data_t, out_seq) == 372);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_calls) == 376);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_ds) == 380);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_translated) == 384);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_passed) == 388);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_last_len) == 392);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_cap_len) == 396);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_cap) == 400);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_out_cap) == 64);
-	CHECK(offsetof(ds45_shim_data_t, out_buf) == 432);
+	CHECK(offsetof(ds45_shim_data_t, out_buf) == 464);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->out_buf) == 80);
-	CHECK(offsetof(ds45_shim_data_t, pktbuf) == 512);
+	CHECK(offsetof(ds45_shim_data_t, pktbuf) == 544);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->pktbuf) == 96);
 	CHECK(offsetof(ds45_shim_data_t, pktbuf) % 8 == 0);
 	/* 9: the rumble-aware capture (debug only), appended after pktbuf: the pad
@@ -1248,38 +1254,58 @@ static int test_abi_layout(void)
 	 * off-capture armed flag, a reserved word that keeps the size a multiple of 8,
 	 * and the two 64-byte captures; 584 -> 744 in version 9, 24 bytes later since
 	 * version 10 */
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_pad) == 608);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_pad) == 640);
 	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_pad) % 8 == 0);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_count) == 616);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_len) == 620);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_count) == 624);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_len) == 628);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_armed) == 632);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_rsvd9) == 636);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_cap) == 640);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_count) == 648);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_len) == 652);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_count) == 656);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_len) == 660);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_armed) == 664);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_rsvd9) == 668);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_cap) == 672);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_out_on_cap) == 64);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_cap) == 704);
+	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_cap) == 736);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_out_off_cap) == 64);
 	/* 10: the input bounce buffer (8-aligned, zero at install; the blob reads the
 	 * DualSense's 79-byte full report into it) and four debug counters (bounce
 	 * reads, reads of 66-79 bytes, results dropped for not fitting, errors),
 	 * appended after dbg_out_off_cap: 744 -> 880 including the 24 bytes pid_orig
 	 * grew by (7 -> 10 sites) */
-	CHECK(offsetof(ds45_shim_data_t, inbuf) == 768);
+	CHECK(offsetof(ds45_shim_data_t, inbuf) == 800);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->inbuf) == 96);
 	CHECK(offsetof(ds45_shim_data_t, inbuf) % 8 == 0);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_bounce) == 864);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_big) == 868);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_drop) == 872);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_err) == 876);
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_bounce) == 896);
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_big) == 900);
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_drop) == 904);
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_err) == 908);
 	/* 11: the raw DualSense report capture (debug only), appended after dbg_in_err:
 	 * the captured length, a sequence counter and the first 64 bytes of the last
 	 * report before translation; 880 -> 952 */
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw_len) == 880);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw_seq) == 884);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw) == 888);
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw_len) == 912);
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw_seq) == 916);
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw) == 920);
 	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_in_raw) == 64);
-	CHECK(sizeof(ds45_shim_data_t) == 952);
+	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw) + sizeof(((ds45_shim_data_t *)0)->dbg_in_raw) == 984);
+	/* 12: the power-off hook state, appended after dbg_in_raw (8-aligned) */
+	CHECK(offsetof(ds45_shim_data_t, orig_poweroff) == 984);
+	CHECK(offsetof(ds45_shim_data_t, orig_teardown) == 992);
+	CHECK(offsetof(ds45_shim_data_t, po_mode) == 1000);
+	CHECK(offsetof(ds45_shim_data_t, po_seq) == 1004);
+	CHECK(offsetof(ds45_shim_data_t, dbg_po_calls) == 1008);
+	CHECK(offsetof(ds45_shim_data_t, dbg_po_ds) == 1012);
+	CHECK(offsetof(ds45_shim_data_t, dbg_po_rewritten) == 1016);
+	CHECK(offsetof(ds45_shim_data_t, dbg_po_passed) == 1020);
+	CHECK(offsetof(ds45_shim_data_t, dbg_td_calls) == 1024);
+	CHECK(offsetof(ds45_shim_data_t, dbg_td_rsvd) == 1028);
+	CHECK(offsetof(ds45_shim_data_t, po_buf) == 1032);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->po_buf) == 48);
+	CHECK(offsetof(ds45_shim_data_t, po_ring) == 1080);
+	CHECK(sizeof(((ds45_shim_data_t *)0)->po_ring) == 128);
+	CHECK(offsetof(ds45_shim_data_t, orig_poweroff) % 8 == 0);
+	CHECK(offsetof(ds45_shim_data_t, orig_teardown) % 8 == 0);
+	CHECK(offsetof(ds45_shim_data_t, po_buf) % 8 == 0);
+	CHECK(offsetof(ds45_shim_data_t, po_ring) % 8 == 0);
+	CHECK(sizeof(ds45_shim_data_t) == 1208);
 	CHECK(sizeof(ds45_shim_data_t) % 8 == 0);
 	return 0;
 }

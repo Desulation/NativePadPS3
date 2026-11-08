@@ -422,3 +422,115 @@ int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
 	d->dbg_out_passed++;
 	return 0;
 }
+
+/* A u32 that may alias any object (see shim_u64_alias_t). */
+typedef uint32_t __attribute__((may_alias)) shim_u32_alias_t;
+
+/* Start the next power-off ring record: bump po_seq, zero the 16-byte slot
+ * (po_seq - 1) & 7, write the sequence big-endian byte by byte and the site in
+ * byte 4. Returns the slot. Every multi-byte value in a record is stored byte by
+ * byte, so the record is the same on the host and in the big-endian blob. */
+static inline uint8_t *po_ring_begin(ds45_shim_data_t *d, uint8_t site)
+{
+	uint32_t seq = ++d->po_seq;
+	uint8_t *r = d->po_ring[(seq - 1) & 7];
+	int i;
+
+	for (i = 0; i < 16; i++)
+		r[i] = 0;
+	r[0] = (uint8_t)(seq >> 24);
+	r[1] = (uint8_t)(seq >> 16);
+	r[2] = (uint8_t)(seq >> 8);
+	r[3] = (uint8_t)seq;
+	r[4] = site;
+	return r;
+}
+
+int shim_poweroff_filter(ds45_shim_data_t *d, ds45_po_call_t *c)
+{
+	const uint8_t *obj, *pad = 0, *pl;
+	uint8_t *r;
+	uint32_t kind = 0;
+	uint64_t n;
+	int is_ds, have_kind = 0, i;
+
+	if (!d || !c || !d->enabled)
+		return 0;
+	d->dbg_po_calls++;
+
+	/* The call's object: the kind word (a 32-bit field) and the pad pointer, read
+	 * only when the object exists. */
+	obj = (const uint8_t *)(uintptr_t)c->obj;
+	if (obj) {
+		kind = *(const shim_u32_alias_t *)(const void *)(obj + SHIM_PO_OBJ_KIND);
+		have_kind = 1;
+		pad = ld_ptr(obj + SHIM_PO_OBJ_PAD);
+	}
+	is_ds = shim_pad_is_dualsense(d, pad);
+	if (is_ds)
+		d->dbg_po_ds++;
+
+	/* Site 1 of the ring: everything the call carried. */
+	r = po_ring_begin(d, 1);
+	r[5] = (uint8_t)is_ds;
+	r[6] = (uint8_t)c->handle;
+	r[7] = (uint8_t)c->type;
+	r[8] = (uint8_t)c->rid;
+	r[9] = (uint8_t)c->len;
+	r[10] = have_kind ? (uint8_t)kind : 0xFF;
+	pl = (const uint8_t *)(uintptr_t)c->payload;
+	if (pl) {
+		n = c->len < 4 ? c->len : 4;
+		for (i = 0; (uint64_t)i < n; i++)
+			r[12 + i] = pl[i];
+	}
+
+	/* Rewrite the close request of a DualSense into the power-off feature report;
+	 * only in the rewriting stage and only the exact request shape: the same call
+	 * site is reached with other types and report ids. */
+	if (d->po_mode == 1 && c->type == 3 && c->rid == 0xF4 && c->len == 4 &&
+	    have_kind && kind == SHIM_PO_KIND_CLOSE && is_ds) {
+		/* d->po_buf is shared by every power-off and there is no lock. The
+		 * close-send run method executes on a single worker thread (0xCBD3C) and
+		 * the sender copies the payload before it returns, so two hook
+		 * invocations never overlap and nothing reads po_buf while it is being
+		 * filled. Building the report in a local array and storing it over
+		 * po_buf byte by byte (never clearing or building in place) is belt and
+		 * braces, not a race fix: after the first fill every store writes the
+		 * value already there. Bytes 46-47 are not written (zero from install). */
+		uint8_t rep[DS_POWEROFF_PAYLOAD_LEN];
+
+		ds_poweroff_payload(rep);
+		for (i = 0; i < DS_POWEROFF_PAYLOAD_LEN; i++)
+			d->po_buf[i] = rep[i];
+		c->o_rid = DS_POWEROFF_REPORT_ID;
+		c->o_buf = (uint64_t)(uintptr_t)d->po_buf;
+		c->o_len = DS_POWEROFF_PAYLOAD_LEN;
+		d->dbg_po_rewritten++;
+		return 1;
+	}
+	d->dbg_po_passed++;
+	return 0;
+}
+
+void shim_teardown_note(ds45_shim_data_t *d, uint64_t addr, uint64_t flag, uint64_t lr)
+{
+	uint8_t *r;
+
+	if (!d || !d->enabled)
+		return;
+	d->dbg_td_calls++;
+
+	/* Site 2: the flag, the low 32 bits of the caller's link register and of the
+	 * address argument. */
+	r = po_ring_begin(d, 2);
+	r[6] = (uint8_t)flag;
+	r[8] = (uint8_t)(lr >> 24);
+	r[9] = (uint8_t)(lr >> 16);
+	r[10] = (uint8_t)(lr >> 8);
+	r[11] = (uint8_t)lr;
+	r[12] = (uint8_t)(addr >> 24);
+	r[13] = (uint8_t)(addr >> 16);
+	r[14] = (uint8_t)(addr >> 8);
+	r[15] = (uint8_t)addr;
+}

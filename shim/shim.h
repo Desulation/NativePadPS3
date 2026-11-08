@@ -190,4 +190,68 @@ int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
 int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
                        uint8_t *rid, const uint8_t **out_buf, uint16_t *out_len);
 
+/* Power-off hook (DS3-route power-off; the kernel facts are in
+ * docs/superpowers/notes/2026-11-04-ds3-route-poweroff-gate.md). The stub on the
+ * kernel's Bluetooth close-connection sender (0x102750 on DEX 4.92, called as
+ * (handle, type, report id, payload, length, cookie, obj)) hands the registers
+ * r3..r9 to shim_poweroff_filter in a ds45_po_call_t, plus three replacement
+ * values the filter may fill; on a return of 1 the stub loads r5, r6 and r7 from
+ * o_rid, o_buf and o_len and tail-calls the original, on 0 it leaves the
+ * registers alone. */
+typedef struct {
+	uint64_t handle, type, rid, payload, len, cookie, obj;
+	uint64_t o_rid, o_buf, o_len;
+} ds45_po_call_t;
+
+/* Stack frame layout of the shim_poweroff and shim_teardown stubs (shim/entry.c),
+ * fixed here so the host test can pin them against the call record. Both frames are
+ * 16-byte aligned, keep the back chain (stdu) and a 0x30..0x6F parameter save area
+ * (eight doublewords) for the C body they call; nothing above the frame is touched.
+ *   power-off, frame SHIM_PO_FRAME: the ds45_po_call_t at SHIM_PO_CALL (the stub
+ *     stores r3..r9 into its first seven fields, the body writes o_*), then the
+ *     saved LR and the saved kernel r2.
+ *   teardown, frame SHIM_TD_FRAME: saved LR, saved kernel r2, then r3..r10. */
+#define SHIM_STUB_PARAM_LO 0x30
+#define SHIM_STUB_PARAM_HI 0x70  /* end of the parameter save area (exclusive) */
+#define SHIM_PO_FRAME      0xD0
+#define SHIM_PO_CALL       0x70
+#define SHIM_PO_SAVED_LR   0xC0
+#define SHIM_PO_SAVED_R2   0xC8
+#define SHIM_TD_FRAME      0xC0
+#define SHIM_TD_SAVED_LR   0x70
+#define SHIM_TD_SAVED_R2   0x78
+#define SHIM_TD_ARGS       0x80  /* r3..r10, eight doublewords */
+
+#define SHIM_PO_OBJ_KIND   0x38  /* u32 in the call's object: the kind of request */
+#define SHIM_PO_OBJ_PAD    0x48  /* u64 in the call's object: the pad */
+#define SHIM_PO_KIND_CLOSE 3     /* the kind of the Bluetooth close (power-off) request */
+
+/* Power-off decision. d or c NULL: return 0, write nothing. A disabled shim
+ * (d->enabled == 0): return 0 before anything is counted or recorded (like
+ * shim_teardown_note). Otherwise, in every po_mode:
+ *   - dbg_po_calls++; the kind (u32 at obj+0x38) and the pad (u64 at obj+0x48) are
+ *     read only when c->obj is non-NULL (kind 0xFF in the ring, and no pad,
+ *     otherwise); is_ds = shim_pad_is_dualsense(d, pad) (dbg_po_ds++ when set);
+ *   - a site-1 ring record is appended (po_seq++ first, slot (po_seq - 1) & 7,
+ *     the layout of shim_abi.h; the first min(len, 4) payload bytes are read only
+ *     when the payload pointer is non-NULL).
+ * Rewrite - only when d->po_mode == 1, c->type == 3, c->rid == 0xF4, c->len == 4,
+ * the kind is SHIM_PO_KIND_CLOSE and the pad is a DualSense: d->po_buf is filled
+ * with ds_poweroff_payload (46 bytes; the 2 bytes after stay zero), c->o_rid =
+ * 0x08, c->o_buf = d->po_buf, c->o_len = 46, dbg_po_rewritten++, return 1. Every
+ * other path: dbg_po_passed++, return 0, o_rid, o_buf and o_len untouched. The
+ * call's own fields are never written. The same code is reached with other
+ * shapes (type 2, rid 1, ...): those pass. Only loads from the call's objects,
+ * stores into the data block, plain bounded byte loops, no lock, no call but
+ * the pure helpers. */
+int shim_poweroff_filter(ds45_shim_data_t *d, ds45_po_call_t *c);
+
+/* Teardown observation (the pad teardown routine 0x1174FC(address, flag), called
+ * with link register lr). d NULL or disabled: nothing. Otherwise dbg_td_calls++
+ * and a site-2 ring record (po_seq++ first; byte 6 the low byte of flag, bytes
+ * 8-11 the low 32 bits of lr, bytes 12-15 the low 32 bits of addr, big-endian).
+ * It returns nothing and changes no argument: the stub tail-calls the original
+ * with its registers untouched. */
+void shim_teardown_note(ds45_shim_data_t *d, uint64_t addr, uint64_t flag, uint64_t lr);
+
 #endif /* DS45_SHIM_H */

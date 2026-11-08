@@ -6,7 +6,9 @@
 .DESCRIPTION
     The shim lives in kernel RAM only, so a reboot without the plugin in
     boot_plugins.txt removes it. After the reboot this reads the start-up event slot
-    and the product-ID helper word (two peeks) and reports whether they are stock.
+    and the product-ID helper word (two peeks) and the four power-off code sites (four
+    more peeks; only each branch destination is decoded and compared) and reports
+    whether they are stock.
     The plugin and its config stay on the disk, ready for the next deploy. Backups of
     the old boot_plugins.txt go to -Dest.
 
@@ -42,4 +44,8 @@ Start-Sleep 20   # let the VSH settle
 $ev = Hex (Peek-Row '37CFF0') 8 8
 "   event slot 0x37CFF8 = $ev  (stock 800000000033A2B0)"
 '   helper     0x29E2C8 = ' + (Hex (Peek-Row '29E2C0') 8 8) + '  (stock 4E8000206880042F)'
-if ($ev -eq '800000000033A2B0') { Say 'CLEAN: no shim installed, the hooks are stock.' } else { Say "WARNING: event slot is not stock ($ev)" }
+Say 'Power-off code sites (every destination should be the original)'
+$badSites = Show-PoSites 'stock'
+if ($ev -eq '800000000033A2B0' -and $badSites -eq 0) { Say 'CLEAN: no shim installed, the hooks are stock.' }
+elseif ($ev -ne '800000000033A2B0') { Say "WARNING: event slot is not stock ($ev)" }
+if ($badSites -ne 0) { Say "WARNING: $badSites power-off code site(s) are not stock" }

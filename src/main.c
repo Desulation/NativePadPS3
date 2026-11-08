@@ -442,6 +442,103 @@ static void shim_dbg_outcap(uint64_t base)
 	                  offsetof(ds45_shim_data_t, dbg_out_off_cap), last_off, &len_off);
 }
 
+/* Power-off hook counters ("podbg"): close-send hook entries, calls for a
+ * DualSense, calls rewritten, calls passed through, teardown hook entries, and
+ * the power-off stage the plugin set. Written once on the first call, then only
+ * when one of them changed since the last line, so an idle console adds nothing. */
+static void shim_dbg_podbg(uint64_t base)
+{
+	static uint32_t last[6];
+	static int primed;
+	uint32_t v[6];
+	char line[112];   /* "podbg" + 6 tags (" calls=", " ds=", " rew=", " pass=", " td=", " mode=" = 32) + 6 * 10 + '\n' = 98 */
+	char *p = line;
+
+	v[0] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_po_calls));
+	v[1] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_po_ds));
+	v[2] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_po_rewritten));
+	v[3] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_po_passed));
+	v[4] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_td_calls));
+	v[5] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, po_mode));
+	/* The first call always writes: in observe mode every value is still zero at
+	 * install, so a compare against the zeroed static would print nothing until
+	 * the first hook event, and "the line appeared" is the install check. */
+	if (primed && memcmp(v, last, sizeof v) == 0)
+		return;
+	primed = 1;
+	memcpy(last, v, sizeof v);
+
+	p = shim_dbg_tag(p, "podbg calls=");
+	p = shim_dbg_hex(p, v[0]);
+	p = shim_dbg_tag(p, " ds=");
+	p = shim_dbg_hex(p, v[1]);
+	p = shim_dbg_tag(p, " rew=");
+	p = shim_dbg_hex(p, v[2]);
+	p = shim_dbg_tag(p, " pass=");
+	p = shim_dbg_hex(p, v[3]);
+	p = shim_dbg_tag(p, " td=");
+	p = shim_dbg_hex(p, v[4]);
+	p = shim_dbg_tag(p, " mode=");
+	p = shim_dbg_hex(p, v[5]);
+	*p++ = '\n';
+	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+}
+
+/* The power-off event ring ("poevt"): one line per record newer than the last
+ * one printed, oldest first, as the sequence and the 16 record bytes in hex. The
+ * ring holds the last eight calls, so at most eight lines per read; a gap larger
+ * than that loses the oldest, which the sequence numbers make visible. A record's
+ * sequence is its first four bytes, big-endian; an empty slot has sequence 0 and is
+ * skipped. "Newer" is a signed 32-bit difference, so the counter wrapping past
+ * 0xFFFFFFFF still orders correctly. */
+static void shim_dbg_poevt(uint64_t base)
+{
+	static const char hex[] = "0123456789ABCDEF";
+	static uint32_t last_seq;
+	uint8_t ring[128];
+	uint8_t done[8] = {0};
+	int n, s, best, j;
+
+	if (ds45_lv2_read_bytes(base + offsetof(ds45_shim_data_t, po_ring), ring, (int)sizeof ring))
+		return;
+
+	for (n = 0; n < 8; n++) {
+		uint32_t bestseq = 0, bestd = 0;
+		char line[64];   /* "poevt seq=" + 10 + ' ' + 32 hex digits + '\n' = 54 */
+		char *p = line;
+
+		best = -1;
+		for (s = 0; s < 8; s++) {
+			const uint8_t *r = ring + 16 * s;
+			uint32_t seq = ((uint32_t)r[0] << 24) | ((uint32_t)r[1] << 16) |
+			               ((uint32_t)r[2] << 8) | r[3];
+			uint32_t d = seq - last_seq;
+
+			if (done[s] || seq == 0 || (int32_t)d <= 0)
+				continue;
+			if (best < 0 || d < bestd) {
+				best = s;
+				bestseq = seq;
+				bestd = d;
+			}
+		}
+		if (best < 0)
+			break;
+		done[best] = 1;
+		last_seq = bestseq;
+
+		p = shim_dbg_tag(p, "poevt seq=");
+		p = shim_dbg_hex(p, bestseq);
+		*p++ = ' ';
+		for (j = 0; j < 16; j++) {
+			*p++ = hex[ring[16 * best + j] >> 4];
+			*p++ = hex[ring[16 * best + j] & 0xF];
+		}
+		*p++ = '\n';
+		ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+	}
+}
+
 static void shim_dbg_trace(void)
 {
 	uint64_t base = 0, vt = 0;
@@ -520,6 +617,8 @@ static void shim_dbg_trace(void)
 	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
 	shim_dbg_outcap(base);
 	shim_dbg_inraw(base);
+	shim_dbg_podbg(base);
+	shim_dbg_poevt(base);
 }
 #endif /* DS45_DEBUG */
 

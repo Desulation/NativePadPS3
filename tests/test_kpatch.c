@@ -6,7 +6,7 @@
 #include "kpatch.h"
 
 #define A        (DS45_LV2_BASE + 0x3000)   /* scratch area used by every test */
-#define SNAP_LEN 0xC0                 /* covers all 17 slots the limit test uses */
+#define SNAP_LEN 0xE0                 /* covers all 21 slots the limit test uses */
 
 /* Image layout (all big-endian, as on the PPU):
  *   A + 0x00  qword  pointer slot
@@ -608,48 +608,48 @@ static int test_branchl_hash_mismatch_writes_nothing(void)
 	return 0;
 }
 
-/* The limit is 16 entries: one install transaction grows to 13 (the receive-limit
- * rows included). */
+/* The limit is 20 entries: one install transaction grows to 17 (the receive-limit
+ * and power-off rows included). */
 static int test_patch_list_limit(void)
 {
-	ds45_kpatch_t p[17];
+	ds45_kpatch_t p[DS45_KPATCH_MAX + 1];
 	ds45_kjournal_t j;
 	uint8_t before[SNAP_LEN], after[SNAP_LEN];
 	int i;
 
-	CHECK(DS45_KPATCH_MAX == 16);
+	CHECK(DS45_KPATCH_MAX == 20);
 
 	fill_image();
 	snap(before);
 
-	for (i = 0; i < 17; i++) {
+	for (i = 0; i < DS45_KPATCH_MAX + 1; i++) {
 		p[i].kind = DS45_KPATCH_PTR;
 		p[i].addr = A + 0x20 + 8 * (uint64_t)i;
 		p[i].expect = 0;
 		p[i].value = 0x8000000000001000ULL + (uint64_t)i;
 	}
 
-	/* 17 are refused, and nothing is even read */
+	/* one more than the limit is refused, and nothing is even read */
 	fake_lv2_peek_count = 0;
 	memset(&j, 0x55, sizeof(j));
-	CHECK(kpatch_verify(p, 17) == -1);
-	CHECK(kpatch_apply(p, 17, &j) == -1);
+	CHECK(kpatch_verify(p, DS45_KPATCH_MAX + 1) == -1);
+	CHECK(kpatch_apply(p, DS45_KPATCH_MAX + 1, &j) == -1);
 	CHECK(fake_lv2_peek_count == 0);
 	CHECK(fake_lv2_poke_count == 0);
 	snap(after);
 	CHECK(memcmp(before, after, SNAP_LEN) == 0);
 
-	/* 16 apply, journal every one, and revert */
-	CHECK(kpatch_verify(p, 16) == 0);
-	CHECK(kpatch_apply(p, 16, &j) == 0);
-	CHECK(j.n == 16);
-	for (i = 0; i < 16; i++) {
+	/* DS45_KPATCH_MAX apply, journal every one, and revert */
+	CHECK(kpatch_verify(p, DS45_KPATCH_MAX) == 0);
+	CHECK(kpatch_apply(p, DS45_KPATCH_MAX, &j) == 0);
+	CHECK(j.n == DS45_KPATCH_MAX);
+	for (i = 0; i < DS45_KPATCH_MAX; i++) {
 		CHECK(j.qaddr[i] == p[i].addr);
 		CHECK(rd(p[i].addr) == p[i].value);
 	}
 	kpatch_revert(&j);
 	CHECK(j.n == 0);
-	for (i = 0; i < 16; i++)
+	for (i = 0; i < DS45_KPATCH_MAX; i++)
 		CHECK(rd(p[i].addr) == 0);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;

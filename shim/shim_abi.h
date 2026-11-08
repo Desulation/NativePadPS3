@@ -34,8 +34,13 @@
  * moves every field after it by 24 bytes (744 -> 768), and the input bounce buffer
  * (inbuf, 96 bytes) and its four debug counters are appended last: 768 -> 880.
  * 11: the raw DualSense report capture (debug only) appended after the bounce
- * counters: 880 -> 952. */
-#define DS45_SHIM_VERSION 11
+ * counters: 880 -> 952.
+ * 12: the power-off hook's state appended after dbg_in_raw (the two original code
+ * addresses, mode and sequence, debug counters, a 48-byte frame buffer and an
+ * 8 x 16 byte ring: 224 bytes), and pid_orig grown from 10 to 14 sites (sites 10-13
+ * are the power-off patches), which moves every field after it by 32 bytes
+ * (952 -> 984, then 984 + 224 = 1208). */
+#define DS45_SHIM_VERSION 12
 /* The DS3 info block the start-up completion copies to pad+0x80 .. +0xD5
  * (facts note C1.5). info_tmpl holds it, rounded up to a whole qword. */
 #define DS45_SHIM_INFO_LEN 0x56
@@ -46,8 +51,10 @@
  * the three `li r7,0x41` immediates (the kernel's read limit, 0x41 bytes) that
  * become `li r7,0x50`, so the DualSense's 79-byte full report fits (src/kshim.h:
  * DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES +
- * DS45_SHIM_RECV_PATCHES, checked there). */
-#define DS45_SHIM_PID_SITES 10
+ * DS45_SHIM_RECV_PATCHES + DS45_SHIM_POWEROFF_PATCHES, checked there), then the
+ * power-off patches - 10 to 13, the rows of the power-off hook (version 12; not
+ * selected by any install yet). */
+#define DS45_SHIM_PID_SITES 14
 
 typedef struct {
 	uint8_t deadzone;              /* STICK_DEADZONE, percent of half travel */
@@ -157,6 +164,44 @@ typedef struct {
 	 * changed, to show what the pad really sends. The size is kept a multiple of 8. */
 	uint32_t dbg_in_raw_len, dbg_in_raw_seq;
 	uint8_t  dbg_in_raw[64];
+	/* The power-off hook's state (version 12), appended after dbg_in_raw.
+	 * orig_poweroff and orig_teardown are the code addresses of the kernel's
+	 * Bluetooth close-connection sender (0x102750 on DEX 4.92) and of the pad
+	 * teardown routine (0x1174FC), which the hooks tail-call; written by the plugin
+	 * from the firmware row, 0 = none. po_mode is the power-off stage, written by the
+	 * plugin; po_seq is the report sequence counter, written by the blob. The dbg_po_*
+	 * and dbg_td_* counters are written by the blob, debug only: how often the close
+	 * hook was entered, how many calls were for a DualSense, how many it rewrote, how
+	 * many it passed through unchanged; how often the teardown hook was entered and
+	 * (dbg_td_rsvd) a reserved word that keeps the size a multiple of 8. po_buf is the
+	 * 48-byte report the hook builds (8-aligned; zero at install). po_ring is a ring
+	 * of eight 16-byte records of the last calls, debug only, never read by the
+	 * plugin; a record is:
+	 *   bytes 0-3   sequence (big-endian)
+	 *   byte 4      site: 1 = close send, 2 = teardown
+	 * for site 1:
+	 *   byte 5      DualSense flag
+	 *   byte 6      connection handle
+	 *   byte 7      r4
+	 *   byte 8      report id
+	 *   byte 9      length
+	 *   byte 10     kind (0xFF if unreadable; the LOW BYTE of the 32-bit kind, so
+	 *               a kind with low byte 0xFF also reads 0xFF here)
+	 *   byte 11     zero
+	 *   bytes 12-15 the first four payload bytes (zero-padded)
+	 * for site 2:
+	 *   byte 5      zero
+	 *   byte 6      flag
+	 *   byte 7      zero
+	 *   bytes 8-11  low 32 bits of LR
+	 *   bytes 12-15 low 32 bits of the address argument
+	 * The installer leaves all of it zero except the two addresses. */
+	uint64_t orig_poweroff, orig_teardown;
+	uint32_t po_mode, po_seq;
+	uint32_t dbg_po_calls, dbg_po_ds, dbg_po_rewritten, dbg_po_passed;
+	uint32_t dbg_td_calls, dbg_td_rsvd;
+	uint8_t  po_buf[48];
+	uint8_t  po_ring[8][16];
 } ds45_shim_data_t;
 
 #endif /* DS45_SHIM_ABI_H */

@@ -69,4 +69,22 @@ int ds3_output_to_dualsense(const uint8_t *in, int in_len, uint8_t seq,
  * checking whether the pad accepts output at all. A NULL out is a no-op. */
 void ds3_output_probe(uint8_t seq, uint8_t out[DS_OUT_LEN]);
 
+/*
+ * The DualSense power-off feature report (Bluetooth): report id
+ * DS_POWEROFF_REPORT_ID, then DS_POWEROFF_PAYLOAD_LEN bytes:
+ *   [0] 0x02   [1..41] 0   [42..45] CRC-32, little-endian
+ * The CRC is the same reflected CRC-32 as above, over the byte 0x53 followed by
+ * the report id 0x08 and payload bytes 0..41.
+ */
+#define DS_POWEROFF_REPORT_ID       0x08
+#define DS_POWEROFF_PAYLOAD_LEN     46
+
+/* Reflected CRC-32 (0xEDB88320, init and final XOR 0xFFFFFFFF) of the byte seed
+ * followed by p[0..n). Reads nothing when n <= 0 (p may then be NULL). The
+ * output report uses seed 0xA2. */
+uint32_t ds3_crc32_seeded(uint8_t seed, const uint8_t *p, int n);
+
+/* Write the whole power-off payload, CRC included. A NULL out is a no-op. */
+void ds_poweroff_payload(uint8_t out[DS_POWEROFF_PAYLOAD_LEN]);
+
 #endif /* DS45_DS3_OUTPUT_H */

@@ -549,6 +549,137 @@ static int test_probe_report(void)
 	return 0;
 }
 
+/* Reflected CRC-32 of seed followed by p[0..n), written here on its own; the
+ * shim's loop is not shared. */
+static uint32_t ref_crc_seeded(uint8_t seed, const uint8_t *p, int n)
+{
+	uint32_t crc = 0xFFFFFFFFu;
+	int i, b;
+
+	for (i = -1; i < n; i++) {
+		crc ^= (i < 0) ? (uint32_t)seed : (uint32_t)p[i];
+		for (b = 0; b < 8; b++)
+			crc = (crc >> 1) ^ (0xEDB88320u & (uint32_t)(-(int32_t)(crc & 1)));
+	}
+	return ~crc;
+}
+
+static int test_poweroff_payload_golden(void)
+{
+	/* zlib.crc32(bytes([0x53, 0x08, 0x02] + [0] * 41)) = 0x74E22FD1, computed
+	 * outside this program, stored little-endian. */
+	static const uint8_t k_crc[4] = { 0xD1, 0x2F, 0xE2, 0x74 };
+	uint8_t p[DS_POWEROFF_PAYLOAD_LEN + GUARD], seed_buf[44];
+	uint32_t want;
+	int i;
+
+	CHECK(DS_POWEROFF_REPORT_ID == 0x08);
+	CHECK(DS_POWEROFF_PAYLOAD_LEN == 46);
+
+	memset(p, SENTINEL, sizeof(p));
+	ds_poweroff_payload(p);
+
+	CHECK(p[0] == 0x02);
+	for (i = 1; i <= 41; i++)
+		CHECK(p[i] == 0x00);
+	CHECK(memcmp(p + 42, k_crc, 4) == 0);                /* hard-coded */
+
+	/* and against the reference loop over 53 08 02 00... */
+	memset(seed_buf, 0, sizeof(seed_buf));
+	seed_buf[0] = 0x53;
+	seed_buf[1] = 0x08;
+	seed_buf[2] = 0x02;
+	want = ref_crc_seeded(0x53, seed_buf + 1, 43);   /* 08, 02, 41 zeros */
+	CHECK(want == 0x74E22FD1u);
+	CHECK(p[42] == (uint8_t)want && p[43] == (uint8_t)(want >> 8) &&
+	      p[44] == (uint8_t)(want >> 16) && p[45] == (uint8_t)(want >> 24));
+
+	/* nothing written past the payload */
+	for (i = DS_POWEROFF_PAYLOAD_LEN; i < (int)sizeof(p); i++)
+		CHECK(p[i] == SENTINEL);
+	return 0;
+}
+
+static int test_poweroff_payload_null_is_noop(void)
+{
+	ds_poweroff_payload(NULL);                           /* must not crash */
+	return 0;
+}
+
+static int test_crc_seeded_matches_reference(void)
+{
+	/* zlib.crc32(bytes([seed]) + data), computed outside this program */
+	static const uint8_t k_five[5] = { 1, 2, 3, 4, 5 };
+	uint8_t d[64], buf[300];
+	int n, i, k;
+	static const uint8_t k_seed[] = { 0x00, 0x01, 0x53, 0xA2, 0xFF };
+	unsigned s;
+
+	for (i = 0; i < 64; i++)
+		d[i] = (uint8_t)i;
+
+	CHECK(ds3_crc32_seeded(0x00, d, 0) == 0xD202EF8Du);
+	CHECK(ds3_crc32_seeded(0xA2, d, 0) == 0xEADA2D49u);
+	CHECK(ds3_crc32_seeded(0x53, d + 8, 1) == 0xDE94945Au);   /* 0x08 */
+	CHECK(ds3_crc32_seeded(0x11, k_five, 5) == 0xF8611E74u);
+	CHECK(ds3_crc32_seeded(0xFF, d, 64) == 0xCBD47223u);
+
+	/* n == 0 with a NULL pointer reads nothing */
+	CHECK(ds3_crc32_seeded(0x53, NULL, 0) == ref_crc_seeded(0x53, d, 0));
+
+	g_rng = 0x5EED0053u;
+	for (s = 0; s < sizeof(k_seed); s++) {
+		for (n = 0; n <= 300; n += (n < 20 ? 1 : 37)) {
+			for (i = 0; i < (int)sizeof(buf); i++)
+				buf[i] = (uint8_t)rnd();
+			CHECK(ds3_crc32_seeded(k_seed[s], buf, n) ==
+			      ref_crc_seeded(k_seed[s], buf, n));
+		}
+	}
+	for (k = 0; k < 500; k++) {
+		uint8_t seed = (uint8_t)rnd();
+
+		n = (int)(rnd() % 200);
+		for (i = 0; i < n; i++)
+			buf[i] = (uint8_t)rnd();
+		CHECK(ds3_crc32_seeded(seed, buf, n) == ref_crc_seeded(seed, buf, n));
+	}
+	return 0;
+}
+
+/* The output report is built through ds3_crc32_seeded(0xA2, ...) now: the
+ * bytes are the ones it had before, for all four ports (CRCs computed outside
+ * this program). */
+static int test_output_report_unchanged_by_refactor(void)
+{
+	static const uint8_t k_crc[5][4] = {
+		{ 0, 0, 0, 0 },
+		{ 0x33, 0xA9, 0x65, 0xB1 },          /* port 1 */
+		{ 0xFF, 0x75, 0x4C, 0x6B },          /* port 2 */
+		{ 0x6E, 0x3B, 0x98, 0x89 },          /* port 3 */
+		{ 0xD5, 0xF5, 0xC3, 0x6D },          /* port 4 */
+	};
+	uint8_t p[DS3_OUT_PAYLOAD_LEN], r[DS_OUT_LEN], want[DS_OUT_LEN];
+	int port;
+
+	for (port = 1; port <= 4; port++) {
+		payload_idle(p);
+		p[9] = (uint8_t)(0x01 << port);
+		CHECK(translate(p, 0, r) == 0);
+
+		memset(want, 0, sizeof(want));
+		want[0] = 0x31; want[2] = 0x10; want[3] = 0x03; want[4] = 0x14;
+		want[41] = 0x02; want[44] = 0x02;
+		want[46] = k_led[port];
+		want[47] = k_rgb[port][0];
+		want[48] = k_rgb[port][1];
+		want[49] = k_rgb[port][2];
+		memcpy(want + 74, k_crc[port], 4);
+		CHECK(memcmp(r, want, DS_OUT_LEN) == 0);
+	}
+	return 0;
+}
+
 int run_tests(void)
 {
 	int (*const tests[])(void) = {
@@ -556,7 +687,9 @@ int run_tests(void)
 		test_led_and_colour_per_port, test_padding_is_zero,
 		test_crc_matches_reference, test_sequence_nibble,
 		test_declines_bad_input, test_no_read_past_len, test_fuzz,
-		test_probe_report,
+		test_probe_report, test_poweroff_payload_golden,
+		test_poweroff_payload_null_is_noop, test_crc_seeded_matches_reference,
+		test_output_report_unchanged_by_refactor,
 	};
 	unsigned i;
 	int line;
