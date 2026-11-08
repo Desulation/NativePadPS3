@@ -319,6 +319,25 @@ pattern `ds45pad_boot*.txt` are excluded as legacy names.
    `src/shim_blob.h` present, reports the parsed power-off offsets (not the
    hard-coded fallback).
 
+### Decisions confirmed by the user (2026-11-08)
+
+- (a) Both byte-bearing magics keep their bytes under new names:
+  `NPP_SHIM_MAGIC = 0x4453343553484D31` ("DS45SHM1") and `CACHE_MAGIC "DS45K1"`.
+- (b) `DS45_TOOLS` -> `NPP_TOOLS`. For one cycle `build.ps1` and `build.sh`
+  fail loudly with a clear message when `DS45_TOOLS` is set and `NPP_TOOLS` is
+  not. Those check lines (and the tool self-test cases that exercise them)
+  necessarily name `DS45_TOOLS` and are part of the gate-5 allowlist.
+- (c) History under `docs/superpowers/` stays as written.
+- (d) The stop thread is `"nppstop"`.
+
+Plan reading (for review): besides `src/paths.c`, the legacy on-console names
+also have to stay readable where the tools and tests match or assert them
+(`$PluginEntryPattern` and `$LegacyConfigFile` in `tools/ps3_console_lib.ps1`,
+the old-path fixtures in `tools/test_console_lib.ps1` and `tests/test_paths.c`).
+They carry the same `legacy on-console name` label, are excluded by exact line,
+and count as "labelled legacy literals" in gate 5. The spec's two console
+stages (after step 1 and after step 2) are both kept.
+
 ## Explicitly NOT changed
 
 - Upstream credits: "original DS45Pad" in `README.md` (lines 9 and 175) and
