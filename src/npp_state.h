@@ -1,20 +1,20 @@
 /*
- * DS45PAD - normalised controller state and the DualSense input report layout.
+ * NPP - normalised controller state and the DualSense input report layout.
  *
  * What the report parsers and the kernel shim have in common. There are no SDK
  * headers and no libc in here: the shim blob is built freestanding from files
- * that include this one, so it has to stay that way. ds45pad.h includes it for
+ * that include this one, so it has to stay that way. npp.h includes it for
  * the rest of the plugin.
  *
  * Licensed under GPLv2 - see LICENSE.
  */
-#ifndef DS45_STATE_H
-#define DS45_STATE_H
+#ifndef NPP_STATE_H
+#define NPP_STATE_H
 
 #include <stdint.h>
 
 /* Neutral stick value of a DS3 at rest (the sensor one is in sixaxis.h). */
-#define DS45_STICK_CENTER       0x0080
+#define NPP_STICK_CENTER       0x0080
 
 /* ------------------------------------------------------------------------ */
 /* Normalised controller state                                               */
@@ -29,7 +29,7 @@ typedef struct {
 	uint16_t y;      /* 0..941  (DS4) / 0..1079 (DualSense) */
 	uint8_t  id;
 	uint8_t  active;
-} ds45_touch_t;
+} npp_touch_t;
 
 typedef struct {
 	/* Sticks: 0..255, 0x80 centred, Y grows downwards (same as a DS3). */
@@ -38,7 +38,7 @@ typedef struct {
 	/* Triggers: 0..255 analog travel. */
 	uint8_t  l2, r2;
 
-	/* Digital buttons, DS45_BTN_* independent bitfield. */
+	/* Digital buttons, NPP_BTN_* independent bitfield. */
 	uint32_t buttons;
 
 	/* Motion, raw signed sensor units straight off the controller. */
@@ -46,7 +46,7 @@ typedef struct {
 	int16_t  accel[3];  /* x, y, z          */
 
 	/* Touchpad. */
-	ds45_touch_t touch[2];
+	npp_touch_t touch[2];
 
 	/* Power: level 0..10, charging/full flags. */
 	uint8_t  battery;
@@ -57,43 +57,43 @@ typedef struct {
 	uint8_t  sticks_valid;  /* the stick values came from the device,
 	                         * not from an unpopulated report - the
 	                         * calibration must never learn from those */
-} ds45_state_t;
+} npp_state_t;
 
-/* ds45_state_t.buttons bits (parser-neutral, not the libpad layout) */
-#define DS45_B_CROSS      0x00000001
-#define DS45_B_CIRCLE     0x00000002
-#define DS45_B_SQUARE     0x00000004
-#define DS45_B_TRIANGLE   0x00000008
-#define DS45_B_L1         0x00000010
-#define DS45_B_R1         0x00000020
-#define DS45_B_L2         0x00000040
-#define DS45_B_R2         0x00000080
-#define DS45_B_SHARE      0x00000100  /* Share / Create        */
-#define DS45_B_OPTIONS    0x00000200
-#define DS45_B_L3         0x00000400
-#define DS45_B_R3         0x00000800
-#define DS45_B_PS         0x00001000
-#define DS45_B_TOUCHPAD   0x00002000  /* touchpad click        */
-#define DS45_B_MUTE       0x00004000  /* DualSense mic mute    */
-#define DS45_B_UP         0x00008000
-#define DS45_B_RIGHT      0x00010000
-#define DS45_B_DOWN       0x00020000
-#define DS45_B_LEFT       0x00040000
-#define DS45_B_FN_L       0x00080000  /* DualSense Edge        */
-#define DS45_B_FN_R       0x00100000
-#define DS45_B_PADDLE_L   0x00200000
-#define DS45_B_PADDLE_R   0x00400000
+/* npp_state_t.buttons bits (parser-neutral, not the libpad layout) */
+#define NPP_B_CROSS      0x00000001
+#define NPP_B_CIRCLE     0x00000002
+#define NPP_B_SQUARE     0x00000004
+#define NPP_B_TRIANGLE   0x00000008
+#define NPP_B_L1         0x00000010
+#define NPP_B_R1         0x00000020
+#define NPP_B_L2         0x00000040
+#define NPP_B_R2         0x00000080
+#define NPP_B_SHARE      0x00000100  /* Share / Create        */
+#define NPP_B_OPTIONS    0x00000200
+#define NPP_B_L3         0x00000400
+#define NPP_B_R3         0x00000800
+#define NPP_B_PS         0x00001000
+#define NPP_B_TOUCHPAD   0x00002000  /* touchpad click        */
+#define NPP_B_MUTE       0x00004000  /* DualSense mic mute    */
+#define NPP_B_UP         0x00008000
+#define NPP_B_RIGHT      0x00010000
+#define NPP_B_DOWN       0x00020000
+#define NPP_B_LEFT       0x00040000
+#define NPP_B_FN_L       0x00080000  /* DualSense Edge        */
+#define NPP_B_FN_R       0x00100000
+#define NPP_B_PADDLE_L   0x00200000
+#define NPP_B_PADDLE_R   0x00400000
 
 /* Symbolic targets a physical control can be remapped onto. */
 typedef enum {
-	DS45_MAP_NONE = 0,
-	DS45_MAP_CROSS, DS45_MAP_CIRCLE, DS45_MAP_SQUARE, DS45_MAP_TRIANGLE,
-	DS45_MAP_L1, DS45_MAP_R1, DS45_MAP_L2, DS45_MAP_R2,
-	DS45_MAP_L3, DS45_MAP_R3,
-	DS45_MAP_START, DS45_MAP_SELECT, DS45_MAP_PS,
-	DS45_MAP_UP, DS45_MAP_RIGHT, DS45_MAP_DOWN, DS45_MAP_LEFT,
-	DS45_MAP_MAX
-} ds45_map_t;
+	NPP_MAP_NONE = 0,
+	NPP_MAP_CROSS, NPP_MAP_CIRCLE, NPP_MAP_SQUARE, NPP_MAP_TRIANGLE,
+	NPP_MAP_L1, NPP_MAP_R1, NPP_MAP_L2, NPP_MAP_R2,
+	NPP_MAP_L3, NPP_MAP_R3,
+	NPP_MAP_START, NPP_MAP_SELECT, NPP_MAP_PS,
+	NPP_MAP_UP, NPP_MAP_RIGHT, NPP_MAP_DOWN, NPP_MAP_LEFT,
+	NPP_MAP_MAX
+} npp_map_t;
 
 /* ------------------------------------------------------------------------ */
 /* DualSense input report layout                                             */
@@ -139,16 +139,16 @@ typedef enum {
 /* c points at the common payload (DS_C_SIZE bytes, after the report ID and any
  * Bluetooth header). Fills every field of *st and marks it valid; the caller
  * has already checked the length. */
-void dualsense_decode_common(const uint8_t *c, ds45_state_t *st);
+void dualsense_decode_common(const uint8_t *c, npp_state_t *st);
 
 /* The three DualSense button bytes (hat + face, shoulders + sticks + Create /
- * Options, PS + touchpad + Mute + Edge extras) as DS45_B_* bits. The common
+ * Options, PS + touchpad + Mute + Edge extras) as NPP_B_* bits. The common
  * payload and the basic report 0x01 share this byte layout. */
 uint32_t dualsense_decode_buttons(uint8_t b0, uint8_t b1, uint8_t b2);
 
 /* A Bluetooth 0x31 report with no CRC check. Returns 0 and fills *st, or -1
  * (and clears st->valid) when buf is NULL, buf[0] is not 0x31 or len is below
  * DS_BT_BODY_MIN. Never reads past buf[len - 1]. */
-int  dualsense_parse_bt_body(const uint8_t *buf, int len, ds45_state_t *st);
+int  dualsense_parse_bt_body(const uint8_t *buf, int len, npp_state_t *st);
 
-#endif /* DS45_STATE_H */
+#endif /* NPP_STATE_H */

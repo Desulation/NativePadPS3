@@ -2,20 +2,20 @@ param(
     [ValidateSet('vsh', 'game')][string]$Variant = 'vsh',
     [switch]$Debug,
     [string]$Sdk = $env:CELL_SDK,
-    [string]$Tools = $env:DS45_TOOLS,
+    [string]$Tools = $env:NPP_TOOLS,
     [ValidateSet('auto', 'fself', 'scetool')][string]$Sign = 'auto'
 )
 # Native Windows equivalent of build.sh. Requires an independently provided
 # Cell SDK; one without GetInfo2/SetPortSetting (192.001) gets the compat shim.
 #
 # Signing: 'scetool' signs with retail keys (runs on CEX CFW and HEN) and needs
-# DS45_TOOLS. 'fself' uses the SDK's own make_fself: a fake-signed SELF meant
+# NPP_TOOLS. 'fself' uses the SDK's own make_fself: a fake-signed SELF meant
 # for DEX/debug firmware (a retail console rejects it); it needs no keys and
-# ignores DS45_TOOLS. 'auto' picks scetool when DS45_TOOLS is set, fself otherwise.
+# ignores NPP_TOOLS. 'auto' picks scetool when NPP_TOOLS is set, fself otherwise.
 $ErrorActionPreference = 'Stop'
 if (!$Sdk) { throw 'Set CELL_SDK. No SPRX was built.' }
 if ($Sign -eq 'auto') { $Sign = if ($Tools) { 'scetool' } else { 'fself' } }
-if ($Sign -eq 'scetool' -and !$Tools) { throw 'Set DS45_TOOLS (scetool plus data/keys) to sign with scetool. No SPRX was built.' }
+if ($Sign -eq 'scetool' -and !$Tools) { throw 'Set NPP_TOOLS (scetool plus data/keys) to sign with scetool. No SPRX was built.' }
 $gcc = Join-Path $Sdk 'host-win32/ppu/bin/ppu-lv2-gcc.exe'
 $strip = Join-Path $Sdk 'host-win32/bin/ppu-lv2-prx-strip.exe'
 $include = Join-Path $Sdk 'target/ppu/include'
@@ -93,11 +93,11 @@ $hasInfo2 = (Test-Path -LiteralPath $libpad) -and (Select-String -LiteralPath $l
 if (!$hasInfo2 -and (Test-Path -LiteralPath $compat)) {
     $flags = @('-include', $compat) + $flags
 }
-# -Debug defines DS45_DEBUG (boot trace, LV2 dumper) and tags the output name.
+# -Debug defines NPP_DEBUG (boot trace, LV2 dumper) and tags the output name.
 $suffix = ''
-if ($Debug) { $flags += '-DDS45_DEBUG'; $suffix = '_debug' }
+if ($Debug) { $flags += '-DNPP_DEBUG'; $suffix = '_debug' }
 if ($Variant -eq 'game') {
-    $sources += 'gamehook'; $flags += '-DDS45_GAME'; $auth = '1010000001000003'
+    $sources += 'gamehook'; $flags += '-DNPP_GAME'; $auth = '1010000001000003'
 } else {
     # sixaxis + ds_body are VSH-only: the DualSense body decode and sixaxis
     # scaling feed dualsense/padldd, neither of which the game variant links.

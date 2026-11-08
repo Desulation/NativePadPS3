@@ -87,7 +87,7 @@ class ElfBuilder(object):
         self.toc_addr = 0x228
         self.toc = bytearray()
         self.data_addr = 0x230
-        self.data = bytearray(144)              # ds45_shim_data image
+        self.data = bytearray(144)              # npp_shim_data image
 
         # Code layout inside .text (addr, size).
         self.code = {
@@ -121,7 +121,7 @@ class ElfBuilder(object):
             _addr, size = self.code[n]
             self._add_sym(n, self.opd_addr + 0x18 * i,
                           size, STT_FUNC, STB_GLOBAL, self.I_OPD)
-        self._add_sym("ds45_shim_data", self.data_addr, len(self.data),
+        self._add_sym("npp_shim_data", self.data_addr, len(self.data),
                       STT_OBJECT, STB_GLOBAL, self.I_DATA)
 
         # .opd descriptors: [entry=code addr, toc=arbitrary, env=0].
@@ -130,7 +130,7 @@ class ElfBuilder(object):
             addr, _ = self.code[n]
             self.opd += struct.pack(">QQQ", addr, 0x8148, 0)
 
-        # .toc: one 8-byte pointer to ds45_shim_data.
+        # .toc: one 8-byte pointer to npp_shim_data.
         self.toc += struct.pack(">Q", self.data_addr)
 
         # Default relocation sets. Each of the output, power-off and teardown
@@ -148,7 +148,7 @@ class ElfBuilder(object):
             self.rela[self.I_RELA_OPD].append(
                 (base + 8, 0, R_PPC64_TOC, 0))
         self.rela[self.I_RELA_TOC].append(
-            (self.toc_addr, self.symidx["ds45_shim_data"], R_PPC64_ADDR64, 0))
+            (self.toc_addr, self.symidx["npp_shim_data"], R_PPC64_ADDR64, 0))
 
     # -- symbol / descriptor helpers --
     def _add_sym(self, name, value, size, typ, bind, shndx):
@@ -288,7 +288,7 @@ LIT_OUTPUT, LIT_POWEROFF, LIT_TEARDOWN = 0xB8, 0x138, 0x178
 
 # The relocs a clean ElfBuilder image yields: the three stubs' TOC literals in
 # .text, the seven descriptors' entry (ADDR64) and TOC words, and the .toc
-# pointer to ds45_shim_data.
+# pointer to npp_shim_data.
 _CLEAN_RELOCS = [0xB8, 0x138, 0x178,
                  0x180, 0x188, 0x198, 0x1A0, 0x1B0, 0x1B8, 0x1C8, 0x1D0,
                  0x1E0, 0x1E8, 0x1F8, 0x200, 0x210, 0x218, 0x228]
@@ -322,21 +322,21 @@ class PackSuccessTest(unittest.TestCase):
     def test_header_text(self):
         p = shim_pack.pack(ElfBuilder().build())
         h = shim_pack.render_header(p, "shim.elf")
-        self.assertIn("#define DS45_SHIM_BLOB_LEN 704", h)
-        self.assertIn("#define DS45_SHIM_RELOC_COUNT 18", h)
-        self.assertIn("#define DS45_SHIM_OFF_DATA 0x230", h)
-        self.assertIn("#define DS45_SHIM_OFF_EVENT 0x180", h)
-        self.assertIn("#define DS45_SHIM_OFF_ENABLE 0x198", h)
-        self.assertIn("#define DS45_SHIM_OFF_INPUT 0x1b0", h)
-        self.assertIn("#define DS45_SHIM_OFF_PID_OK 0x80", h)
+        self.assertIn("#define NPP_SHIM_BLOB_LEN 704", h)
+        self.assertIn("#define NPP_SHIM_RELOC_COUNT 18", h)
+        self.assertIn("#define NPP_SHIM_OFF_DATA 0x230", h)
+        self.assertIn("#define NPP_SHIM_OFF_EVENT 0x180", h)
+        self.assertIn("#define NPP_SHIM_OFF_ENABLE 0x198", h)
+        self.assertIn("#define NPP_SHIM_OFF_INPUT 0x1b0", h)
+        self.assertIn("#define NPP_SHIM_OFF_PID_OK 0x80", h)
         # The output stub's offset is its code entry, read from the descriptor.
-        self.assertIn("#define DS45_SHIM_OFF_OUTPUT 0x90", h)
-        self.assertIn("#define DS45_SHIM_OFF_POWEROFF 0x100", h)
-        self.assertIn("#define DS45_SHIM_OFF_TEARDOWN 0x140", h)
+        self.assertIn("#define NPP_SHIM_OFF_OUTPUT 0x90", h)
+        self.assertIn("#define NPP_SHIM_OFF_POWEROFF 0x100", h)
+        self.assertIn("#define NPP_SHIM_OFF_TEARDOWN 0x140", h)
         # The v2 start-up hook is gone.
-        self.assertNotIn("DS45_SHIM_OFF_STARTUP", h)
-        self.assertIn("static const uint8_t  ds45_shim_blob[]", h)
-        self.assertIn("static const uint32_t ds45_shim_relocs[]", h)
+        self.assertNotIn("NPP_SHIM_OFF_STARTUP", h)
+        self.assertIn("static const uint8_t  npp_shim_blob[]", h)
+        self.assertIn("static const uint32_t npp_shim_relocs[]", h)
 
 
 class TocRebaseTest(unittest.TestCase):
@@ -366,7 +366,7 @@ class OutputStubTest(unittest.TestCase):
 
     def test_literal_as_addr64_is_rebased_too(self):
         b = ElfBuilder()
-        b.rela[b.I_RELA_TEXT].append((0xA0, b.symidx["ds45_shim_data"],
+        b.rela[b.I_RELA_TEXT].append((0xA0, b.symidx["npp_shim_data"],
                                       R_PPC64_ADDR64, 0))
         p = shim_pack.pack(b.build())
         self.assertIn(0xA0, p.relocs)
@@ -405,8 +405,8 @@ class PoweroffTeardownStubTest(unittest.TestCase):
         self.assertEqual(p.off_poweroff % 4, 0)
         self.assertEqual(p.off_teardown % 4, 0)
         h = shim_pack.render_header(p, "shim.elf")
-        self.assertIn("#define DS45_SHIM_OFF_POWEROFF 0x100 ", h)
-        self.assertIn("#define DS45_SHIM_OFF_TEARDOWN 0x140 ", h)
+        self.assertIn("#define NPP_SHIM_OFF_POWEROFF 0x100 ", h)
+        self.assertIn("#define NPP_SHIM_OFF_TEARDOWN 0x140 ", h)
         # The TOC literals are rebased like the shim_output one.
         for lit in (LIT_OUTPUT, LIT_POWEROFF, LIT_TEARDOWN):
             self.assertIn(lit, p.relocs)
@@ -450,8 +450,8 @@ class TocRelativeDropTest(unittest.TestCase):
 
     def test_toc16_outside_pidok_is_dropped(self):
         b = ElfBuilder()
-        b.add_text_reloc(0x10, R_PPC64_TOC16_DS, "ds45_shim_data")  # in event
-        b.add_text_reloc(0x14, R_PPC64_TOC16_HA, "ds45_shim_data")
+        b.add_text_reloc(0x10, R_PPC64_TOC16_DS, "npp_shim_data")  # in event
+        b.add_text_reloc(0x14, R_PPC64_TOC16_HA, "npp_shim_data")
         p = shim_pack.pack(b.build())
         self.assertNotIn(0x10, p.relocs)
         self.assertNotIn(0x14, p.relocs)
@@ -674,7 +674,7 @@ class ErrorTest(unittest.TestCase):
     def test_toc16_ha_inside_pid_ok_errors(self):
         b = ElfBuilder()
         addr, size = b.pid_ok_code()
-        b.add_text_reloc(addr + 4, R_PPC64_TOC16_HA, "ds45_shim_data")
+        b.add_text_reloc(addr + 4, R_PPC64_TOC16_HA, "npp_shim_data")
         self._expect_error(b)
 
     def test_unknown_reloc_type_errors(self):
@@ -687,7 +687,7 @@ class ErrorTest(unittest.TestCase):
         # shim_pid_ok and the data object: renaming any one away is an error.
         for name in ("shim_event", "shim_enable", "shim_input", "shim_pid_ok",
                      "shim_output", "shim_poweroff", "shim_teardown",
-                     "ds45_shim_data"):
+                     "npp_shim_data"):
             b = ElfBuilder()
             b.sym[b.symidx[name]]["name"] = name + "_renamed"
             self._expect_error(b)
@@ -710,11 +710,11 @@ class MainTest(unittest.TestCase):
             self.assertEqual(shim_pack.main([elf, out]), 0)
             with open(out, "r") as f:
                 h = f.read()
-            self.assertIn("#define DS45_SHIM_OFF_PID_OK 0x80", h)
-            self.assertIn("#define DS45_SHIM_OFF_OUTPUT 0x90", h)
-            self.assertIn("#define DS45_SHIM_OFF_POWEROFF 0x100", h)
-            self.assertIn("#define DS45_SHIM_OFF_TEARDOWN 0x140", h)
-            self.assertIn("#define DS45_SHIM_RELOC_COUNT 18", h)
+            self.assertIn("#define NPP_SHIM_OFF_PID_OK 0x80", h)
+            self.assertIn("#define NPP_SHIM_OFF_OUTPUT 0x90", h)
+            self.assertIn("#define NPP_SHIM_OFF_POWEROFF 0x100", h)
+            self.assertIn("#define NPP_SHIM_OFF_TEARDOWN 0x140", h)
+            self.assertIn("#define NPP_SHIM_RELOC_COUNT 18", h)
 
 
 if __name__ == "__main__":

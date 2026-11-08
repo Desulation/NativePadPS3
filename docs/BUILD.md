@@ -7,8 +7,8 @@ Building a VSH SPRX plugin requires the **Sony Cell SDK PPU toolchain** (`ppu-lv
 | Tool | Notes |
 |---|---|
 | Cell SDK (PPU) | `ppu-lv2-gcc` in PATH or specified via `CELL_SDK` environment variable |
-| `make_fself` (SDK) | Default when `DS45_TOOLS` is unset. Produces a fake-signed SPRX that loads on **DEX/debug firmware only** |
-| `scetool` | Used when `DS45_TOOLS` is set. Signs with 3.55 retail keys (`Revision 0A`) so the SPRX loads on CEX CFW and PS3HEN |
+| `make_fself` (SDK) | Default when `NPP_TOOLS` is unset. Produces a fake-signed SPRX that loads on **DEX/debug firmware only** |
+| `scetool` | Used when `NPP_TOOLS` is set. Signs with 3.55 retail keys (`Revision 0A`) so the SPRX loads on CEX CFW and PS3HEN |
 | `make` / PowerShell / Bash | Build script automation |
 
 SDKs older than 475.001 (e.g. 192.001) lack `cellPadGetInfo2` and `cellPadSetPortSetting`; the build scripts then force-include `patches/compat_pad.h`, and skip it when the SDK's `cell/pad/libpad.h` declares them.
@@ -28,7 +28,7 @@ All major VSH plugins in the PS3 scene (PS3xPAD, webMAN MOD, Akari, RouLetteVshM
 ### Windows (PowerShell)
 ```powershell
 $env:CELL_SDK = "C:\path\to\cell_sdk"
-$env:DS45_TOOLS = "C:\path\to\scetool_and_keys"   # omit to sign with make_fself (DEX only)
+$env:NPP_TOOLS = "C:\path\to\scetool_and_keys"   # omit to sign with make_fself (DEX only)
 cd src
 .\build.ps1 -Variant vsh            # -Variant game, -Debug, -Sign fself|scetool
 ```
@@ -36,7 +36,7 @@ cd src
 ### Linux / Git Bash
 ```bash
 export CELL_SDK="/path/to/cell_sdk"
-export DS45_TOOLS="/path/to/scetool_and_keys"   # omit to sign with make_fself (DEX only)
+export NPP_TOOLS="/path/to/scetool_and_keys"   # omit to sign with make_fself (DEX only)
 cd src
 ./build.sh
 ```
@@ -51,7 +51,7 @@ make SIGN=fself # sign with the SDK's make_fself instead of scetool (DEX only)
 
 ## SPRX Signing (`make_fself`, DEX/debug consoles)
 
-The SDK's `make_fself` turns the PRX into a fake-signed SELF, meant for DEX and debug firmware; a retail (CEX) console rejects it. It needs no keys and takes no auth ID. `build.ps1 -Sign fself` and `make SIGN=fself` force it; `build.sh` uses it whenever `DS45_TOOLS` is unset.
+The SDK's `make_fself` turns the PRX into a fake-signed SELF, meant for DEX and debug firmware; a retail (CEX) console rejects it. It needs no keys and takes no auth ID. `build.ps1 -Sign fself` and `make SIGN=fself` force it; `build.sh` uses it whenever `NPP_TOOLS` is unset.
 
 ## SPRX Signing (`scetool`, CEX CFW and HEN)
 

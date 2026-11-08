@@ -13,7 +13,7 @@ cd src
 
 Sai `nativepadps3_vsh.sprx`, já assinado e com o magic conferido. O script assume
 o SDK em `C:/ps3sdk/cell` e as ferramentas em `C:/ps3sdk/tools`; se você mudar
-de lugar, exporte `CELL_SDK` e `DS45_TOOLS`.
+de lugar, exporte `CELL_SDK` e `NPP_TOOLS`.
 
 Ele não usa GNU make de propósito: o `make.exe` distribuído com o webMAN MOD é
 um binário de subsistema **GUI**, então no Git Bash não devolve saída nem

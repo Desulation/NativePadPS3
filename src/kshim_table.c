@@ -1,5 +1,5 @@
 /*
- * DS45PAD - the one firmware row the DS3-route shim installs on. See kshim.h.
+ * NPP - the one firmware row the DS3-route shim installs on. See kshim.h.
  *
  * Every value here is a researched DEX 4.92 (Evilnat) value, transcribed
  * verbatim from the fact notes; none is rounded or invented:
@@ -8,7 +8,7 @@
  *   - docs/superpowers/notes/2026-11-02-ds3-route-startup-completion-facts.md
  *     (C1.5 info template, C3 enable driver, C4 event/enable/helper rows).
  * The fingerprint (fp_addr, fp_hash) is the DEX 4.92 one from kernel.c's
- * ds45_kernel_table, reused so a row is only ever applied to the kernel it was
+ * npp_kernel_table, reused so a row is only ever applied to the kernel it was
  * researched against.
  *
  * Product-ID acceptance: the helper is a BRANCH row to shim_pid_ok (stage 1b), the
@@ -21,14 +21,14 @@
 
 #include "kpatch.h"
 #include "kshim.h"
-#include "../shim/shim_abi.h"   /* DS45_SHIM_INFO_LEN */
+#include "../shim/shim_abi.h"   /* NPP_SHIM_INFO_LEN */
 
 /* DS3 info block, pad+0x80..+0xD5 (0x56 bytes), Bluetooth variant (facts note
  * C1.5). Index = pad offset - 0x80. The per-pad identity at index 0x08..0x0C,
  * 0x0E, 0x0F is zero here: the shim fills it per pad from its completion count.
  * The kernel's check 0x2A3AD8 passes with these values (reg ver 5, fw 0x350,
  * variant 0, +0x8E != 0xD, +0xD5 == 0). */
-static const uint8_t DS3_INFO_TEMPLATE[DS45_SHIM_INFO_LEN] = {
+static const uint8_t DS3_INFO_TEMPLATE[NPP_SHIM_INFO_LEN] = {
 	0x00, 0x05, 0x03, 0x50, 0x00, 0x00, 0x00, 0x00,  /* +0x80 reg ver 0x0005, fw 0x0350, variant 0 */
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,  /* +0x88 identity: PER PAD */
 	0x00, 0x00, 0x01, 0x8A, 0x01, 0x00, 0x00, 0x00,  /* +0x90 */
@@ -42,7 +42,7 @@ static const uint8_t DS3_INFO_TEMPLATE[DS45_SHIM_INFO_LEN] = {
 	0x02, 0x70, 0x01, 0x01, 0x01, 0x00               /* +0xD0 (+0xD2..+0xD5: flags 1,1,1,0) */
 };
 
-const ds45_shim_kernel_t ds45_shim_table[] = {
+const npp_shim_kernel_t npp_shim_table[] = {
 	{
 		"DEX 4.92",
 		/* fingerprint: the first `ld r3,-0x35E0(r2)`, same bytes kernel.c's
@@ -62,7 +62,7 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		/* Amendment 2 - the fixed executable region the blob is placed in: the
 		 * CFW payload's free zero run 0x57C000..0x580000 (0x4338 bytes, 8-aligned,
 		 * identical and unused across every dump sampled). The blob (about 9.5 KB,
-		 * DS45_SHIM_BLOB_LEN) + the 0x10 flush OPD end well before exec_bound. */
+		 * NPP_SHIM_BLOB_LEN) + the 0x10 flush OPD end well before exec_bound. */
 		0x800000000057C000ULL, 0x8000000000580000ULL,
 
 		/* F5 - the kernel's own dcbst/sync/icbi/isync range flush (entry
@@ -107,10 +107,10 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		 * preserved but the usual non-volatiles (note 2026-10-31-ds3-route-pid-
 		 * patch-fix.md, 1.2 and 2), so this is the one kind of site a BRANCH row
 		 * may target. The row's value is filled in at install (blob base +
-		 * DS45_SHIM_OFF_PID_OK). Verified by the FNV of the qword 0x29E2B0 holding
+		 * NPP_SHIM_OFF_PID_OK). Verified by the FNV of the qword 0x29E2B0 holding
 		 * the instruction. */
 		{
-			{ DS45_KPATCH_BRANCH, 0x800000000029E2B4ULL, 0xF1B8B3EFF22A78FCULL, 0ULL },
+			{ NPP_KPATCH_BRANCH, 0x800000000029E2B4ULL, 0xF1B8B3EFF22A78FCULL, 0ULL },
 		},
 
 		/* F4 - the inline compare at the connection path, applied only with
@@ -121,8 +121,8 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		 *       "b 0x11B234" (known Sony pad, skip SDP) - reached only for PID
 		 *       0x0CE6. */
 		{
-			{ DS45_KPATCH_WORD, 0x800000000011B5E4ULL, 0xE8ADD0EDF3B2B3C1ULL, 0x2F800CE6ULL },
-			{ DS45_KPATCH_WORD, 0x800000000011B5ECULL, 0xF86140C9C3D7FB8DULL, 0x4BFFFC48ULL },
+			{ NPP_KPATCH_WORD, 0x800000000011B5E4ULL, 0xE8ADD0EDF3B2B3C1ULL, 0x2F800CE6ULL },
+			{ NPP_KPATCH_WORD, 0x800000000011B5ECULL, 0xF86140C9C3D7FB8DULL, 0x4BFFFC48ULL },
 		},
 
 		/* DS3-route output (rumble, player LEDs, light bar): the four output
@@ -144,10 +144,10 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		 * orig_output is the sender 0x10283C the output hook tail-calls; 0 would
 		 * switch every output site off (the receive-limit words below included). */
 		{
-			{ DS45_KPATCH_BRANCHL, 0x80000000002A2DE8ULL, 0x2A29E6BB7BA10D5EULL, 0ULL },
-			{ DS45_KPATCH_WORD,    0x80000000000F8D74ULL, 0xBF27C253F5228E13ULL, 0x2B9F004DULL },
-			{ DS45_KPATCH_PTR,     0x8000000000372650ULL, 0x80000000004326C8ULL, 0ULL },
-			{ DS45_KPATCH_PTR,     0x8000000000372660ULL, 0x80000000004326C9ULL, 0ULL },
+			{ NPP_KPATCH_BRANCHL, 0x80000000002A2DE8ULL, 0x2A29E6BB7BA10D5EULL, 0ULL },
+			{ NPP_KPATCH_WORD,    0x80000000000F8D74ULL, 0xBF27C253F5228E13ULL, 0x2B9F004DULL },
+			{ NPP_KPATCH_PTR,     0x8000000000372650ULL, 0x80000000004326C8ULL, 0ULL },
+			{ NPP_KPATCH_PTR,     0x8000000000372660ULL, 0x80000000004326C9ULL, 0ULL },
 		},
 
 		/* DS3-route input (the full report): the three receive-limit words,
@@ -162,9 +162,9 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		 * with the two packet-buffer slots above. The channel-3 limit at
 		 * 0xF8484 is a different channel's and is deliberately not touched. */
 		{
-			{ DS45_KPATCH_WORD, 0x80000000000F9094ULL, 0x069BC077D72F4325ULL, 0x38E00050ULL },
-			{ DS45_KPATCH_WORD, 0x80000000000F9134ULL, 0x57006EC0FDB88DBCULL, 0x38E00050ULL },
-			{ DS45_KPATCH_WORD, 0x80000000000F91F4ULL, 0x995A6CDC70F64A38ULL, 0x38E00050ULL },
+			{ NPP_KPATCH_WORD, 0x80000000000F9094ULL, 0x069BC077D72F4325ULL, 0x38E00050ULL },
+			{ NPP_KPATCH_WORD, 0x80000000000F9134ULL, 0x57006EC0FDB88DBCULL, 0x38E00050ULL },
+			{ NPP_KPATCH_WORD, 0x80000000000F91F4ULL, 0x995A6CDC70F64A38ULL, 0x38E00050ULL },
 		},
 		0x800000000010283CULL,
 
@@ -185,14 +185,14 @@ const ds45_shim_kernel_t ds45_shim_table[] = {
 		 * orig_teardown the teardown routine 0x1174FC the observers tail-call; 0
 		 * would leave their sites out. */
 		{
-			{ DS45_KPATCH_BRANCHL, 0x80000000000CA9BCULL, 0x6D3B5A2728211E68ULL, 0ULL },
-			{ DS45_KPATCH_BRANCHL, 0x80000000000F4D94ULL, 0x28861307B803CC8EULL, 0ULL },
-			{ DS45_KPATCH_BRANCH,  0x80000000000F722CULL, 0x2965949581F9EB53ULL, 0ULL },
-			{ DS45_KPATCH_BRANCHL, 0x80000000000FDB44ULL, 0x10FC449574975856ULL, 0ULL },
+			{ NPP_KPATCH_BRANCHL, 0x80000000000CA9BCULL, 0x6D3B5A2728211E68ULL, 0ULL },
+			{ NPP_KPATCH_BRANCHL, 0x80000000000F4D94ULL, 0x28861307B803CC8EULL, 0ULL },
+			{ NPP_KPATCH_BRANCH,  0x80000000000F722CULL, 0x2965949581F9EB53ULL, 0ULL },
+			{ NPP_KPATCH_BRANCHL, 0x80000000000FDB44ULL, 0x10FC449574975856ULL, 0ULL },
 		},
 		0x8000000000102750ULL,
 		0x80000000001174FCULL,
 	},
 };
-const int ds45_shim_table_count =
-	(int)(sizeof(ds45_shim_table) / sizeof(ds45_shim_table[0]));
+const int npp_shim_table_count =
+	(int)(sizeof(npp_shim_table) / sizeof(npp_shim_table[0]));

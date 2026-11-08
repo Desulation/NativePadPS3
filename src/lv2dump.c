@@ -1,5 +1,5 @@
 /*
- * DS45PAD - debug-build LV2 dumper.
+ * NPP - debug-build LV2 dumper.
  *
  * Supporting a new firmware means finding where its kernel keeps the
  * Bluetooth report slot, which needs a copy of that console's own kernel
@@ -17,11 +17,11 @@
  */
 
 #include <string.h>
-#include <cell/pad.h>   /* CellPadData, needed by ds45pad.h */
+#include <cell/pad.h>   /* CellPadData, needed by npp.h */
 
-#include "ds45pad.h"
+#include "npp.h"
 
-#ifdef DS45_LV2DUMP
+#ifdef NPP_LV2DUMP
 
 #include <sys/tty.h>
 
@@ -32,7 +32,7 @@
 #define DUMP_A_TXT "/dev_hdd0/tmp/nativepadps3_lv2.txt"
 #define DUMP_B_BIN "/dev_hdd0/tmp/nativepadps3_lv2_b.bin"
 #define DUMP_B_TXT "/dev_hdd0/tmp/nativepadps3_lv2_b.txt"
-#define DUMP_SIZE  ((int)(DS45_LV2_BOUND - DS45_LV2_BASE))
+#define DUMP_SIZE  ((int)(NPP_LV2_BOUND - NPP_LV2_BASE))
 #define CHUNK      65536
 
 /* Without a verified record: time to read the toast before each dump. */
@@ -104,7 +104,7 @@ static void tty(const char *msg)
 /* Instructions for the person holding the pad: toast and TTY. */
 static void say(const char *msg)
 {
-	ds45_notify(msg);
+	npp_notify(msg);
 	tty(msg);
 }
 
@@ -118,10 +118,10 @@ static int write_description(const char *txt, const char *pad)
 	have_fw = (kernel_fw_query(type, (int)sizeof(type), &ver) == 0);
 
 	n = put_str(text, sizeof(text), n, "base=");
-	n = put_hex(text, sizeof(text), n, DS45_LV2_BASE, 16);
+	n = put_hex(text, sizeof(text), n, NPP_LV2_BASE, 16);
 	n = put_str(text, sizeof(text), n, "\nbound=");
-	n = put_hex(text, sizeof(text), n, DS45_LV2_BOUND, 16);
-	n = put_str(text, sizeof(text), n, "\nversion=" DS45PAD_VERSION "\nfw_type=");
+	n = put_hex(text, sizeof(text), n, NPP_LV2_BOUND, 16);
+	n = put_str(text, sizeof(text), n, "\nversion=" NPP_VERSION "\nfw_type=");
 	n = put_str(text, sizeof(text), n, have_fw ? type : "unknown");
 	n = put_str(text, sizeof(text), n, "\nfw_version=");
 	if (have_fw)
@@ -134,7 +134,7 @@ static int write_description(const char *txt, const char *pad)
 	n = put_str(text, sizeof(text), n, pad);
 	n = put_str(text, sizeof(text), n, "\n");
 
-	return ds45_write_file(txt, text, n);
+	return npp_write_file(txt, text, n);
 }
 
 /* One dump: 0 written or already there, -1 failed (nothing half-written
@@ -144,7 +144,7 @@ static int dump_one(const char *bin, const char *txt, const char *pad)
 	char msg[120];
 	int off, n;
 
-	if (ds45_file_exists(bin)) {
+	if (npp_file_exists(bin)) {
 		n = put_str(msg, sizeof(msg), 0, "LV2 dump skipped: ");
 		n = put_str(msg, sizeof(msg), n, bin);
 		put_str(msg, sizeof(msg), n, " exists, delete it to dump again");
@@ -154,7 +154,7 @@ static int dump_one(const char *bin, const char *txt, const char *pad)
 	n = put_str(msg, sizeof(msg), 0, "LV2 dump started: ");
 	put_str(msg, sizeof(msg), n, bin);
 	tty(msg);
-	ds45_boot_mark("lv2dump");
+	npp_boot_mark("lv2dump");
 
 	/* Description first, so a .bin never exists without it. */
 	if (write_description(txt, pad) != 0) {
@@ -165,15 +165,15 @@ static int dump_one(const char *bin, const char *txt, const char *pad)
 	}
 
 	for (off = 0; off < DUMP_SIZE; off += CHUNK) {
-		int rc = ds45_lv2_read_bytes(DS45_LV2_BASE + (uint64_t)off, chunk, CHUNK);
+		int rc = npp_lv2_read_bytes(NPP_LV2_BASE + (uint64_t)off, chunk, CHUNK);
 
 		if (rc == 0)
-			rc = off == 0 ? ds45_write_file(bin, chunk, CHUNK)
-			              : ds45_append_file(bin, chunk, CHUNK);
+			rc = off == 0 ? npp_write_file(bin, chunk, CHUNK)
+			              : npp_append_file(bin, chunk, CHUNK);
 		if (rc != 0) {
 			/* A truncated .bin would block every later run (the
 			 * exists-check above) and mislead the scanner. */
-			ds45_delete_file(bin);
+			npp_delete_file(bin);
 			n = put_str(msg, sizeof(msg), 0, "LV2 dump failed at offset ");
 			n = put_hex(msg, sizeof(msg), n, (uint64_t)off, 8);
 			put_str(msg, sizeof(msg), n, ", partial .bin deleted");
@@ -182,7 +182,7 @@ static int dump_one(const char *bin, const char *txt, const char *pad)
 		}
 	}
 
-	ds45_boot_mark("lv2dump_done");
+	npp_boot_mark("lv2dump_done");
 	n = put_str(msg, sizeof(msg), 0, "LV2 dump written: ");
 	n = put_str(msg, sizeof(msg), n, bin);
 	n = put_str(msg, sizeof(msg), n, " (");
@@ -198,10 +198,10 @@ static int dump_one(const char *bin, const char *txt, const char *pad)
  * guess. Otherwise the countdowns do. */
 static int buttons_trusted(void)
 {
-	ds45_kmatch_t s = kernel_active_source();
+	npp_kmatch_t s = kernel_active_source();
 
-	return s == DS45_KMATCH_TABLE || s == DS45_KMATCH_CACHE ||
-	       s == DS45_KMATCH_SCAN;
+	return s == NPP_KMATCH_TABLE || s == NPP_KMATCH_CACHE ||
+	       s == NPP_KMATCH_SCAN;
 }
 
 static void start_a(lv2dump_t *st, uint32_t now_ms)
@@ -254,7 +254,7 @@ void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
 	/* Once per run: nothing to do if both dumps are already there. */
 	if (!st->checked) {
 		st->checked = 1;
-		if (ds45_file_exists(DUMP_A_BIN) && ds45_file_exists(DUMP_B_BIN)) {
+		if (npp_file_exists(DUMP_A_BIN) && npp_file_exists(DUMP_B_BIN)) {
 			tty("LV2 dumps skipped: " DUMP_A_BIN " and " DUMP_B_BIN
 			    " exist, delete both to dump again");
 			st->phase = PH_DONE;
@@ -277,7 +277,7 @@ void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
 	}
 
 	if (st->phase == PH_WAIT_PAD) {
-		if (ds45_file_exists(DUMP_A_BIN)) {
+		if (npp_file_exists(DUMP_A_BIN)) {
 			/* Kept from an earlier run, or taken before the pad left. */
 			tty("LV2 dump skipped: " DUMP_A_BIN " exists, delete it to dump again");
 			start_b(st, now_ms);
@@ -293,7 +293,7 @@ void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
 		/* Options pressed and released: hands off, then dump A. */
 		if (!passthru_source_buttons(&d1, &d2))
 			return;
-		if (d1 & DS45_CTRL_START) {
+		if (d1 & NPP_CTRL_START) {
 			st->opt_down = 1;
 		} else if (st->opt_down) {
 			say("LV2 dump A in 3 s: hands off");
@@ -307,7 +307,7 @@ void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
 		uint16_t d1, d2;
 
 		/* Cross held for HOLD_MS: dump B while it still is. */
-		if (!passthru_source_buttons(&d1, &d2) || !(d2 & DS45_CTRL_CROSS)) {
+		if (!passthru_source_buttons(&d1, &d2) || !(d2 & NPP_CTRL_CROSS)) {
 			st->held = 0;
 			return;
 		}
@@ -336,4 +336,4 @@ void lv2dump_poll(lv2dump_t *st, uint32_t now_ms)
 	take_b(st, "cross_held_left_stick_left");
 }
 
-#endif /* DS45_LV2DUMP */
+#endif /* NPP_LV2DUMP */

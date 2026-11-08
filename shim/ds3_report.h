@@ -1,5 +1,5 @@
 /*
- * DS45PAD kernel shim - DualSense Bluetooth reports 0x31 and 0x01 to a
+ * NPP kernel shim - DualSense Bluetooth reports 0x31 and 0x01 to a
  * DualShock 3 report.
  *
  * The PS3 kernel's DS3 driver only understands the 49 byte DualShock 3 input
@@ -28,8 +28,8 @@
  *
  * Licensed under GPLv2 - see LICENSE.
  */
-#ifndef DS45_DS3_REPORT_H
-#define DS45_DS3_REPORT_H
+#ifndef NPP_DS3_REPORT_H
+#define NPP_DS3_REPORT_H
 
 #include <stdint.h>
 #include "shim_abi.h"
@@ -47,7 +47,7 @@
  * may be the buffer in points into (the shim translates in place); any other
  * overlap is not supported. */
 int ds3_report_from_dualsense(const uint8_t *in, int in_len,
-                              const ds45_shim_cfg_t *cfg,
+                              const npp_shim_cfg_t *cfg,
                               uint8_t out[DS3_REPORT_LEN]);
 
 /* The short "basic" Bluetooth report a DualSense sends before it is switched to
@@ -68,7 +68,7 @@ int ds3_report_from_dualsense(const uint8_t *in, int in_len,
  * NULL, in[0] != DS_BASIC_REPORT_ID or in_len < DS_BASIC_LEN. Reads nothing past
  * in[in_len-1]; reads all input before writing (in-place safe, out == in). */
 int ds3_report_from_dualsense_basic(const uint8_t *in, int in_len,
-                                    const ds45_shim_cfg_t *cfg,
+                                    const npp_shim_cfg_t *cfg,
                                     uint8_t out[DS3_REPORT_LEN]);
 
-#endif /* DS45_DS3_REPORT_H */
+#endif /* NPP_DS3_REPORT_H */

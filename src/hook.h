@@ -1,5 +1,5 @@
-#ifndef DS45PAD_HOOK_H
-#define DS45PAD_HOOK_H
+#ifndef NPP_HOOK_H
+#define NPP_HOOK_H
 
 #include <stdint.h>
 
@@ -19,7 +19,7 @@
 typedef struct {
 	uint32_t *slot;   /* import table entry we overwrote      */
 	uint32_t  saved;  /* original function descriptor address */
-} ds45_detour_t;
+} npp_detour_t;
 
 /* A detour on the shared function descriptor: affects every module in the
  * process, not just this one. `saved` doubles as a callable descriptor for
@@ -27,23 +27,23 @@ typedef struct {
 typedef struct {
 	uint32_t *opd;
 	uint32_t  saved[2];
-} ds45_opd_detour_t;
+} npp_opd_detour_t;
 
-/* `target` is the imported function itself, e.g. ds45_detour_opd(cellPadGetData,
+/* `target` is the imported function itself, e.g. npp_detour_opd(cellPadGetData,
  * my_hook, &d). No NID and no table walk involved. */
-int  ds45_detour_opd(void *target, void *replacement, ds45_opd_detour_t *d);
-void ds45_detour_opd_remove(ds45_opd_detour_t *d);
+int  npp_detour_opd(void *target, void *replacement, npp_opd_detour_t *d);
+void npp_detour_opd_remove(npp_opd_detour_t *d);
 
 /* Locate the import table entry for `fnid` in `module`, or NULL.
  * Walks the process ELF, so it only resolves inside the VSH. */
-uint32_t *ds45_find_slot(const char *module, uint32_t fnid);
+uint32_t *npp_find_slot(const char *module, uint32_t fnid);
 
 /* Resolve an imported function to a callable pointer, or NULL. */
-void *ds45_resolve(const char *module, uint32_t fnid);
+void *npp_resolve(const char *module, uint32_t fnid);
 
 /* Redirect an imported function to `replacement`. Returns 0 on success. */
-int  ds45_detour(const char *module, uint32_t fnid, void *replacement,
-                 ds45_detour_t *d);
-void ds45_detour_remove(ds45_detour_t *d);
+int  npp_detour(const char *module, uint32_t fnid, void *replacement,
+                 npp_detour_t *d);
+void npp_detour_remove(npp_detour_t *d);
 
-#endif /* DS45PAD_HOOK_H */
+#endif /* NPP_HOOK_H */

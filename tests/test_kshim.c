@@ -1,5 +1,5 @@
 /* SOURCES: lv2.c kpatch.c kshim.c kshim_table.c */
-/* CFLAGS: -DDS45_DEBUG */
+/* CFLAGS: -DNPP_DEBUG */
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -8,19 +8,19 @@
 #include "fakes.h"
 #include "lv2.h"
 #include "kpatch.h"
-#include "kernel.h"      /* DS45_FP_LEN; kernel.c is not linked, so we supply
+#include "kernel.h"      /* NPP_FP_LEN; kernel.c is not linked, so we supply
                           * kernel_fingerprint_matches below (a copy of it). */
 #include "kshim.h"
 #include "../shim/shim_abi.h"
 #include "shim_blob.h"
-#include "ds45pad.h"     /* ds45_config_t g_cfg */
+#include "npp.h"     /* npp_config_t g_cfg */
 
 /* Synthetic image only: made-up fingerprint bytes, code qwords and in-window
  * addresses, no kernel bytes. The one real input is src/shim_blob.h (the freshly
  * packed blob the VSH build generates), so the relocation and data-block checks
  * run against the exact bytes the installer copies. */
 
-#define B DS45_LV2_BASE
+#define B NPP_LV2_BASE
 
 /* Table-entry addresses (all in-window, chosen clear of one another and of the
  * blob region). The three driver slots sit in one table as on DEX 4.92: the
@@ -132,7 +132,7 @@
 #define CHECK_SUB(e) do { int l_ = (e); if (l_) return l_; } while (0)
 
 /* A synthetic info template: a pattern with the identity bytes zero. */
-static uint8_t g_tmpl[DS45_SHIM_INFO_LEN];
+static uint8_t g_tmpl[NPP_SHIM_INFO_LEN];
 
 /* ----- byte/qword helpers (big-endian, as on the PPU) -------------------- */
 
@@ -148,7 +148,7 @@ static void put_q(uint64_t addr, uint64_t v)
 static uint64_t rd(uint64_t addr)
 {
 	uint64_t v = 0;
-	ds45_lv2_read(addr, &v);
+	npp_lv2_read(addr, &v);
 	return v;
 }
 
@@ -158,7 +158,7 @@ static uint64_t qhash(uint64_t v)
 	int i;
 	for (i = 0; i < 8; i++)
 		b[i] = (uint8_t)(v >> (56 - 8 * i));
-	return ds45_fnv1a64(b, 8);
+	return npp_fnv1a64(b, 8);
 }
 
 /* The blob's own bytes at offset off, assembled as a big-endian qword. */
@@ -167,15 +167,15 @@ static uint64_t blob_q(uint32_t off)
 	uint64_t v = 0;
 	int i;
 	for (i = 0; i < 8; i++)
-		v = (v << 8) | ds45_shim_blob[off + i];
+		v = (v << 8) | npp_shim_blob[off + i];
 	return v;
 }
 
 static int is_reloc(uint32_t off)
 {
 	int i;
-	for (i = 0; i < DS45_SHIM_RELOC_COUNT; i++)
-		if (ds45_shim_relocs[i] == off)
+	for (i = 0; i < NPP_SHIM_RELOC_COUNT; i++)
+		if (npp_shim_relocs[i] == off)
 			return 1;
 	return 0;
 }
@@ -202,25 +202,25 @@ static uint16_t be16b(const uint8_t *p)
 
 int kernel_fingerprint_matches(uint64_t fp_addr, uint64_t fp_hash)
 {
-	uint8_t buf[DS45_FP_LEN];
+	uint8_t buf[NPP_FP_LEN];
 	if (fp_addr == 0)
 		return 0;
-	if (ds45_lv2_read_bytes(fp_addr, buf, DS45_FP_LEN) != 0)
+	if (npp_lv2_read_bytes(fp_addr, buf, NPP_FP_LEN) != 0)
 		return 0;
-	return ds45_fnv1a64(buf, DS45_FP_LEN) == fp_hash;
+	return npp_fnv1a64(buf, NPP_FP_LEN) == fp_hash;
 }
 
 /* g_cfg lives in config.c, which is not linked here. */
-ds45_config_t g_cfg;
+npp_config_t g_cfg;
 
-/* The debug trace (DS45_DEBUG): overrides the weak fake to catch the adopted
+/* The debug trace (NPP_DEBUG): overrides the weak fake to catch the adopted
  * product-ID mask. */
 static int      g_tr_applied_n;
 static uint32_t g_tr_applied;
 static uint32_t g_tr_skipped;      /* the sites kshim_adopt_pid_skipped named, as a mask */
 static uint32_t g_tr_refused;      /* the mask kshim_adopt_refused carried (0: not emitted) */
 
-void ds45_boot_mark_hex(const char *stage, uint32_t value)
+void npp_boot_mark_hex(const char *stage, uint32_t value)
 {
 	if (strcmp(stage, "kshim_adopt_applied") == 0) {
 		g_tr_applied_n++;
@@ -291,7 +291,7 @@ static void clear_fault_after_failed_poke(uint64_t addr)
 
 /* ----- the LV2 write log -------------------------------------------------- */
 
-/* ds45_lv2_write reads every poke back at the same address, so the first peek
+/* npp_lv2_write reads every poke back at the same address, so the first peek
  * after the poke count moved names the address just written. */
 #define WLOG_MAX 4096
 static uint64_t g_wlog[WLOG_MAX];
@@ -324,11 +324,11 @@ static int wlog_has(uint64_t addr)
 
 /* ----- image + table setup ----------------------------------------------- */
 
-static ds45_shim_kernel_t g_ent;
+static npp_shim_kernel_t g_ent;
 
 static void setup(void)
 {
-	uint8_t fp[DS45_FP_LEN];
+	uint8_t fp[NPP_FP_LEN];
 	int i;
 
 	fake_reset_all();
@@ -346,8 +346,8 @@ static void setup(void)
 	/* distinctive, out-of-default config so the cfg copy is observable */
 	memset(&g_cfg, 0, sizeof(g_cfg));
 	g_cfg.stick_deadzone = 12;
-	g_cfg.map_touchpad = (ds45_map_t)3;
-	g_cfg.map_mute = (ds45_map_t)5;
+	g_cfg.map_touchpad = (npp_map_t)3;
+	g_cfg.map_mute = (npp_map_t)5;
 	g_cfg.sixaxis = 1;
 	g_cfg.swap_xy = 1;
 	g_cfg.invert_x = 1;
@@ -365,9 +365,9 @@ static void setup(void)
 	g_cfg.shim_stable_id = 1;    /* the stable identity is on by default */
 
 	/* fingerprint */
-	for (i = 0; i < DS45_FP_LEN; i++)
+	for (i = 0; i < NPP_FP_LEN; i++)
 		fp[i] = (uint8_t)(0x40 + i * 7);
-	fake_lv2_set(FP_ADDR, fp, DS45_FP_LEN);
+	fake_lv2_set(FP_ADDR, fp, NPP_FP_LEN);
 
 	/* slots, code qwords and the allocator OPD */
 	put_q(SPARE_SLOT, SPARE_STUB);
@@ -383,7 +383,7 @@ static void setup(void)
 	put_q(PID0_QA, PID0_Q);
 	put_q(PID1_QA, PID1_Q);
 
-	for (i = 0; i < DS45_SHIM_INFO_LEN; i++)
+	for (i = 0; i < NPP_SHIM_INFO_LEN; i++)
 		g_tmpl[i] = (uint8_t)(0x21 + i * 3);
 	for (i = 8; i < 16; i++)
 		g_tmpl[i] = 0;
@@ -392,7 +392,7 @@ static void setup(void)
 	memset(&g_ent, 0, sizeof(g_ent));
 	g_ent.name = "SYN";
 	g_ent.fp_addr = FP_ADDR;
-	g_ent.fp_hash = ds45_fnv1a64(fp, DS45_FP_LEN);
+	g_ent.fp_hash = npp_fnv1a64(fp, NPP_FP_LEN);
 	g_ent.syscall_table = SYS_TABLE;
 	g_ent.spare_syscall = SPARE_NUM;
 	g_ent.spare_slot_expect = SPARE_STUB;
@@ -415,15 +415,15 @@ static void setup(void)
 	g_ent.conn_tbl = CONN_TBL;
 	g_ent.orig_output = OUTPUT_ORIG;
 	g_ent.info_tmpl = g_tmpl;
-	g_ent.pid_patches[0].kind = DS45_KPATCH_WORD;
+	g_ent.pid_patches[0].kind = NPP_KPATCH_WORD;
 	g_ent.pid_patches[0].addr = HELPER_SITE;
 	g_ent.pid_patches[0].expect = qhash(HELPER_Q);
 	g_ent.pid_patches[0].value = HELPER_WORD;
-	g_ent.inline_patches[0].kind = DS45_KPATCH_WORD;
+	g_ent.inline_patches[0].kind = NPP_KPATCH_WORD;
 	g_ent.inline_patches[0].addr = PID0_SITE;
 	g_ent.inline_patches[0].expect = qhash(PID0_Q);
 	g_ent.inline_patches[0].value = PID0_WORD;
-	g_ent.inline_patches[1].kind = DS45_KPATCH_WORD;
+	g_ent.inline_patches[1].kind = NPP_KPATCH_WORD;
 	g_ent.inline_patches[1].addr = PID1_SITE;
 	g_ent.inline_patches[1].expect = qhash(PID1_Q);
 	g_ent.inline_patches[1].value = PID1_WORD;
@@ -445,7 +445,7 @@ static void plant_recv_rows(void)
 	int i;
 
 	for (i = 0; i < RECV_PATCHES_N; i++) {
-		g_ent.recv_patches[i].kind = DS45_KPATCH_WORD;
+		g_ent.recv_patches[i].kind = NPP_KPATCH_WORD;
 		g_ent.recv_patches[i].addr = RECV_SITE(i);
 		g_ent.recv_patches[i].expect = qhash(RECV_Q(i));
 		g_ent.recv_patches[i].value = RECV_WORD;
@@ -459,19 +459,19 @@ static void plant_recv_rows(void)
  * shim_output_mode) after this. */
 static void plant_output_rows(void)
 {
-	g_ent.output_patches[0].kind = DS45_KPATCH_BRANCHL;
+	g_ent.output_patches[0].kind = NPP_KPATCH_BRANCHL;
 	g_ent.output_patches[0].addr = OUT_CALL_QA;
 	g_ent.output_patches[0].expect = qhash(OUT_Q(0));
 	g_ent.output_patches[0].value = 0;                 /* filled in at install */
-	g_ent.output_patches[1].kind = DS45_KPATCH_WORD;
+	g_ent.output_patches[1].kind = NPP_KPATCH_WORD;
 	g_ent.output_patches[1].addr = OUT_CAP_SITE;
 	g_ent.output_patches[1].expect = qhash(OUT_Q(1));
 	g_ent.output_patches[1].value = CAP_WORD;
-	g_ent.output_patches[2].kind = DS45_KPATCH_PTR;
+	g_ent.output_patches[2].kind = NPP_KPATCH_PTR;
 	g_ent.output_patches[2].addr = OUT_SLOT5;
 	g_ent.output_patches[2].expect = OLD_BUF;          /* PTR rows compare the value */
 	g_ent.output_patches[2].value = 0;
-	g_ent.output_patches[3].kind = DS45_KPATCH_PTR;
+	g_ent.output_patches[3].kind = NPP_KPATCH_PTR;
 	g_ent.output_patches[3].addr = OUT_SLOT6;
 	g_ent.output_patches[3].expect = OLD_BUF + 1;
 	g_ent.output_patches[3].value = 0;
@@ -489,7 +489,7 @@ static void plant_output_rows(void)
 static void plant_poweroff_rows(void)
 {
 	static const int kind[PO_PATCHES_N] =
-		{ DS45_KPATCH_BRANCHL, DS45_KPATCH_BRANCHL, DS45_KPATCH_BRANCH, DS45_KPATCH_BRANCHL };
+		{ NPP_KPATCH_BRANCHL, NPP_KPATCH_BRANCHL, NPP_KPATCH_BRANCH, NPP_KPATCH_BRANCHL };
 	int i;
 
 	for (i = 0; i < PO_PATCHES_N; i++) {
@@ -506,7 +506,7 @@ static void plant_poweroff_rows(void)
 /* The packet buffer in a blob loaded at base. */
 static uint64_t pktbuf_at(uint64_t base)
 {
-	return base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pktbuf);
+	return base + NPP_SHIM_OFF_DATA + offsetof(npp_shim_data_t, pktbuf);
 }
 
 /* "bl target" as PowerPC encodes it (AA = 0, LK = 1), worked out here
@@ -620,27 +620,27 @@ static void kshim_remove(void)
 
 /* ----- tests ------------------------------------------------------------- */
 
-/* The installer writes sizeof(ds45_shim_data_t) bytes at OFF_DATA, and the flush
+/* The installer writes sizeof(npp_shim_data_t) bytes at OFF_DATA, and the flush
  * OPD goes at BLOB_LEN: the data block must be exactly the blob's tail. A stale
  * generated src/shim_blob.h (built before the data block last changed) breaks
  * that and would corrupt the OPD - regenerate it with `src/build.ps1 -Variant
  * vsh`. Run first so a stale header says so rather than failing obscurely. */
 static int test_blob_tail_is_the_data_block(void)
 {
-	CHECK(DS45_SHIM_OFF_DATA + sizeof(ds45_shim_data_t) == DS45_SHIM_BLOB_LEN);
+	CHECK(NPP_SHIM_OFF_DATA + sizeof(npp_shim_data_t) == NPP_SHIM_BLOB_LEN);
 	return 0;
 }
 
 static int test_no_entry_writes_nothing(void)
 {
-	uint8_t fp[DS45_FP_LEN];
+	uint8_t fp[NPP_FP_LEN];
 	int i, pokes;
 
 	setup();
 	/* corrupt the fingerprint so no row matches */
-	for (i = 0; i < DS45_FP_LEN; i++)
+	for (i = 0; i < NPP_FP_LEN; i++)
 		fp[i] = (uint8_t)(0x99 + i);
-	fake_lv2_set(FP_ADDR, fp, DS45_FP_LEN);
+	fake_lv2_set(FP_ADDR, fp, NPP_FP_LEN);
 
 	pokes = fake_lv2_poke_count;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_NO_ENTRY);
@@ -661,20 +661,20 @@ static int poweroff_block_clear(const uint8_t *db)
 {
 	int i;
 
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_poweroff)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_teardown)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, po_mode)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, po_seq)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_po_calls)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_po_ds)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_po_rewritten)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_po_passed)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_td_calls)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_td_rsvd)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, orig_poweroff)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, orig_teardown)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, po_mode)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, po_seq)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_po_calls)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_po_ds)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_po_rewritten)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_po_passed)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_td_calls)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_td_rsvd)) == 0 ? 0 : __LINE__);
 	for (i = 0; i < 48; i++)
-		CHECK_SUB(db[offsetof(ds45_shim_data_t, po_buf) + i] == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(npp_shim_data_t, po_buf) + i] == 0 ? 0 : __LINE__);
 	for (i = 0; i < 128; i++)
-		CHECK_SUB(db[offsetof(ds45_shim_data_t, po_ring) + i] == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(npp_shim_data_t, po_ring) + i] == 0 ? 0 : __LINE__);
 	return 0;
 }
 
@@ -682,119 +682,119 @@ static int poweroff_block_clear(const uint8_t *db)
  * copied verbatim, the data block filled, and the flush OPD built. */
 static int check_blob_image(void)
 {
-	uint8_t db[sizeof(ds45_shim_data_t)];
+	uint8_t db[sizeof(npp_shim_data_t)];
 	const uint8_t *cfg, *t;
 	uint32_t off;
 	int i;
 
-	for (off = 0; off < DS45_SHIM_OFF_DATA; off += 8) {
+	for (off = 0; off < NPP_SHIM_OFF_DATA; off += 8) {
 		uint64_t want = blob_q(off);
 		if (is_reloc(off))
 			want += BLOB_BASE;
 		CHECK_SUB(rd(BLOB_BASE + off) == want ? 0 : __LINE__);
 	}
 
-	CHECK_SUB(ds45_lv2_read_bytes(BLOB_BASE + DS45_SHIM_OFF_DATA, db,
+	CHECK_SUB(npp_lv2_read_bytes(BLOB_BASE + NPP_SHIM_OFF_DATA, db,
 	                              (int)sizeof db) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, magic)) ==
-	          DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, version)) == 12 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_event)) ==
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, magic)) ==
+	          NPP_SHIM_MAGIC ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, version)) == 12 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, enabled)) == 1 ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, orig_event)) ==
 	          EVENT_ORIG ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_enable)) ==
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, orig_enable)) ==
 	          ENABLE_ORIG ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_input)) ==
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, orig_input)) ==
 	          INPUT_ORIG ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pad_vtable)) ==
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, pad_vtable)) ==
 	          PAD_VTABLE ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pad_mgr)) ==
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, pad_mgr)) ==
 	          PAD_MGR ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, conn_tbl)) ==
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, conn_tbl)) ==
 	          CONN_TBL ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stable_id)) == 1 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_id_bd)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_id_fallback)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_last_handle)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, stable_id)) == 1 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_id_bd)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_id_fallback)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_last_handle)) == 0 ? 0 : __LINE__);
 	/* the DS3-route output fields: the sender's address from the row, the mode
 	 * from the config (setup leaves it 0), everything else cleared */
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, orig_output)) ==
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, orig_output)) ==
 	          OUTPUT_ORIG ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, out_mode)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, out_seq)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_calls)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_cap_len)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, out_mode)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, out_seq)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_out_calls)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_out_cap_len)) == 0 ? 0 : __LINE__);
 	for (i = 0; i < 64; i++)
-		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_out_cap) + i] == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(npp_shim_data_t, dbg_out_cap) + i] == 0 ? 0 : __LINE__);
 	for (i = 0; i < 80; i++)
-		CHECK_SUB(db[offsetof(ds45_shim_data_t, out_buf) + i] == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(npp_shim_data_t, out_buf) + i] == 0 ? 0 : __LINE__);
 	for (i = 0; i < 96; i++)
-		CHECK_SUB(db[offsetof(ds45_shim_data_t, pktbuf) + i] == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(npp_shim_data_t, pktbuf) + i] == 0 ? 0 : __LINE__);
 	/* the rumble-aware capture (debug only) starts cleared */
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, dbg_out_on_pad)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_on_count)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_off_count)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_out_off_armed)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, dbg_out_on_pad)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_out_on_count)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_out_off_count)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_out_off_armed)) == 0 ? 0 : __LINE__);
 	for (i = 0; i < 64; i++) {
-		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_out_on_cap) + i] == 0 ? 0 : __LINE__);
-		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_out_off_cap) + i] == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(npp_shim_data_t, dbg_out_on_cap) + i] == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(npp_shim_data_t, dbg_out_off_cap) + i] == 0 ? 0 : __LINE__);
 	}
 	/* version 10: the input bounce buffer and its four counters start cleared (the
 	 * blob writes them from Task 14; the installer must not seed them) */
 	for (i = 0; i < 96; i++)
-		CHECK_SUB(db[offsetof(ds45_shim_data_t, inbuf) + i] == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_bounce)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_big)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_drop)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_err)) == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(npp_shim_data_t, inbuf) + i] == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_in_bounce)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_in_big)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_in_drop)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_in_err)) == 0 ? 0 : __LINE__);
 	/* version 11: the raw report capture starts cleared too */
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_raw_len)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, dbg_in_raw_seq)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_in_raw_len)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, dbg_in_raw_seq)) == 0 ? 0 : __LINE__);
 	for (i = 0; i < 64; i++)
-		CHECK_SUB(db[offsetof(ds45_shim_data_t, dbg_in_raw) + i] == 0 ? 0 : __LINE__);
+		CHECK_SUB(db[offsetof(npp_shim_data_t, dbg_in_raw) + i] == 0 ? 0 : __LINE__);
 	/* version 12: the power-off state starts cleared (this fixture leaves the hook
 	 * off and the row without code addresses; the installer seeds nothing but those) */
 	CHECK_SUB(poweroff_block_clear(db) == 0 ? 0 : __LINE__);
 
-	cfg = db + offsetof(ds45_shim_data_t, cfg);
-	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, deadzone)] == 12 ? 0 : __LINE__);
-	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, map_touchpad)] == 3 ? 0 : __LINE__);
-	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, map_mute)] == 5 ? 0 : __LINE__);
-	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, sixaxis)] == 1 ? 0 : __LINE__);
-	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, swap_xy)] == 1 ? 0 : __LINE__);
-	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, invert_x)] == 1 ? 0 : __LINE__);
-	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, invert_y)] == 0 ? 0 : __LINE__);
-	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, invert_z)] == 1 ? 0 : __LINE__);
-	CHECK_SUB(cfg[offsetof(ds45_shim_cfg_t, invert_g)] == 0 ? 0 : __LINE__);
-	CHECK_SUB((int16_t)be16b(cfg + offsetof(ds45_shim_cfg_t, accel_scale)) ==
+	cfg = db + offsetof(npp_shim_data_t, cfg);
+	CHECK_SUB(cfg[offsetof(npp_shim_cfg_t, deadzone)] == 12 ? 0 : __LINE__);
+	CHECK_SUB(cfg[offsetof(npp_shim_cfg_t, map_touchpad)] == 3 ? 0 : __LINE__);
+	CHECK_SUB(cfg[offsetof(npp_shim_cfg_t, map_mute)] == 5 ? 0 : __LINE__);
+	CHECK_SUB(cfg[offsetof(npp_shim_cfg_t, sixaxis)] == 1 ? 0 : __LINE__);
+	CHECK_SUB(cfg[offsetof(npp_shim_cfg_t, swap_xy)] == 1 ? 0 : __LINE__);
+	CHECK_SUB(cfg[offsetof(npp_shim_cfg_t, invert_x)] == 1 ? 0 : __LINE__);
+	CHECK_SUB(cfg[offsetof(npp_shim_cfg_t, invert_y)] == 0 ? 0 : __LINE__);
+	CHECK_SUB(cfg[offsetof(npp_shim_cfg_t, invert_z)] == 1 ? 0 : __LINE__);
+	CHECK_SUB(cfg[offsetof(npp_shim_cfg_t, invert_g)] == 0 ? 0 : __LINE__);
+	CHECK_SUB((int16_t)be16b(cfg + offsetof(npp_shim_cfg_t, accel_scale)) ==
 	          150 ? 0 : __LINE__);
-	CHECK_SUB((int16_t)be16b(cfg + offsetof(ds45_shim_cfg_t, gyro_scale)) ==
+	CHECK_SUB((int16_t)be16b(cfg + offsetof(npp_shim_cfg_t, gyro_scale)) ==
 	          -50 ? 0 : __LINE__);
 
 	/* counters start cleared */
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_completed)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_enabled)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_translated)) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, stat_passed)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, stat_completed)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, stat_enabled)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, stat_translated)) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, stat_passed)) == 0 ? 0 : __LINE__);
 
 	/* the row's template, byte for byte, then zero to the end of the array */
-	t = db + offsetof(ds45_shim_data_t, info_tmpl);
-	CHECK_SUB(memcmp(t, g_tmpl, DS45_SHIM_INFO_LEN) == 0 ? 0 : __LINE__);
-	for (i = DS45_SHIM_INFO_LEN; i < 0x58; i++)
+	t = db + offsetof(npp_shim_data_t, info_tmpl);
+	CHECK_SUB(memcmp(t, g_tmpl, NPP_SHIM_INFO_LEN) == 0 ? 0 : __LINE__);
+	for (i = NPP_SHIM_INFO_LEN; i < 0x58; i++)
 		CHECK_SUB(t[i] == 0 ? 0 : __LINE__);
 
 	/* the helper site's original qword, and only the helper marked applied
 	 * (setup leaves SHIM_INLINE_PID off) */
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig)) == HELPER_Q ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 8) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 16) == 0 ? 0 : __LINE__);
-	for (i = 3; i < DS45_SHIM_PID_SITES; i++)       /* the output sites: not enabled */
-		CHECK_SUB(be64b(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * i) == 0 ? 0 : __LINE__);
-	CHECK_SUB(be32b(db + offsetof(ds45_shim_data_t, pid_applied)) == 1 ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, pid_orig)) == HELPER_Q ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, pid_orig) + 8) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, pid_orig) + 16) == 0 ? 0 : __LINE__);
+	for (i = 3; i < NPP_SHIM_PID_SITES; i++)       /* the output sites: not enabled */
+		CHECK_SUB(be64b(db + offsetof(npp_shim_data_t, pid_orig) + 8 * i) == 0 ? 0 : __LINE__);
+	CHECK_SUB(be32b(db + offsetof(npp_shim_data_t, pid_applied)) == 1 ? 0 : __LINE__);
 
 	/* flush OPD placed just past the blob: { entry, kernel TOC } */
-	CHECK_SUB(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN) == FLUSH_ENTRY ? 0 : __LINE__);
-	CHECK_SUB(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN + 8) == KERNEL_TOC ? 0 : __LINE__);
+	CHECK_SUB(rd(BLOB_BASE + NPP_SHIM_BLOB_LEN) == FLUSH_ENTRY ? 0 : __LINE__);
+	CHECK_SUB(rd(BLOB_BASE + NPP_SHIM_BLOB_LEN + 8) == KERNEL_TOC ? 0 : __LINE__);
 	return 0;
 }
 
@@ -806,9 +806,9 @@ static int test_install_writes_v3(void)
 	fake_lv2_on_peek = NULL;
 
 	/* the three redirects point at the blob's own descriptors */
-	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
-	CHECK(rd(ENABLE_SLOT) == BLOB_BASE + DS45_SHIM_OFF_ENABLE);
-	CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_EVENT);
+	CHECK(rd(ENABLE_SLOT) == BLOB_BASE + NPP_SHIM_OFF_ENABLE);
+	CHECK(rd(INPUT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_INPUT);
 
 	/* the helper word goes in verbatim (low half), the high half is kept */
 	CHECK(rd(HELPER_QA) == ((HELPER_Q & HI32) | HELPER_WORD));
@@ -832,7 +832,7 @@ static int test_install_writes_v3(void)
 	 * blob is placed at the fixed exec_base */
 	CHECK(g_spare_calls == 1);
 	CHECK(g_spare_a1[0] == BLOB_BASE);                 /* flush addr = exec_base */
-	CHECK(g_spare_a2[0] == DS45_SHIM_BLOB_LEN);        /* flush len */
+	CHECK(g_spare_a2[0] == NPP_SHIM_BLOB_LEN);        /* flush len */
 
 	CHECK(fake_lv2_out_of_bounds == 0);
 	kshim_remove();
@@ -847,18 +847,18 @@ static int test_install_uses_exec_base(void)
 	setup();
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 
-	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
-	CHECK(rd(ENABLE_SLOT) == BLOB_BASE + DS45_SHIM_OFF_ENABLE);
-	CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);
-	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
-	CHECK((uint32_t)(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
-	                    offsetof(ds45_shim_data_t, version)) >> 32) ==
-	      DS45_SHIM_VERSION);
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_EVENT);
+	CHECK(rd(ENABLE_SLOT) == BLOB_BASE + NPP_SHIM_OFF_ENABLE);
+	CHECK(rd(INPUT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_INPUT);
+	CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA) == NPP_SHIM_MAGIC);
+	CHECK((uint32_t)(rd(BLOB_BASE + NPP_SHIM_OFF_DATA +
+	                    offsetof(npp_shim_data_t, version)) >> 32) ==
+	      NPP_SHIM_VERSION);
 
 	/* the allocator syscall was never called: the only spare call is the flush */
 	CHECK(g_spare_calls == 1);
 	CHECK(g_spare_a1[0] == BLOB_BASE);
-	CHECK(g_spare_a2[0] == DS45_SHIM_BLOB_LEN);
+	CHECK(g_spare_a2[0] == NPP_SHIM_BLOB_LEN);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	kshim_remove();
 	return 0;
@@ -878,14 +878,14 @@ static int test_install_refuses_nonzero_region(void)
 	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
 
 	setup();                                 /* non-zero in the flush OPD, at the end */
-	put_q(BLOB_BASE + DS45_SHIM_BLOB_LEN + 8, 0x0000000000000001ULL);
+	put_q(BLOB_BASE + NPP_SHIM_BLOB_LEN + 8, 0x0000000000000001ULL);
 	take_snap(&before);
 	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
 
 	setup();                                 /* just past the checked region: harmless */
-	put_q(BLOB_BASE + DS45_SHIM_BLOB_LEN + 16, 0x0000000000000001ULL);
+	put_q(BLOB_BASE + NPP_SHIM_BLOB_LEN + 16, 0x0000000000000001ULL);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN + 16) == 1);   /* left untouched */
+	CHECK(rd(BLOB_BASE + NPP_SHIM_BLOB_LEN + 16) == 1);   /* left untouched */
 	kshim_remove();
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
@@ -899,12 +899,12 @@ static int test_install_refuses_over_bound(void)
 	struct snap before;
 
 	setup();                                 /* no room for the flush OPD */
-	g_ent.exec_bound = BLOB_BASE + DS45_SHIM_BLOB_LEN;
+	g_ent.exec_bound = BLOB_BASE + NPP_SHIM_BLOB_LEN;
 	take_snap(&before);
 	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
 
 	setup();                                 /* exactly enough room installs */
-	g_ent.exec_bound = BLOB_BASE + DS45_SHIM_BLOB_LEN + 16;
+	g_ent.exec_bound = BLOB_BASE + NPP_SHIM_BLOB_LEN + 16;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	kshim_remove();
 
@@ -928,12 +928,12 @@ static int test_remove_zeroes_blob(void)
 		setup();
 		g_cfg.shim_inline_pid = g;
 		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-		CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
+		CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA) == NPP_SHIM_MAGIC);
 
 		kshim_remove();
 
 		/* the whole region [exec_base, exec_base + blob + flush OPD) reads zero */
-		size = (uint64_t)DS45_SHIM_BLOB_LEN + 16;   /* flush_desc set in setup */
+		size = (uint64_t)NPP_SHIM_BLOB_LEN + 16;   /* flush_desc set in setup */
 		for (off = 0; off < size; off += 8)
 			CHECK(rd(BLOB_BASE + off) == 0);
 
@@ -1051,7 +1051,7 @@ static int test_remove_keeps_hooks_on_failed_revert(void)
 
 	setup();
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
+	CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA) == NPP_SHIM_MAGIC);
 
 	/* drop every revert poke, so the hooks stay live */
 	pokes = fake_lv2_poke_count;
@@ -1061,7 +1061,7 @@ static int test_remove_keeps_hooks_on_failed_revert(void)
 
 	/* scrub must be a no-op: the blob is left intact */
 	kshim_scrub();
-	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC);
+	CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA) == NPP_SHIM_MAGIC);
 	CHECK(rd(BLOB_BASE) != 0);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
@@ -1084,14 +1084,14 @@ static int test_adopt_remove_zeroes_blob(void)
 	/* a valid adoptable blob at BLOB_BASE (!= A), laid down by hand */
 	g_ent.exec_base = BLOB_BASE;
 	g_ent.exec_bound = EXEC_BOUND;
-	put_q(EVENT_SLOT, BLOB_BASE + DS45_SHIM_OFF_EVENT);
-	put_q(ENABLE_SLOT, BLOB_BASE + DS45_SHIM_OFF_ENABLE);
-	put_q(INPUT_SLOT, BLOB_BASE + DS45_SHIM_OFF_INPUT);
+	put_q(EVENT_SLOT, BLOB_BASE + NPP_SHIM_OFF_EVENT);
+	put_q(ENABLE_SLOT, BLOB_BASE + NPP_SHIM_OFF_ENABLE);
+	put_q(INPUT_SLOT, BLOB_BASE + NPP_SHIM_OFF_INPUT);
 	put_q(BLOB_BASE, 0xC0DEC0DEC0DEC0DEULL);                   /* fake blob code */
-	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA, DS45_SHIM_MAGIC);
-	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, version),
-	      ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
-	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_applied), 0);
+	put_q(BLOB_BASE + NPP_SHIM_OFF_DATA, NPP_SHIM_MAGIC);
+	put_q(BLOB_BASE + NPP_SHIM_OFF_DATA + offsetof(npp_shim_data_t, version),
+	      ((uint64_t)NPP_SHIM_VERSION << 32) | 1);
+	put_q(BLOB_BASE + NPP_SHIM_OFF_DATA + offsetof(npp_shim_data_t, pid_applied), 0);
 
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);     /* adopted at BLOB_BASE */
 
@@ -1099,7 +1099,7 @@ static int test_adopt_remove_zeroes_blob(void)
 	kshim_scrub();
 
 	/* the adopted base is the one scrubbed */
-	for (off = 0; off < (uint64_t)DS45_SHIM_BLOB_LEN + 16; off += 8)
+	for (off = 0; off < (uint64_t)NPP_SHIM_BLOB_LEN + 16; off += 8)
 		CHECK(rd(BLOB_BASE + off) == 0);
 	CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
 	CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
@@ -1117,15 +1117,15 @@ static int test_install_no_flush_leaves_tail(void)
 
 	setup();
 	g_ent.flush_desc = 0;
-	put_q(BLOB_BASE + DS45_SHIM_BLOB_LEN, sentinel);
+	put_q(BLOB_BASE + NPP_SHIM_BLOB_LEN, sentinel);
 
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	CHECK(g_spare_calls == 0);                                 /* nothing borrowed */
-	CHECK(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN) == sentinel);     /* no flush OPD written */
+	CHECK(rd(BLOB_BASE + NPP_SHIM_BLOB_LEN) == sentinel);     /* no flush OPD written */
 
 	kshim_remove();
-	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == 0);            /* blob zeroed */
-	CHECK(rd(BLOB_BASE + DS45_SHIM_BLOB_LEN) == sentinel);     /* tail untouched */
+	CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA) == 0);            /* blob zeroed */
+	CHECK(rd(BLOB_BASE + NPP_SHIM_BLOB_LEN) == sentinel);     /* tail untouched */
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
 }
@@ -1144,7 +1144,7 @@ static int test_inline_rows_gated(void)
 	CHECK(rd(PID0_QA) == ((PID0_Q & HI32) | PID0_WORD));
 	CHECK(rd(PID1_QA) == ((PID1_Q & HI32) | PID1_WORD));
 	CHECK(rd(HELPER_QA) == ((HELPER_Q & HI32) | HELPER_WORD));
-	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_EVENT);
 	kshim_remove();
 
 	/* with the gate on, an inline site that is not as researched refuses the
@@ -1193,12 +1193,12 @@ static int test_input_hook_gated(void)
 
 	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);                       /* left original */
 	CHECK(!wlog_has(INPUT_SLOT));                              /* never written */
-	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);   /* the rest install */
-	CHECK(rd(ENABLE_SLOT) == BLOB_BASE + DS45_SHIM_OFF_ENABLE);
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_EVENT);   /* the rest install */
+	CHECK(rd(ENABLE_SLOT) == BLOB_BASE + NPP_SHIM_OFF_ENABLE);
 	CHECK(rd(HELPER_QA) == ((HELPER_Q & HI32) | HELPER_WORD));
 	/* the data block still records the input original the hooks would tail-call */
-	CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
-	         offsetof(ds45_shim_data_t, orig_input)) == INPUT_ORIG);
+	CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA +
+	         offsetof(npp_shim_data_t, orig_input)) == INPUT_ORIG);
 
 	/* the shorter journal reverts event, enable and helper; the input slot was
 	 * never ours, so it is left exactly as found */
@@ -1213,7 +1213,7 @@ static int test_input_hook_gated(void)
 	setup();
 	g_cfg.shim_input_hook = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);
+	CHECK(rd(INPUT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_INPUT);
 	kshim_remove();
 	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
 	CHECK(fake_lv2_out_of_bounds == 0);
@@ -1224,19 +1224,19 @@ static int test_input_hook_gated(void)
  * is then used), and the connection-table address is written either way. */
 static int test_stable_id_switch(void)
 {
-	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	const uint64_t db = BLOB_BASE + NPP_SHIM_OFF_DATA;
 
 	setup();
 	g_cfg.shim_stable_id = 0;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK((rd(db + offsetof(ds45_shim_data_t, stable_id)) >> 32) == 0);
-	CHECK(rd(db + offsetof(ds45_shim_data_t, conn_tbl)) == CONN_TBL);
+	CHECK((rd(db + offsetof(npp_shim_data_t, stable_id)) >> 32) == 0);
+	CHECK(rd(db + offsetof(npp_shim_data_t, conn_tbl)) == CONN_TBL);
 	kshim_remove();
 
 	setup();
 	g_cfg.shim_stable_id = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK((rd(db + offsetof(ds45_shim_data_t, stable_id)) >> 32) == 1);
+	CHECK((rd(db + offsetof(npp_shim_data_t, stable_id)) >> 32) == 1);
 	kshim_remove();
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
@@ -1247,7 +1247,7 @@ static int test_stable_id_switch(void)
  * from the firmware row. */
 static int test_output_fields(void)
 {
-	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	const uint64_t db = BLOB_BASE + NPP_SHIM_OFF_DATA;
 	static const int modes[] = { 0, 1, 2, 3, -1, 99 };
 	static const uint32_t want[] = { 0, 1, 2, 0, 0, 0 };
 	size_t m;
@@ -1256,8 +1256,8 @@ static int test_output_fields(void)
 		setup();
 		g_cfg.shim_output_mode = modes[m];
 		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-		CHECK((rd(db + offsetof(ds45_shim_data_t, out_mode)) >> 32) == want[m]);
-		CHECK(rd(db + offsetof(ds45_shim_data_t, orig_output)) == OUTPUT_ORIG);
+		CHECK((rd(db + offsetof(npp_shim_data_t, out_mode)) >> 32) == want[m]);
+		CHECK(rd(db + offsetof(npp_shim_data_t, orig_output)) == OUTPUT_ORIG);
 		kshim_remove();
 	}
 
@@ -1267,8 +1267,8 @@ static int test_output_fields(void)
 	g_ent.orig_output = 0;
 	g_cfg.shim_output_mode = 2;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(rd(db + offsetof(ds45_shim_data_t, orig_output)) == 0);
-	CHECK((rd(db + offsetof(ds45_shim_data_t, out_mode)) >> 32) == 2);
+	CHECK(rd(db + offsetof(npp_shim_data_t, orig_output)) == 0);
+	CHECK((rd(db + offsetof(npp_shim_data_t, out_mode)) >> 32) == 2);
 	kshim_remove();
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
@@ -1283,10 +1283,10 @@ static int test_output_fields(void)
  * whatever the config says, so that case lives in test_output_adopt_v8.) */
 static int test_output_sites_hook_off(void)
 {
-	const uint64_t orig_at = BLOB_BASE + DS45_SHIM_OFF_DATA +
-	                         offsetof(ds45_shim_data_t, pid_orig);
-	const uint64_t applied_at = BLOB_BASE + DS45_SHIM_OFF_DATA +
-	                            offsetof(ds45_shim_data_t, pid_applied);
+	const uint64_t orig_at = BLOB_BASE + NPP_SHIM_OFF_DATA +
+	                         offsetof(npp_shim_data_t, pid_orig);
+	const uint64_t applied_at = BLOB_BASE + NPP_SHIM_OFF_DATA +
+	                            offsetof(npp_shim_data_t, pid_applied);
 	int g, i, mode, pokes, bare_pokes;
 
 	for (g = 0; g < 2; g++) {
@@ -1324,8 +1324,8 @@ static int test_output_sites_hook_off(void)
 			}
 			CHECK((rd(applied_at) >> 32) == (g ? 7u : 1u));
 			/* the output sender's address and the mode still reach the block */
-			CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
-			         offsetof(ds45_shim_data_t, orig_output)) == OUTPUT_ORIG);
+			CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA +
+			         offsetof(npp_shim_data_t, orig_output)) == OUTPUT_ORIG);
 			kshim_remove();
 			CHECK(fake_lv2_out_of_bounds == 0);
 		}
@@ -1383,7 +1383,7 @@ static int test_code_hash_is_of_the_aligned_qword(void)
 		b[i]     = (uint8_t)(ENABLE_CODE_Q >> (24 - 8 * i));
 		b[4 + i] = (uint8_t)(next >> (56 - 8 * i));
 	}
-	g_ent.enable_code_hash = ds45_fnv1a64(b, 8);
+	g_ent.enable_code_hash = npp_fnv1a64(b, 8);
 	CHECK(g_ent.enable_code_hash != qhash(ENABLE_CODE_Q));
 	take_snap(&before);
 	CHECK(refused_untouched(&before, fake_lv2_poke_count) == 0);
@@ -1498,7 +1498,7 @@ static int test_rollback_each_step(void)
 		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 		pokes = fake_lv2_poke_count;
 		kshim_remove();
-		CHECK(fake_lv2_poke_count - pokes == n + (DS45_SHIM_BLOB_LEN + 16) / 8);
+		CHECK(fake_lv2_poke_count - pokes == n + (NPP_SHIM_BLOB_LEN + 16) / 8);
 		apply_start = pokes - n;
 
 		for (i = 0; i < n; i++)
@@ -1509,14 +1509,14 @@ static int test_rollback_each_step(void)
 	 * ships magic/version; orig_event at +16 is zero in it). With no allocator
 	 * the blob copy is the installer's first write, so the data block begins at
 	 * poke BLOB_LEN/8. */
-	CHECK(offsetof(ds45_shim_data_t, orig_event) == 16);
-	CHECK(fail_at(DS45_SHIM_BLOB_LEN / 8 + 2, 0) == 0);
+	CHECK(offsetof(npp_shim_data_t, orig_event) == 16);
+	CHECK(fail_at(NPP_SHIM_BLOB_LEN / 8 + 2, 0) == 0);
 
 	/* a blob qword well into the copy whose written value is non-zero */
-	for (off = 64; off < DS45_SHIM_OFF_DATA; off += 8)
+	for (off = 64; off < NPP_SHIM_OFF_DATA; off += 8)
 		if (blob_q(off) != 0 || is_reloc(off))
 			break;
-	CHECK(off < DS45_SHIM_OFF_DATA);
+	CHECK(off < NPP_SHIM_OFF_DATA);
 	CHECK(fail_at((int)(off / 8), 0) == 0);
 	return 0;
 }
@@ -1545,7 +1545,7 @@ static int test_install_is_gated_by_enable_shim(void)
 	/* the same row and the same image install as soon as the flag is set */
 	g_cfg.enable_shim = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_EVENT);
 	kshim_remove();
 
 	/* kshim_install(), the built-in-table entry point, is gated the same way */
@@ -1562,7 +1562,7 @@ static int test_install_is_gated_by_enable_shim(void)
 
 static uint64_t db_q(size_t off)
 {
-	return rd(BLOB_BASE + DS45_SHIM_OFF_DATA + off);
+	return rd(BLOB_BASE + NPP_SHIM_OFF_DATA + off);
 }
 
 /* A second install finds the event slot pointing at a blob (with the enable and
@@ -1583,10 +1583,10 @@ static int test_adopt_via_event_slot(void)
 		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 
 		/* the install recorded the originals of what it applied */
-		CHECK(db_q(offsetof(ds45_shim_data_t, pid_orig)) == HELPER_Q);
-		CHECK(db_q(offsetof(ds45_shim_data_t, pid_orig) + 8) == (g ? PID0_Q : 0));
-		CHECK(db_q(offsetof(ds45_shim_data_t, pid_orig) + 16) == (g ? PID1_Q : 0));
-		CHECK((uint32_t)(db_q(offsetof(ds45_shim_data_t, pid_applied)) >> 32) ==
+		CHECK(db_q(offsetof(npp_shim_data_t, pid_orig)) == HELPER_Q);
+		CHECK(db_q(offsetof(npp_shim_data_t, pid_orig) + 8) == (g ? PID0_Q : 0));
+		CHECK(db_q(offsetof(npp_shim_data_t, pid_orig) + 16) == (g ? PID1_Q : 0));
+		CHECK((uint32_t)(db_q(offsetof(npp_shim_data_t, pid_applied)) >> 32) ==
 		      (g ? 7u : 1u));
 
 		/* the next load adopts it (whatever its own SHIM_INLINE_PID says: what
@@ -1598,7 +1598,7 @@ static int test_adopt_via_event_slot(void)
 		CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 		CHECK(fake_lv2_poke_count == pokes);   /* zero pokes */
 		CHECK(g_spare_calls == 0);             /* nothing re-allocated */
-		CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);
+		CHECK(rd(EVENT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_EVENT);
 		/* the console log names the word edits the adopted install recorded */
 		CHECK(g_tr_applied_n == 1 && g_tr_applied == (g ? 7u : 1u));
 
@@ -1634,8 +1634,8 @@ static int test_adopt_via_event_slot(void)
  * others - and the redirects - are still adopted and restored. */
 static int test_adopt_skips_corrupt_orig(void)
 {
-	const uint64_t orig_at = BLOB_BASE + DS45_SHIM_OFF_DATA +
-	                         offsetof(ds45_shim_data_t, pid_orig);
+	const uint64_t orig_at = BLOB_BASE + NPP_SHIM_OFF_DATA +
+	                         offsetof(npp_shim_data_t, pid_orig);
 	uint64_t helper_patched, pid1_changed;
 	int pokes;
 
@@ -1671,7 +1671,7 @@ static int test_adopt_skips_corrupt_orig(void)
 	 * adoption, see test_recv_adopt_v10.) */
 	setup();
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED); /* helper only */
-	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_applied),
+	put_q(BLOB_BASE + NPP_SHIM_OFF_DATA + offsetof(npp_shim_data_t, pid_applied),
 	      (uint64_t)0xFFFFFC7Fu << 32);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_remove();
@@ -1693,20 +1693,20 @@ static int test_adopt_requires_the_same_version(void)
 
 	/* same magic, another version: the version is the high word of the qword at
 	 * data+8 (its low word is `enabled`) */
-	CHECK(offsetof(ds45_shim_data_t, version) == 8);
-	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + 8,
-	      ((uint64_t)(DS45_SHIM_VERSION - 1) << 32) | 1);
+	CHECK(offsetof(npp_shim_data_t, version) == 8);
+	put_q(BLOB_BASE + NPP_SHIM_OFF_DATA + 8,
+	      ((uint64_t)(NPP_SHIM_VERSION - 1) << 32) | 1);
 
 	g_spare_calls = 0;
 	pokes = fake_lv2_poke_count;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
 	CHECK(fake_lv2_poke_count == pokes);   /* zero pokes */
 	CHECK(g_spare_calls == 0);             /* nothing borrowed */
-	CHECK(rd(EVENT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_EVENT);   /* left as found */
+	CHECK(rd(EVENT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_EVENT);   /* left as found */
 
 	/* the current version is adopted */
-	put_q(BLOB_BASE + DS45_SHIM_OFF_DATA + 8,
-	      ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
+	put_q(BLOB_BASE + NPP_SHIM_OFF_DATA + 8,
+	      ((uint64_t)NPP_SHIM_VERSION << 32) | 1);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_remove();
 	return 0;
@@ -1731,7 +1731,7 @@ static int test_remove_restores_all(void)
 		pokes = fake_lv2_poke_count;
 		kshim_remove();
 		CHECK(fake_lv2_poke_count - pokes ==
-		      (g ? 6 : 4) + (DS45_SHIM_BLOB_LEN + 16) / 8);
+		      (g ? 6 : 4) + (NPP_SHIM_BLOB_LEN + 16) / 8);
 		take_snap(&after);
 		CHECK(snap_eq(&before, &after));
 		CHECK(rd(EVENT_SLOT) == EVENT_ORIG);
@@ -1741,7 +1741,7 @@ static int test_remove_restores_all(void)
 		CHECK(rd(PID0_QA) == PID0_Q && rd(PID1_QA) == PID1_Q);
 
 		/* the fixed blob region is zeroed on unload (it cannot be freed) */
-		CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == 0);
+		CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA) == 0);
 		CHECK(rd(BLOB_BASE) == 0);
 
 		/* remove again is a harmless no-op */
@@ -1770,8 +1770,8 @@ static int test_word_rows_do_not_follow_the_load_base(void)
 		kshim_remove();
 	}
 	CHECK(h[0] == ((HELPER_Q & HI32) | HELPER_WORD) && h[1] == h[0]);
-	CHECK(ev[0] == base[0] + DS45_SHIM_OFF_EVENT);
-	CHECK(ev[1] == base[1] + DS45_SHIM_OFF_EVENT);
+	CHECK(ev[0] == base[0] + NPP_SHIM_OFF_EVENT);
+	CHECK(ev[1] == base[1] + NPP_SHIM_OFF_EVENT);
 	return 0;
 }
 
@@ -1795,7 +1795,7 @@ static int test_helper_branch_row(void)
 
 	for (i = 0; i < 2; i++) {
 		setup();
-		g_ent.pid_patches[0].kind = DS45_KPATCH_BRANCH;
+		g_ent.pid_patches[0].kind = NPP_KPATCH_BRANCH;
 		g_ent.pid_patches[0].value = 0;
 		g_ent.exec_base = base[i];
 		g_ent.exec_bound = base[i] + 0x4000;
@@ -1806,14 +1806,14 @@ static int test_helper_branch_row(void)
 		 * the blob; the other half of the qword is untouched */
 		h[i] = rd(HELPER_QA);
 		CHECK((h[i] & 0xFFFFFFFFULL) ==
-		      ppc_b(HELPER_SITE, base[i] + DS45_SHIM_OFF_PID_OK));
+		      ppc_b(HELPER_SITE, base[i] + NPP_SHIM_OFF_PID_OK));
 		CHECK((h[i] & HI32) == (HELPER_Q & HI32));
 
 		/* the recorded original is the helper's qword, and only that site is live */
-		CHECK(rd(base[i] + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_orig)) ==
+		CHECK(rd(base[i] + NPP_SHIM_OFF_DATA + offsetof(npp_shim_data_t, pid_orig)) ==
 		      HELPER_Q);
-		CHECK((uint32_t)(rd(base[i] + DS45_SHIM_OFF_DATA +
-		                    offsetof(ds45_shim_data_t, pid_applied)) >> 32) == 1u);
+		CHECK((uint32_t)(rd(base[i] + NPP_SHIM_OFF_DATA +
+		                    offsetof(npp_shim_data_t, pid_applied)) >> 32) == 1u);
 
 		/* the next load adopts it, and removing the adopted install restores the
 		 * helper exactly (a branch row must adopt like a word row) */
@@ -1829,7 +1829,7 @@ static int test_helper_branch_row(void)
 
 	/* a helper that no longer holds the researched qword is refused, nothing written */
 	setup();
-	g_ent.pid_patches[0].kind = DS45_KPATCH_BRANCH;
+	g_ent.pid_patches[0].kind = NPP_KPATCH_BRANCH;
 	g_ent.pid_patches[0].value = 0;
 	put_q(HELPER_QA, HELPER_Q ^ 1);
 	take_snap(&pristine);
@@ -1851,7 +1851,7 @@ static int check_out_sites(uint64_t base, int call, int cap, int buf, int recv)
 {
 	int i;
 
-	const uint64_t bl = ((uint64_t)ppc_bl(OUT_CALL_QA, base + DS45_SHIM_OFF_OUTPUT) << 32) |
+	const uint64_t bl = ((uint64_t)ppc_bl(OUT_CALL_QA, base + NPP_SHIM_OFF_OUTPUT) << 32) |
 	                    (OUT_Q(0) & 0xFFFFFFFFULL);
 
 	CHECK_SUB(rd(OUT_CALL_QA) == (call ? bl : OUT_Q(0)) ? 0 : __LINE__);
@@ -1867,14 +1867,14 @@ static int check_out_sites(uint64_t base, int call, int cap, int buf, int recv)
 
 static uint64_t pid_orig_at(uint64_t base, int site)
 {
-	return rd(base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_orig) +
+	return rd(base + NPP_SHIM_OFF_DATA + offsetof(npp_shim_data_t, pid_orig) +
 	          8 * (uint64_t)site);
 }
 
 static uint32_t pid_applied_at(uint64_t base)
 {
-	return (uint32_t)(rd(base + DS45_SHIM_OFF_DATA +
-	                     offsetof(ds45_shim_data_t, pid_applied)) >> 32);
+	return (uint32_t)(rd(base + NPP_SHIM_OFF_DATA +
+	                     offsetof(npp_shim_data_t, pid_applied)) >> 32);
 }
 
 /* The power-off sites (10-13) as they stand after an install at base: site bit i of
@@ -1884,7 +1884,7 @@ static uint32_t pid_applied_at(uint64_t base)
  * The encodings are worked out here independently (ppc_bl / ppc_b), not by kpatch. */
 static uint64_t po_target(int i, uint64_t base)
 {
-	return base + (i == 0 ? DS45_SHIM_OFF_POWEROFF : DS45_SHIM_OFF_TEARDOWN);
+	return base + (i == 0 ? NPP_SHIM_OFF_POWEROFF : NPP_SHIM_OFF_TEARDOWN);
 }
 
 static uint64_t po_patched_q(int i, uint64_t base)
@@ -1910,7 +1910,7 @@ static int check_po_sites(uint64_t base, unsigned patched)
  * 8, the low word otherwise). */
 static uint32_t db_u32(size_t off)
 {
-	const uint64_t q = rd(BLOB_BASE + DS45_SHIM_OFF_DATA + (off & ~(size_t)7));
+	const uint64_t q = rd(BLOB_BASE + NPP_SHIM_OFF_DATA + (off & ~(size_t)7));
 
 	return (off & 4) ? (uint32_t)q : (uint32_t)(q >> 32);
 }
@@ -1920,7 +1920,7 @@ static int blob_zeroed(void)
 {
 	uint64_t off;
 
-	for (off = 0; off < (uint64_t)DS45_SHIM_BLOB_LEN + 16; off += 8)
+	for (off = 0; off < (uint64_t)NPP_SHIM_BLOB_LEN + 16; off += 8)
 		if (rd(BLOB_BASE + off) != 0)
 			return 0;
 	return 1;
@@ -1933,7 +1933,7 @@ static int scrub_zeroes_blob(void)
 	const int pokes = fake_lv2_poke_count;
 
 	kshim_scrub();
-	CHECK_SUB(fake_lv2_poke_count - pokes == (DS45_SHIM_BLOB_LEN + 16) / 8 ? 0 : __LINE__);
+	CHECK_SUB(fake_lv2_poke_count - pokes == (NPP_SHIM_BLOB_LEN + 16) / 8 ? 0 : __LINE__);
 	CHECK_SUB(blob_zeroed() ? 0 : __LINE__);
 	return 0;
 }
@@ -1949,8 +1949,8 @@ static int scrub_keeps_blob(void)
 	kshim_scrub();
 	CHECK_SUB(fake_lv2_poke_count == pokes ? 0 : __LINE__);
 	CHECK_SUB(!blob_zeroed() ? 0 : __LINE__);
-	CHECK_SUB(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC ? 0 : __LINE__);
-	CHECK_SUB(rd(BLOB_BASE + DS45_SHIM_OFF_POWEROFF) != 0 ? 0 : __LINE__);   /* the stubs stay */
+	CHECK_SUB(rd(BLOB_BASE + NPP_SHIM_OFF_DATA) == NPP_SHIM_MAGIC ? 0 : __LINE__);
+	CHECK_SUB(rd(BLOB_BASE + NPP_SHIM_OFF_POWEROFF) != 0 ? 0 : __LINE__);   /* the stubs stay */
 	return 0;
 }
 
@@ -2039,10 +2039,10 @@ static int test_output_sites_gated(void)
 			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 			CHECK(check_out_sites(BLOB_BASE, c[t].call, c[t].cap, c[t].buf, c[t].cap) == 0);
 			/* the stage the blob runs: the mode, but 0 without the input hook */
-			CHECK((rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
-			          offsetof(ds45_shim_data_t, out_mode)) >> 32) ==
+			CHECK((rd(BLOB_BASE + NPP_SHIM_OFF_DATA +
+			          offsetof(npp_shim_data_t, out_mode)) >> 32) ==
 			      (uint32_t)((c[t].in_off || c[t].mode < 0 || c[t].mode > 2) ? 0 : c[t].mode));
-			CHECK(rd(INPUT_SLOT) == (c[t].in_off ? INPUT_ORIG : BLOB_BASE + DS45_SHIM_OFF_INPUT));
+			CHECK(rd(INPUT_SLOT) == (c[t].in_off ? INPUT_ORIG : BLOB_BASE + NPP_SHIM_OFF_INPUT));
 			want_mask = 1u | (g ? 6u : 0u) | (c[t].call ? 8u : 0u) |
 			            (c[t].cap ? 16u : 0u) | (c[t].buf ? 96u : 0u) |
 			            (c[t].cap ? 0x380u : 0u);   /* the receive words follow the cap word */
@@ -2155,7 +2155,7 @@ static int test_output_branchl_follows_load_base(void)
 
 		h[i] = rd(OUT_CALL_QA);
 		CHECK((uint32_t)(h[i] >> 32) ==
-		      ppc_bl(OUT_CALL_QA, base[i] + DS45_SHIM_OFF_OUTPUT));
+		      ppc_bl(OUT_CALL_QA, base[i] + NPP_SHIM_OFF_OUTPUT));
 		CHECK((h[i] & 0xFFFFFFFFULL) == (OUT_Q(0) & 0xFFFFFFFFULL));   /* low half kept */
 		CHECK(check_out_sites(base[i], 1, 1, 1, 1) == 0);
 		CHECK(pid_orig_at(base[i], 3) == OUT_Q(0));
@@ -2196,14 +2196,14 @@ static int test_buffer_slots_point_into_blob(void)
 			CHECK(rd(OUT_SLOT5) == pb[i]);
 			CHECK(rd(OUT_SLOT6) == pb[i] + 1);
 			CHECK((pb[i] & 7) == 0);
-			CHECK(pb[i] >= base[i] + DS45_SHIM_OFF_DATA);
-			CHECK(pb[i] + sizeof(((ds45_shim_data_t *)0)->pktbuf) <=
-			      base[i] + DS45_SHIM_BLOB_LEN);
+			CHECK(pb[i] >= base[i] + NPP_SHIM_OFF_DATA);
+			CHECK(pb[i] + sizeof(((npp_shim_data_t *)0)->pktbuf) <=
+			      base[i] + NPP_SHIM_BLOB_LEN);
 
 			kshim_remove();
 			CHECK(rd(OUT_SLOT5) == OLD_BUF);
 			CHECK(rd(OUT_SLOT6) == OLD_BUF + 1);
-			for (off = 0; off < (uint64_t)DS45_SHIM_BLOB_LEN + 16; off += 8)
+			for (off = 0; off < (uint64_t)NPP_SHIM_BLOB_LEN + 16; off += 8)
 				CHECK(rd(base[i] + off) == 0);
 		}
 	CHECK(pb[0] != pb[1]);                    /* the slots follow the load base */
@@ -2275,7 +2275,7 @@ static int test_output_branchl_out_of_range_refused(void)
 {
 	struct snap before;
 
-	CHECK(DS45_LV2_BOUND - DS45_LV2_BASE <= 0x2000000ULL);    /* window within reach */
+	CHECK(NPP_LV2_BOUND - NPP_LV2_BASE <= 0x2000000ULL);    /* window within reach */
 
 	setup();
 	plant_output_rows();
@@ -2335,7 +2335,7 @@ static int test_output_rollback_each_step(void)
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	pokes = fake_lv2_poke_count;
 	kshim_remove();
-	CHECK(fake_lv2_poke_count - pokes == n + (DS45_SHIM_BLOB_LEN + 16) / 8);
+	CHECK(fake_lv2_poke_count - pokes == n + (NPP_SHIM_BLOB_LEN + 16) / 8);
 	for (i = 0; i < n; i++)
 		CHECK(fail_at_out(pokes - n + i) == 0);
 	return 0;
@@ -2356,7 +2356,7 @@ static void order_on_peek(uint64_t addr)
 		HELPER_QA, PID0_QA, PID1_QA, OUT_SLOT5, OUT_SLOT6, OUT_CALL_QA, OUT_CAP_QA,
 		RECV_QA(0), RECV_QA(1), RECV_QA(2), EVENT_SLOT, ENABLE_SLOT, INPUT_SLOT
 	};
-	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	const uint64_t db = BLOB_BASE + NPP_SHIM_OFF_DATA;
 	int n0, i;
 
 	if (g_ord_in_cb)
@@ -2369,15 +2369,15 @@ static void order_on_peek(uint64_t addr)
 		if (sites[i] == addr) {
 			g_ord_in_cb = 1;
 			g_ord_checks++;
-			if (rd(db) != DS45_SHIM_MAGIC ||
-			    (uint32_t)(rd(db + offsetof(ds45_shim_data_t, version)) >> 32) !=
-			        DS45_SHIM_VERSION ||
-			    rd(db + offsetof(ds45_shim_data_t, orig_output)) != OUTPUT_ORIG ||
-			    (uint32_t)(rd(db + offsetof(ds45_shim_data_t, pid_applied)) >> 32) != 0x3FFu ||
-			    rd(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 3) != OUT_Q(0) ||
-			    rd(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 5) != OLD_BUF ||
-			    rd(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 7) != RECV_Q(0) ||
-			    rd(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 9) != RECV_Q(2))
+			if (rd(db) != NPP_SHIM_MAGIC ||
+			    (uint32_t)(rd(db + offsetof(npp_shim_data_t, version)) >> 32) !=
+			        NPP_SHIM_VERSION ||
+			    rd(db + offsetof(npp_shim_data_t, orig_output)) != OUTPUT_ORIG ||
+			    (uint32_t)(rd(db + offsetof(npp_shim_data_t, pid_applied)) >> 32) != 0x3FFu ||
+			    rd(db + offsetof(npp_shim_data_t, pid_orig) + 8 * 3) != OUT_Q(0) ||
+			    rd(db + offsetof(npp_shim_data_t, pid_orig) + 8 * 5) != OLD_BUF ||
+			    rd(db + offsetof(npp_shim_data_t, pid_orig) + 8 * 7) != RECV_Q(0) ||
+			    rd(db + offsetof(npp_shim_data_t, pid_orig) + 8 * 9) != RECV_Q(2))
 				g_ord_bad++;
 			g_ord_in_cb = 0;
 		}
@@ -2455,12 +2455,12 @@ static int test_output_remove_restores_all(void)
 			n = 1 + (g ? 2 : 0) + 1 + (mode != 0) + 2 + 3 + 3 * (mode != 0);
 			pokes = fake_lv2_poke_count;
 			kshim_remove();
-			CHECK(fake_lv2_poke_count - pokes == n + (DS45_SHIM_BLOB_LEN + 16) / 8);
+			CHECK(fake_lv2_poke_count - pokes == n + (NPP_SHIM_BLOB_LEN + 16) / 8);
 			take_snap(&after);
 			CHECK(snap_eq(&before, &after));
 			CHECK(check_out_sites(BLOB_BASE, 0, 0, 0, 0) == 0);
 			CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
-			CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == 0);
+			CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA) == 0);
 
 			pokes = fake_lv2_poke_count;
 			kshim_remove();                       /* again: a harmless no-op */
@@ -2477,7 +2477,7 @@ static int test_output_remove_restores_all(void)
  * adopted at all. */
 static int test_output_adopt_v8(void)
 {
-	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	const uint64_t db = BLOB_BASE + NPP_SHIM_OFF_DATA;
 	struct snap pristine, after;
 	uint32_t mask;
 	int pokes, g, mode, n;
@@ -2529,9 +2529,9 @@ static int test_output_adopt_v8(void)
 	g_cfg.shim_output_mode = 0;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	CHECK(pid_applied_at(BLOB_BASE) == (1u | 8u | 96u));
-	put_q(db + offsetof(ds45_shim_data_t, pid_applied),
+	put_q(db + offsetof(npp_shim_data_t, pid_applied),
 	      (uint64_t)(1u | 8u | 16u | 96u) << 32);
-	put_q(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 4, OUT_Q(1));
+	put_q(db + offsetof(npp_shim_data_t, pid_orig) + 8 * 4, OUT_Q(1));
 	{
 		const uint64_t call_changed = rd(OUT_CALL_QA) ^ 0x1;       /* the low half */
 		const uint64_t slot6_changed = pktbuf_at(BLOB_BASE) + 0x20;
@@ -2611,14 +2611,14 @@ static int test_output_adopt_v8(void)
 	g_cfg.shim_output_hook = 1;
 	g_cfg.shim_output_mode = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	CHECK(DS45_SHIM_VERSION == 12);
-	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)7 << 32) | 1);
+	CHECK(NPP_SHIM_VERSION == 12);
+	put_q(db + offsetof(npp_shim_data_t, version), ((uint64_t)7 << 32) | 1);
 	g_spare_calls = 0;
 	pokes = fake_lv2_poke_count;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
 	CHECK(fake_lv2_poke_count == pokes && g_spare_calls == 0);
 	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);          /* left as found */
-	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
+	put_q(db + offsetof(npp_shim_data_t, version), ((uint64_t)NPP_SHIM_VERSION << 32) | 1);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_remove();
 	return 0;
@@ -2687,8 +2687,8 @@ static int test_recv_sites_gated(void)
 				CHECK((applied & 0x380u) == (c[t].recv ? 0x380u : 0u));
 				CHECK(!c[t].in_off || (applied & 0x10u) == 0);       /* no cap word either */
 				CHECK(!c[t].in_off ||
-				      (rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
-				          offsetof(ds45_shim_data_t, out_mode)) >> 32) == 0);
+				      (rd(BLOB_BASE + NPP_SHIM_OFF_DATA +
+				          offsetof(npp_shim_data_t, out_mode)) >> 32) == 0);
 				/* structural: never a receive row without both buffer slots */
 				if (applied & 0x380u)
 					CHECK((applied & 0x60u) == 0x60u);
@@ -2729,15 +2729,15 @@ static int test_recv_rows_exact(void)
 	                                     0x80000000000F91F4ULL };
 	static const uint64_t expect[3]  = { 0x069BC077D72F4325ULL, 0x57006EC0FDB88DBCULL,
 	                                     0x995A6CDC70F64A38ULL };
-	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
+	const npp_shim_kernel_t *k = &npp_shim_table[0];
 	int i;
 
-	CHECK(DS45_SHIM_RECV_PATCHES == 3);
-	CHECK(DS45_SHIM_PID_SITES == 14);
-	CHECK(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES +
-	      DS45_SHIM_RECV_PATCHES + DS45_SHIM_POWEROFF_PATCHES == DS45_SHIM_PID_SITES);
+	CHECK(NPP_SHIM_RECV_PATCHES == 3);
+	CHECK(NPP_SHIM_PID_SITES == 14);
+	CHECK(NPP_SHIM_PID_PATCHES + NPP_SHIM_INLINE_PATCHES + NPP_SHIM_OUTPUT_PATCHES +
+	      NPP_SHIM_RECV_PATCHES + NPP_SHIM_POWEROFF_PATCHES == NPP_SHIM_PID_SITES);
 	for (i = 0; i < 3; i++) {
-		CHECK(k->recv_patches[i].kind == DS45_KPATCH_WORD);
+		CHECK(k->recv_patches[i].kind == NPP_KPATCH_WORD);
 		CHECK(k->recv_patches[i].addr == addr[i]);
 		CHECK((k->recv_patches[i].addr & 7) == 4);     /* the low half of its qword */
 		CHECK(k->recv_patches[i].expect == expect[i]);
@@ -2746,7 +2746,7 @@ static int test_recv_rows_exact(void)
 	/* the channel-3 limit (0xF8484, in the qword 0xF8480) is not one of the rows */
 	for (i = 0; i < 3; i++)
 		CHECK((k->recv_patches[i].addr & ~7ULL) != 0x80000000000F8480ULL);
-	for (i = 0; i < DS45_SHIM_OUTPUT_PATCHES; i++)
+	for (i = 0; i < NPP_SHIM_OUTPUT_PATCHES; i++)
 		CHECK((k->output_patches[i].addr & ~7ULL) != 0x80000000000F8480ULL);
 	return 0;
 }
@@ -2927,7 +2927,7 @@ static int test_recv_remove_restores_all(void)
 			pokes = fake_lv2_poke_count;
 			kshim_remove();
 			CHECK(fake_lv2_poke_count - pokes ==
-			      (11 + (g ? 2 : 0)) + (DS45_SHIM_BLOB_LEN + 16) / 8);
+			      (11 + (g ? 2 : 0)) + (NPP_SHIM_BLOB_LEN + 16) / 8);
 			take_snap(&after);
 			CHECK(snap_eq(&before, &after));
 			for (i = 0; i < RECV_PATCHES_N; i++)
@@ -3009,11 +3009,11 @@ static int test_unload_order_recv_before_input(void)
  * that stops short of the new fields) is not adopted at all. */
 static int test_recv_adopt_v10(void)
 {
-	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	const uint64_t db = BLOB_BASE + NPP_SHIM_OFF_DATA;
 	struct snap pristine, after;
 	int pokes, g, i;
 
-	CHECK(DS45_SHIM_VERSION == 12);
+	CHECK(NPP_SHIM_VERSION == 12);
 
 	/* 1. adopt with another config and restore all of it */
 	for (g = 0; g < 2; g++) {
@@ -3061,10 +3061,10 @@ static int test_recv_adopt_v10(void)
 	g_cfg.shim_output_mode = 0;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	CHECK(pid_applied_at(BLOB_BASE) == (1u | 8u | 96u));
-	put_q(db + offsetof(ds45_shim_data_t, pid_applied),
+	put_q(db + offsetof(npp_shim_data_t, pid_applied),
 	      (uint64_t)(1u | 8u | 96u | 0x380u) << 32);
 	for (i = 0; i < RECV_PATCHES_N; i++)
-		put_q(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * (7 + i), RECV_Q(i));
+		put_q(db + offsetof(npp_shim_data_t, pid_orig) + 8 * (7 + i), RECV_Q(i));
 	CHECK(adopt_refused_check(0x380u) == 0);
 	for (i = 0; i < RECV_PATCHES_N; i++)
 		CHECK(rd(RECV_QA(i)) == RECV_Q(i));                /* never written */
@@ -3076,7 +3076,7 @@ static int test_recv_adopt_v10(void)
 	g_cfg.shim_output_hook = 1;
 	g_cfg.shim_output_mode = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	put_q(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 8, RECV_Q(1) ^ 0x10);
+	put_q(db + offsetof(npp_shim_data_t, pid_orig) + 8 * 8, RECV_Q(1) ^ 0x10);
 	CHECK(adopt_refused_check(0x100u) == 0);
 	for (i = 0; i < RECV_PATCHES_N; i++)
 		CHECK(rd(RECV_QA(i)) == ((RECV_Q(i) & HI32) | RECV_WORD));   /* still raised */
@@ -3121,7 +3121,7 @@ static int test_recv_adopt_v10(void)
 		CHECK(rd(RECV_QA(i)) == (((RECV_Q(i) & HI32) | RECV_WORD) ^ 0x1));   /* as found */
 		CHECK(rd(OUT_SLOT5) == pktbuf_at(BLOB_BASE) &&
 		      rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);                    /* as found */
-		CHECK(rd(INPUT_SLOT) == BLOB_BASE + DS45_SHIM_OFF_INPUT);            /* bounce stays */
+		CHECK(rd(INPUT_SLOT) == BLOB_BASE + NPP_SHIM_OFF_INPUT);            /* bounce stays */
 		CHECK(fake_lv2_out_of_bounds == 0);
 	}
 
@@ -3159,13 +3159,13 @@ static int test_recv_adopt_v10(void)
 	g_cfg.shim_output_hook = 1;
 	g_cfg.shim_output_mode = 1;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)9 << 32) | 1);
+	put_q(db + offsetof(npp_shim_data_t, version), ((uint64_t)9 << 32) | 1);
 	g_spare_calls = 0;
 	pokes = fake_lv2_poke_count;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
 	CHECK(fake_lv2_poke_count == pokes && g_spare_calls == 0);
 	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);    /* left as found */
-	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
+	put_q(db + offsetof(npp_shim_data_t, version), ((uint64_t)NPP_SHIM_VERSION << 32) | 1);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_remove();
 	CHECK(fake_lv2_out_of_bounds == 0);
@@ -3184,8 +3184,8 @@ static int test_recv_adopt_v10(void)
  * in the row: the hook-on cases are the test_poweroff_* tests below. */
 static int test_poweroff_sites_unselected_by_default(void)
 {
-	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
-	uint8_t blk[sizeof(ds45_shim_data_t)];
+	const uint64_t db = BLOB_BASE + NPP_SHIM_OFF_DATA;
+	uint8_t blk[sizeof(npp_shim_data_t)];
 	int populate, mismatch, active, g, i, n, pokes;
 	uint32_t applied;
 	struct snap before, after;
@@ -3205,7 +3205,7 @@ static int test_poweroff_sites_unselected_by_default(void)
 					}
 					if (populate)
 						for (i = 0; i < PO_PATCHES_N; i++) {
-							g_ent.poweroff_patches[i].kind = DS45_KPATCH_WORD;
+							g_ent.poweroff_patches[i].kind = NPP_KPATCH_WORD;
 							g_ent.poweroff_patches[i].addr = PO_QA(i) + 4;
 							g_ent.poweroff_patches[i].expect = qhash(PO_Q(i));
 							g_ent.poweroff_patches[i].value = 0x60000000u + (uint32_t)i;
@@ -3221,10 +3221,10 @@ static int test_poweroff_sites_unselected_by_default(void)
 					CHECK((applied & 0x3C00u) == 0);          /* bits 10-13 clear */
 					/* exactly what was applied before: helper, inline, output, receive */
 					CHECK(applied == (1u | (g ? 6u : 0u) | (active ? 0x3F8u : 0x0u)));
-					CHECK(ds45_lv2_read_bytes(db, blk, (int)sizeof blk) == 0);
+					CHECK(npp_lv2_read_bytes(db, blk, (int)sizeof blk) == 0);
 					CHECK(poweroff_block_clear(blk) == 0);
 					for (i = 10; i < 14; i++)
-						CHECK(be64b(blk + offsetof(ds45_shim_data_t, pid_orig) + 8 * i) == 0);
+						CHECK(be64b(blk + offsetof(npp_shim_data_t, pid_orig) + 8 * i) == 0);
 					for (i = 0; i < PO_PATCHES_N; i++) {
 						CHECK(!wlog_has(PO_QA(i)));          /* never written */
 						if (populate)
@@ -3250,12 +3250,12 @@ static int test_poweroff_sites_unselected_by_default(void)
 	setup();
 	plant_output_rows();
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)11 << 32) | 1);
+	put_q(db + offsetof(npp_shim_data_t, version), ((uint64_t)11 << 32) | 1);
 	g_spare_calls = 0;
 	pokes = fake_lv2_poke_count;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
 	CHECK(fake_lv2_poke_count == pokes && g_spare_calls == 0);
-	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
+	put_q(db + offsetof(npp_shim_data_t, version), ((uint64_t)NPP_SHIM_VERSION << 32) | 1);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_remove();
 	return 0;
@@ -3336,11 +3336,11 @@ static int test_poweroff_sites_gated(void)
 					CHECK(wlog_has(PO_QA(i)) == (int)((c[t].sel >> i) & 1));
 				}
 				/* the block carries the mode (0 or 1 only) and the two code addresses */
-				CHECK(db_u32(offsetof(ds45_shim_data_t, po_mode)) == c[t].po_mode);
-				CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
-				         offsetof(ds45_shim_data_t, orig_poweroff)) == c[t].orig_po);
-				CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
-				         offsetof(ds45_shim_data_t, orig_teardown)) == c[t].orig_td);
+				CHECK(db_u32(offsetof(npp_shim_data_t, po_mode)) == c[t].po_mode);
+				CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA +
+				         offsetof(npp_shim_data_t, orig_poweroff)) == c[t].orig_po);
+				CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA +
+				         offsetof(npp_shim_data_t, orig_teardown)) == c[t].orig_td);
 
 				/* the journal: helper, [2 inline,] 3 redirects, [3 output sites, the cap
 				 * word and 3 receive words,] the selected power-off sites */
@@ -3460,7 +3460,7 @@ static int test_poweroff_branch_targets(void)
 	uint64_t h[2][PO_PATCHES_N];
 	int i, b, act;
 
-	CHECK(DS45_SHIM_OFF_POWEROFF != DS45_SHIM_OFF_TEARDOWN);   /* the dispatch is visible */
+	CHECK(NPP_SHIM_OFF_POWEROFF != NPP_SHIM_OFF_TEARDOWN);   /* the dispatch is visible */
 
 	for (act = 0; act < 2; act++)
 		for (b = 0; b < 2; b++) {
@@ -3631,7 +3631,7 @@ static int test_poweroff_with_all_hooks_fits_journal(void)
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 	pokes = fake_lv2_poke_count;
 	kshim_remove();
-	CHECK(fake_lv2_poke_count - pokes == n + (DS45_SHIM_BLOB_LEN + 16) / 8);
+	CHECK(fake_lv2_poke_count - pokes == n + (NPP_SHIM_BLOB_LEN + 16) / 8);
 	for (i = 0; i < n; i++)
 		CHECK(fail_at_po(pokes - n + i) == 0);
 	return 0;
@@ -3649,11 +3649,11 @@ static int test_poweroff_with_all_hooks_fits_journal(void)
  * fields) is not adopted. */
 static int test_poweroff_adopt_v12(void)
 {
-	const uint64_t db = BLOB_BASE + DS45_SHIM_OFF_DATA;
+	const uint64_t db = BLOB_BASE + NPP_SHIM_OFF_DATA;
 	struct snap pristine, after;
 	int pokes, i, mode;
 
-	CHECK(DS45_SHIM_VERSION == 12);
+	CHECK(NPP_SHIM_VERSION == 12);
 
 	/* 1. adopt with another (all hooks off) config: zero pokes, the recorded bits
 	 * named, every site restored in mirror order */
@@ -3744,7 +3744,7 @@ static int test_poweroff_adopt_v12(void)
 	g_cfg.shim_poweroff_hook = 1;
 	g_cfg.shim_poweroff_mode = 0;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	put_q(db + offsetof(ds45_shim_data_t, pid_orig) + 8 * 11, PO_Q(1) ^ 0x10);
+	put_q(db + offsetof(npp_shim_data_t, pid_orig) + 8 * 11, PO_Q(1) ^ 0x10);
 	memset(&g_ent.poweroff_patches[2], 0, sizeof g_ent.poweroff_patches[2]);
 	pokes = fake_lv2_poke_count;
 	g_tr_skipped = g_tr_refused = 0;
@@ -3798,13 +3798,13 @@ static int test_poweroff_adopt_v12(void)
 	g_cfg.shim_poweroff_hook = 1;
 	g_cfg.shim_poweroff_mode = 0;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
-	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)11 << 32) | 1);
+	put_q(db + offsetof(npp_shim_data_t, version), ((uint64_t)11 << 32) | 1);
 	g_spare_calls = 0;
 	pokes = fake_lv2_poke_count;
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_FAILED);
 	CHECK(fake_lv2_poke_count == pokes && g_spare_calls == 0);
 	CHECK(check_po_sites(BLOB_BASE, 0xF) == 0);              /* left as found */
-	put_q(db + offsetof(ds45_shim_data_t, version), ((uint64_t)DS45_SHIM_VERSION << 32) | 1);
+	put_q(db + offsetof(npp_shim_data_t, version), ((uint64_t)NPP_SHIM_VERSION << 32) | 1);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_remove();
 	CHECK(check_po_sites(BLOB_BASE, 0) == 0);
@@ -3838,23 +3838,23 @@ static int test_poweroff_data_block_fields(void)
 			g_cfg.shim_poweroff_mode = c[t].mode;
 			CHECK(kshim_install_from(&g_ent, 1) == KSHIM_INSTALLED);
 
-			CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
-			         offsetof(ds45_shim_data_t, orig_poweroff)) == (z ? 0 : PO_ORIG));
-			CHECK(rd(BLOB_BASE + DS45_SHIM_OFF_DATA +
-			         offsetof(ds45_shim_data_t, orig_teardown)) == (z ? 0 : TD_ORIG));
-			CHECK(db_u32(offsetof(ds45_shim_data_t, po_mode)) == c[t].po_mode);
-			CHECK(db_u32(offsetof(ds45_shim_data_t, po_mode)) <= 1);
-			CHECK(db_u32(offsetof(ds45_shim_data_t, po_seq)) == 0);
-			CHECK(db_u32(offsetof(ds45_shim_data_t, dbg_po_calls)) == 0);
-			CHECK(db_u32(offsetof(ds45_shim_data_t, dbg_po_ds)) == 0);
-			CHECK(db_u32(offsetof(ds45_shim_data_t, dbg_po_rewritten)) == 0);
-			CHECK(db_u32(offsetof(ds45_shim_data_t, dbg_po_passed)) == 0);
-			CHECK(db_u32(offsetof(ds45_shim_data_t, dbg_td_calls)) == 0);
-			CHECK(db_u32(offsetof(ds45_shim_data_t, dbg_td_rsvd)) == 0);
+			CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA +
+			         offsetof(npp_shim_data_t, orig_poweroff)) == (z ? 0 : PO_ORIG));
+			CHECK(rd(BLOB_BASE + NPP_SHIM_OFF_DATA +
+			         offsetof(npp_shim_data_t, orig_teardown)) == (z ? 0 : TD_ORIG));
+			CHECK(db_u32(offsetof(npp_shim_data_t, po_mode)) == c[t].po_mode);
+			CHECK(db_u32(offsetof(npp_shim_data_t, po_mode)) <= 1);
+			CHECK(db_u32(offsetof(npp_shim_data_t, po_seq)) == 0);
+			CHECK(db_u32(offsetof(npp_shim_data_t, dbg_po_calls)) == 0);
+			CHECK(db_u32(offsetof(npp_shim_data_t, dbg_po_ds)) == 0);
+			CHECK(db_u32(offsetof(npp_shim_data_t, dbg_po_rewritten)) == 0);
+			CHECK(db_u32(offsetof(npp_shim_data_t, dbg_po_passed)) == 0);
+			CHECK(db_u32(offsetof(npp_shim_data_t, dbg_td_calls)) == 0);
+			CHECK(db_u32(offsetof(npp_shim_data_t, dbg_td_rsvd)) == 0);
 			for (i = 0; i < 48; i += 4)
-				CHECK(db_u32(offsetof(ds45_shim_data_t, po_buf) + i) == 0);
+				CHECK(db_u32(offsetof(npp_shim_data_t, po_buf) + i) == 0);
 			for (i = 0; i < 128; i += 4)
-				CHECK(db_u32(offsetof(ds45_shim_data_t, po_ring) + i) == 0);
+				CHECK(db_u32(offsetof(npp_shim_data_t, po_ring) + i) == 0);
 			kshim_remove();
 		}
 	CHECK(fake_lv2_out_of_bounds == 0);
@@ -3879,10 +3879,10 @@ static const uint8_t c15_template[0x56] = {
 /* The built-in table carries exactly the one researched DEX 4.92 row. */
 static int test_builtin_table(void)
 {
-	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
+	const npp_shim_kernel_t *k = &npp_shim_table[0];
 	int i;
 
-	CHECK(ds45_shim_table_count == 1);
+	CHECK(npp_shim_table_count == 1);
 	CHECK(k->spare_syscall == 149u);
 
 	/* the fixed executable region: the free zero tail 0x57C000..0x580000 */
@@ -3909,54 +3909,54 @@ static int test_builtin_table(void)
 
 	/* the template is the facts note's C1.5 array, identity bytes zero */
 	CHECK(k->info_tmpl != NULL);
-	CHECK(memcmp(k->info_tmpl, c15_template, DS45_SHIM_INFO_LEN) == 0);
+	CHECK(memcmp(k->info_tmpl, c15_template, NPP_SHIM_INFO_LEN) == 0);
 	for (i = 8; i < 16; i++)
 		CHECK(k->info_tmpl[i] == 0);
 
 	/* acceptance: the helper always, as a branch at its first instruction to
 	 * shim_pid_ok (its value is the blob address, filled in at install); the two
 	 * inline words only with SHIM_INLINE_PID, which are WORD rows */
-	CHECK(DS45_SHIM_PID_PATCHES == 1);
-	CHECK(DS45_SHIM_INLINE_PATCHES == 2);
-	CHECK(k->pid_patches[0].kind == DS45_KPATCH_BRANCH);
+	CHECK(NPP_SHIM_PID_PATCHES == 1);
+	CHECK(NPP_SHIM_INLINE_PATCHES == 2);
+	CHECK(k->pid_patches[0].kind == NPP_KPATCH_BRANCH);
 	CHECK(k->pid_patches[0].addr == 0x800000000029E2B4ULL);
 	CHECK(k->pid_patches[0].expect == 0xF1B8B3EFF22A78FCULL);
 	CHECK(k->pid_patches[0].value == 0);
-	CHECK(k->inline_patches[0].kind == DS45_KPATCH_WORD);
+	CHECK(k->inline_patches[0].kind == NPP_KPATCH_WORD);
 	CHECK(k->inline_patches[0].addr == 0x800000000011B5E4ULL);
 	CHECK(k->inline_patches[0].expect == 0xE8ADD0EDF3B2B3C1ULL);
 	CHECK(k->inline_patches[0].value == 0x2F800CE6ULL);
-	CHECK(k->inline_patches[1].kind == DS45_KPATCH_WORD);
+	CHECK(k->inline_patches[1].kind == NPP_KPATCH_WORD);
 	CHECK(k->inline_patches[1].addr == 0x800000000011B5ECULL);
 	CHECK(k->inline_patches[1].expect == 0xF86140C9C3D7FB8DULL);
 	CHECK(k->inline_patches[1].value == 0x4BFFFC48ULL);
 
 	/* the DS3-route output rows (facts note 2026-11-03: F1.1 the two TOC slots,
 	 * F5 the hashes): sites 3-6 in order, and the sender the hook tail-calls */
-	CHECK(DS45_SHIM_OUTPUT_PATCHES == 4);
-	CHECK(DS45_SHIM_RECV_PATCHES == 3);
-	CHECK(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES +
-	      DS45_SHIM_RECV_PATCHES + DS45_SHIM_POWEROFF_PATCHES == DS45_SHIM_PID_SITES);
-	CHECK(DS45_SHIM_PID_SITES == 14);
+	CHECK(NPP_SHIM_OUTPUT_PATCHES == 4);
+	CHECK(NPP_SHIM_RECV_PATCHES == 3);
+	CHECK(NPP_SHIM_PID_PATCHES + NPP_SHIM_INLINE_PATCHES + NPP_SHIM_OUTPUT_PATCHES +
+	      NPP_SHIM_RECV_PATCHES + NPP_SHIM_POWEROFF_PATCHES == NPP_SHIM_PID_SITES);
+	CHECK(NPP_SHIM_PID_SITES == 14);
 	CHECK(k->orig_output == 0x800000000010283CULL);
 	/* [0] site 3: the bl to the sender, retargeted at install to the blob's entry */
-	CHECK(k->output_patches[0].kind == DS45_KPATCH_BRANCHL);
+	CHECK(k->output_patches[0].kind == NPP_KPATCH_BRANCHL);
 	CHECK(k->output_patches[0].addr == 0x80000000002A2DE8ULL);
 	CHECK(k->output_patches[0].expect == 0x2A29E6BB7BA10D5EULL);
 	CHECK(k->output_patches[0].value == 0);
 	/* [1] site 4: the send cap, cmplwi cr7,r31,0x4D (the compare is the low half) */
-	CHECK(k->output_patches[1].kind == DS45_KPATCH_WORD);
+	CHECK(k->output_patches[1].kind == NPP_KPATCH_WORD);
 	CHECK(k->output_patches[1].addr == 0x80000000000F8D74ULL);
 	CHECK(k->output_patches[1].expect == 0xBF27C253F5228E13ULL);
 	CHECK(k->output_patches[1].value == 0x2B9F004DULL);
 	/* [2] [3] sites 5 and 6: the two TOC slots; a PTR row compares the current
 	 * value (the old buffer, and the buffer plus one), the new one is the blob's
 	 * packet buffer, filled in at install */
-	CHECK(k->output_patches[2].kind == DS45_KPATCH_PTR);
+	CHECK(k->output_patches[2].kind == NPP_KPATCH_PTR);
 	CHECK(k->output_patches[2].addr == 0x8000000000372650ULL);
 	CHECK(k->output_patches[2].expect == 0x80000000004326C8ULL);
 	CHECK(k->output_patches[2].value == 0);
-	CHECK(k->output_patches[3].kind == DS45_KPATCH_PTR);
+	CHECK(k->output_patches[3].kind == NPP_KPATCH_PTR);
 	CHECK(k->output_patches[3].addr == 0x8000000000372660ULL);
 	CHECK(k->output_patches[3].expect == 0x80000000004326C9ULL);
 	CHECK(k->output_patches[3].value == 0);
@@ -3964,15 +3964,15 @@ static int test_builtin_table(void)
 	/* the receive-limit words (note 2026-11-03: F9 section 4), sites 7-9: WORD rows
 	 * `li r7,0x50`, the low half of their qwords (the rows themselves are pinned in
 	 * test_recv_rows_exact) */
-	CHECK(k->recv_patches[0].kind == DS45_KPATCH_WORD);
+	CHECK(k->recv_patches[0].kind == NPP_KPATCH_WORD);
 	CHECK(k->recv_patches[0].addr == 0x80000000000F9094ULL);
 	CHECK(k->recv_patches[0].expect == 0x069BC077D72F4325ULL);
 	CHECK(k->recv_patches[0].value == 0x38E00050ULL);
-	CHECK(k->recv_patches[1].kind == DS45_KPATCH_WORD);
+	CHECK(k->recv_patches[1].kind == NPP_KPATCH_WORD);
 	CHECK(k->recv_patches[1].addr == 0x80000000000F9134ULL);
 	CHECK(k->recv_patches[1].expect == 0x57006EC0FDB88DBCULL);
 	CHECK(k->recv_patches[1].value == 0x38E00050ULL);
-	CHECK(k->recv_patches[2].kind == DS45_KPATCH_WORD);
+	CHECK(k->recv_patches[2].kind == NPP_KPATCH_WORD);
 	CHECK(k->recv_patches[2].addr == 0x80000000000F91F4ULL);
 	CHECK(k->recv_patches[2].expect == 0x995A6CDC70F64A38ULL);
 	CHECK(k->recv_patches[2].value == 0x38E00050ULL);
@@ -3982,20 +3982,20 @@ static int test_builtin_table(void)
 	 * the pad run method, [1] and [3] the `bl 0x1174FC` teardown calls, [2] the tail
 	 * `b 0x1174FC`; the value is the blob's stub, filled in at install. The two code
 	 * addresses are the power-off sender and the teardown routine they lead to. */
-	CHECK(DS45_SHIM_POWEROFF_PATCHES == 4);
-	CHECK(k->poweroff_patches[0].kind == DS45_KPATCH_BRANCHL);
+	CHECK(NPP_SHIM_POWEROFF_PATCHES == 4);
+	CHECK(k->poweroff_patches[0].kind == NPP_KPATCH_BRANCHL);
 	CHECK(k->poweroff_patches[0].addr == 0x80000000000CA9BCULL);
 	CHECK(k->poweroff_patches[0].expect == 0x6D3B5A2728211E68ULL);
-	CHECK(k->poweroff_patches[1].kind == DS45_KPATCH_BRANCHL);
+	CHECK(k->poweroff_patches[1].kind == NPP_KPATCH_BRANCHL);
 	CHECK(k->poweroff_patches[1].addr == 0x80000000000F4D94ULL);
 	CHECK(k->poweroff_patches[1].expect == 0x28861307B803CC8EULL);
-	CHECK(k->poweroff_patches[2].kind == DS45_KPATCH_BRANCH);
+	CHECK(k->poweroff_patches[2].kind == NPP_KPATCH_BRANCH);
 	CHECK(k->poweroff_patches[2].addr == 0x80000000000F722CULL);
 	CHECK(k->poweroff_patches[2].expect == 0x2965949581F9EB53ULL);
-	CHECK(k->poweroff_patches[3].kind == DS45_KPATCH_BRANCHL);
+	CHECK(k->poweroff_patches[3].kind == NPP_KPATCH_BRANCHL);
 	CHECK(k->poweroff_patches[3].addr == 0x80000000000FDB44ULL);
 	CHECK(k->poweroff_patches[3].expect == 0x10FC449574975856ULL);
-	for (i = 0; i < DS45_SHIM_POWEROFF_PATCHES; i++) {
+	for (i = 0; i < NPP_SHIM_POWEROFF_PATCHES; i++) {
 		CHECK(k->poweroff_patches[i].value == 0);
 		CHECK((k->poweroff_patches[i].addr & 7) == 4);      /* the second word of its qword */
 	}
@@ -4008,15 +4008,15 @@ static int test_builtin_table(void)
 
 /* The pristine LV2 code image (LV2 offset = file offset) is Sony's code, so it
  * lives outside the repository and never goes into git. It is found through the
- * environment variable DS45_LV2_492_IMAGE, else at <repo>/../analysis/
+ * environment variable NPP_LV2_492_IMAGE, else at <repo>/../analysis/
  * lv2_code_492.bin. Without it the image test prints SKIP and passes. */
 #define IMAGE_492_REL "../analysis/lv2_code_492.bin"
 
-/* Loads the image into the fake LV2 at DS45_LV2_BASE; its length, 0 if absent. */
+/* Loads the image into the fake LV2 at NPP_LV2_BASE; its length, 0 if absent. */
 static long load_image_492(void)
 {
 	char path[1024];
-	const char *env = getenv("DS45_LV2_492_IMAGE");
+	const char *env = getenv("NPP_LV2_492_IMAGE");
 	const char *file = __FILE__;   /* <repo>/tests/test_kshim.c */
 	size_t len, cut = 0;
 	int seps = 0;
@@ -4045,7 +4045,7 @@ static long load_image_492(void)
 	if (!f)
 		return 0;
 	if (fseek(f, 0, SEEK_END) != 0 || (n = ftell(f)) <= 0 ||
-	    (uint64_t)n > DS45_LV2_BOUND - DS45_LV2_BASE || fseek(f, 0, SEEK_SET) != 0) {
+	    (uint64_t)n > NPP_LV2_BOUND - NPP_LV2_BASE || fseek(f, 0, SEEK_SET) != 0) {
 		fclose(f);
 		return 0;
 	}
@@ -4078,18 +4078,18 @@ static int in_image(uint64_t addr, long n)
  * image. */
 static int test_builtin_row_on_pristine_image(void)
 {
-	const ds45_shim_kernel_t *k = &ds45_shim_table[0];
+	const npp_shim_kernel_t *k = &npp_shim_table[0];
 	uint64_t spare = k->syscall_table + (uint64_t)k->spare_syscall * 8;
 	/* the code sites the installer applies: the helper, the two inline words, the
 	 * output call site and the cap word, the three receive-limit words and the four
 	 * power-off branches. The two output TOC slots (sites 5 and 6) are data, past the
 	 * code image, and are planted below. */
-	enum { NSITES = DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + 2 +
-	                DS45_SHIM_RECV_PATCHES + DS45_SHIM_POWEROFF_PATCHES,
-	       CALL = DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES, CAP = CALL + 1,
-	       RECV = CAP + 1, PO0 = RECV + DS45_SHIM_RECV_PATCHES };
+	enum { NSITES = NPP_SHIM_PID_PATCHES + NPP_SHIM_INLINE_PATCHES + 2 +
+	                NPP_SHIM_RECV_PATCHES + NPP_SHIM_POWEROFF_PATCHES,
+	       CALL = NPP_SHIM_PID_PATCHES + NPP_SHIM_INLINE_PATCHES, CAP = CALL + 1,
+	       RECV = CAP + 1, PO0 = RECV + NPP_SHIM_RECV_PATCHES };
 	/* FNV of the three receive qwords once `li r7,0x50` is in (F9 section 4) */
-	static const uint64_t recv_patched_hash[DS45_SHIM_RECV_PATCHES] =
+	static const uint64_t recv_patched_hash[NPP_SHIM_RECV_PATCHES] =
 		{ 0x069BCF77D72F5CA2ULL, 0x57005FC0FDB8743FULL, 0x995A7DDC70F6671BULL };
 	/* the channel-3 receive limit lives in the qword at 0xF8480 and is not ours */
 	const uint64_t ch3_qa = 0x80000000000F8480ULL;
@@ -4103,17 +4103,17 @@ static int test_builtin_row_on_pristine_image(void)
 		n = load_image_492();
 		if (n == 0) {
 			printf("test_kshim: SKIP built-in row vs pristine DEX 4.92 image "
-			       "(not found; set DS45_LV2_492_IMAGE)\n");
+			       "(not found; set NPP_LV2_492_IMAGE)\n");
 			return 0;
 		}
 
 		/* what the installer hashes lies in the image ... */
-		CHECK(in_image(k->fp_addr, n) && k->fp_addr + DS45_FP_LEN <= B + (uint64_t)n);
+		CHECK(in_image(k->fp_addr, n) && k->fp_addr + NPP_FP_LEN <= B + (uint64_t)n);
 		CHECK(in_image(k->event_code_addr & ~7ULL, n));
 		CHECK(in_image(k->enable_code_addr & ~7ULL, n));
 		for (i = 0; i < NSITES; i++) {
-			qa[i] = (i < DS45_SHIM_PID_PATCHES ? k->pid_patches[i].addr
-			         : i < CALL ? k->inline_patches[i - DS45_SHIM_PID_PATCHES].addr
+			qa[i] = (i < NPP_SHIM_PID_PATCHES ? k->pid_patches[i].addr
+			         : i < CALL ? k->inline_patches[i - NPP_SHIM_PID_PATCHES].addr
 			         : i < RECV ? k->output_patches[i - CALL].addr
 			         : i < PO0 ? k->recv_patches[i - RECV].addr
 			         : k->poweroff_patches[i - PO0].addr) & ~7ULL;
@@ -4159,11 +4159,11 @@ static int test_builtin_row_on_pristine_image(void)
 		g_cfg.shim_poweroff_hook = 1;
 		g_cfg.shim_poweroff_mode = mode;       /* 0 observe: all four; 1 act: site 10 only */
 
-		CHECK(kshim_install_from(ds45_shim_table, ds45_shim_table_count) ==
+		CHECK(kshim_install_from(npp_shim_table, npp_shim_table_count) ==
 		      KSHIM_INSTALLED);
-		CHECK(rd(k->event_slot) == k->exec_base + DS45_SHIM_OFF_EVENT);
-		CHECK(rd(k->enable_slot) == k->exec_base + DS45_SHIM_OFF_ENABLE);
-		CHECK(rd(k->input_slot) == k->exec_base + DS45_SHIM_OFF_INPUT);
+		CHECK(rd(k->event_slot) == k->exec_base + NPP_SHIM_OFF_EVENT);
+		CHECK(rd(k->enable_slot) == k->exec_base + NPP_SHIM_OFF_ENABLE);
+		CHECK(rd(k->input_slot) == k->exec_base + NPP_SHIM_OFF_INPUT);
 		CHECK(rd(qa[0]) != q[0]);
 		CHECK((rd(qa[1]) != q[1]) == (inl != 0));
 		CHECK((rd(qa[2]) != q[2]) == (inl != 0));
@@ -4171,7 +4171,7 @@ static int test_builtin_row_on_pristine_image(void)
 		 * qword, the low half kept), the cap word only outside observe mode, and
 		 * the TOC slots hold the blob's packet buffer and that plus one */
 		CHECK(rd(qa[CALL]) == (((uint64_t)ppc_bl(k->output_patches[0].addr,
-		      k->exec_base + DS45_SHIM_OFF_OUTPUT) << 32) | (q[CALL] & 0xFFFFFFFFULL)));
+		      k->exec_base + NPP_SHIM_OFF_OUTPUT) << 32) | (q[CALL] & 0xFFFFFFFFULL)));
 		CHECK((rd(qa[CAP]) != q[CAP]) == (mode != 0));
 		if (mode)
 			CHECK(rd(qa[CAP]) == ((q[CAP] & HI32) | 0x2B9F004DULL));
@@ -4181,7 +4181,7 @@ static int test_builtin_row_on_pristine_image(void)
 		 * `li r7,0x50` in the low half, the high half kept, the whole qword hashing
 		 * to the researched value; in observe mode they stay pristine. The channel-3
 		 * limit is never touched. */
-		for (j = 0; j < DS45_SHIM_RECV_PATCHES; j++) {
+		for (j = 0; j < NPP_SHIM_RECV_PATCHES; j++) {
 			CHECK((rd(qa[RECV + j]) != q[RECV + j]) == (mode != 0));
 			if (mode) {
 				CHECK(rd(qa[RECV + j]) == ((q[RECV + j] & HI32) | 0x38E00050ULL));
@@ -4192,10 +4192,10 @@ static int test_builtin_row_on_pristine_image(void)
 		/* the power-off sites: the branch (the high word of the qword kept as it was)
 		 * aimed at the blob's power-off entry (site 10) or teardown entry (11-13); in
 		 * act mode only site 10 is touched, the observers stay pristine */
-		for (j = 0; j < DS45_SHIM_POWEROFF_PATCHES; j++) {
+		for (j = 0; j < NPP_SHIM_POWEROFF_PATCHES; j++) {
 			const uint64_t site = k->poweroff_patches[j].addr;
 			const uint64_t tgt = k->exec_base +
-			                     (j == 0 ? DS45_SHIM_OFF_POWEROFF : DS45_SHIM_OFF_TEARDOWN);
+			                     (j == 0 ? NPP_SHIM_OFF_POWEROFF : NPP_SHIM_OFF_TEARDOWN);
 			const uint32_t w = (j == 2) ? ppc_b(site, tgt) : ppc_bl(site, tgt);
 
 			if (j == 0 || mode == 0)

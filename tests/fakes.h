@@ -1,7 +1,7 @@
 /* Host-test fakes. Everything here is the contract tests and the code under
  * test rely on; the implementations live in fakes.c. */
-#ifndef DS45_TEST_FAKES_H
-#define DS45_TEST_FAKES_H
+#ifndef NPP_TEST_FAKES_H
+#define NPP_TEST_FAKES_H
 
 #include <stdint.h>
 #include <cell/pad.h>
@@ -17,7 +17,7 @@ extern uint64_t fake_now_us;
 
 /* Fake LV2 kernel image served through syscall 6. Sparse: pages are
  * allocated on demand, unset bytes read as 0. Bytes written outside
- * [DS45_LV2_BASE, DS45_LV2_BOUND) are ignored. */
+ * [NPP_LV2_BASE, NPP_LV2_BOUND) are ignored. */
 void fake_lv2_set(uint64_t addr, const uint8_t *bytes, int len);
 void fake_lv2_reset(void);
 /* Count of syscall-6 reads that were misaligned or outside the window. */
@@ -74,7 +74,7 @@ extern int fake_mutex_depth;
 extern int fake_mutex_errors;
 extern int fake_mutex_live;     /* created and not destroyed */
 
-/* ds45_notify() records here. */
+/* npp_notify() records here. */
 extern int fake_toasts;
 extern char fake_last_toast[128];
 
@@ -83,7 +83,7 @@ extern char fake_last_toast[128];
 extern char fake_tty[2048];
 extern int  fake_tty_overflow;
 
-/* In-memory file system behind ds45_read_file() and friends. Files are
+/* In-memory file system behind npp_read_file() and friends. Files are
  * heap-allocated (up to 32 MiB each); writes that cannot be stored fail
  * with -1 rather than truncating. */
 void        fake_file_set(const char *path, const char *text);
@@ -92,19 +92,19 @@ void        fake_file_set(const char *path, const char *text);
 const char *fake_file_get(const char *path);
 int         fake_file_size(const char *path);  /* bytes, -1 if absent */
 void        fake_file_set_bytes(const char *path, const void *data, int len);
-int         fake_file_deleted(const char *path); /* 1 if ds45_delete_file()d */
+int         fake_file_deleted(const char *path); /* 1 if npp_delete_file()d */
 
-/* Failure injection for ds45_write_file()/ds45_append_file(): any write to
+/* Failure injection for npp_write_file()/npp_append_file(): any write to
  * fake_write_fail_path fails; once fake_append_fail_after (>= 0) appends have
  * succeeded, the next and every later append fails. -1 / NULL = never.
  * Cleared by fake_reset_all(). */
 extern const char *fake_write_fail_path;
 extern int         fake_append_fail_after;
 
-int ds45_write_file(const char *path, const void *data, int len);
-int ds45_append_file(const char *path, const void *data, int len);
-int ds45_delete_file(const char *path);
-int ds45_file_exists(const char *path);
+int npp_write_file(const char *path, const void *data, int len);
+int npp_append_file(const char *path, const void *data, int len);
+int npp_delete_file(const char *path);
+int npp_file_exists(const char *path);
 
 /* ldd_register() fake counter. A registered pad gets handle 100 + n, port 0;
  * ldd_unregister() sets the handle back to -1. */
@@ -122,4 +122,4 @@ extern CellPadData  fake_last_insert;
 /* Reset every fake above to its initial state. */
 void fake_reset_all(void);
 
-#endif /* DS45_TEST_FAKES_H */
+#endif /* NPP_TEST_FAKES_H */

@@ -1,5 +1,5 @@
 /*
- * DS45PAD - install the DS3-route kernel shim on a fingerprinted kernel.
+ * NPP - install the DS3-route kernel shim on a fingerprinted kernel.
  * See kshim.h and the start-up completion design spec, section 3.
  *
  * Install order (fixed):
@@ -53,11 +53,11 @@
 
 #include "lv2.h"
 #include "kpatch.h"
-#include "kernel.h"        /* kernel_fingerprint_matches, DS45_FP_LEN */
+#include "kernel.h"        /* kernel_fingerprint_matches, NPP_FP_LEN */
 #include "kshim.h"
-#include "ds45pad.h"       /* g_cfg, DS45_TRACE */
-#include "../shim/shim_abi.h"  /* ds45_shim_data_t, DS45_SHIM_MAGIC */
-#include "shim_blob.h"     /* ds45_shim_blob, ds45_shim_relocs, DS45_SHIM_OFF_* */
+#include "npp.h"       /* g_cfg, NPP_TRACE */
+#include "../shim/shim_abi.h"  /* npp_shim_data_t, NPP_SHIM_MAGIC */
+#include "shim_blob.h"     /* npp_shim_blob, npp_shim_relocs, NPP_SHIM_OFF_* */
 
 /* 16 bytes past the blob for the flush OPD { entry, kernel TOC }. */
 #define KSHIM_FLUSH_OPD_LEN 16
@@ -67,32 +67,32 @@
  * enable and input redirects, then the receive-limit words (when enabled). The
  * journal holds one entry for each: at most 17, within the patcher's 20. */
 #define KSHIM_REDIRECTS 3
-#define KSHIM_FINAL_MAX (DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + \
-                         DS45_SHIM_OUTPUT_PATCHES + DS45_SHIM_RECV_PATCHES + \
-                         DS45_SHIM_POWEROFF_PATCHES + KSHIM_REDIRECTS)
-typedef char kshim_final_fits_kpatch[(KSHIM_FINAL_MAX <= DS45_KPATCH_MAX) ? 1 : -1];
+#define KSHIM_FINAL_MAX (NPP_SHIM_PID_PATCHES + NPP_SHIM_INLINE_PATCHES + \
+                         NPP_SHIM_OUTPUT_PATCHES + NPP_SHIM_RECV_PATCHES + \
+                         NPP_SHIM_POWEROFF_PATCHES + KSHIM_REDIRECTS)
+typedef char kshim_final_fits_kpatch[(KSHIM_FINAL_MAX <= NPP_KPATCH_MAX) ? 1 : -1];
 typedef char kshim_final_is_seventeen[(KSHIM_FINAL_MAX == 17) ? 1 : -1];
 
 /* The data block exactly fills the blob's tail (OFF_DATA .. BLOB_LEN); it is
  * written qword by qword, so its size must be a multiple of 8. */
-typedef char kshim_data_multiple_of_8[(sizeof(ds45_shim_data_t) % 8 == 0) ? 1 : -1];
+typedef char kshim_data_multiple_of_8[(sizeof(npp_shim_data_t) % 8 == 0) ? 1 : -1];
 
 /* The version the adoption check reads is the high word of an aligned qword, and
  * the template fits its array. */
-typedef char kshim_version_qword[(offsetof(ds45_shim_data_t, version) % 8 == 0) ? 1 : -1];
-typedef char kshim_tmpl_fits[(sizeof(((ds45_shim_data_t *)0)->info_tmpl) >=
-                              DS45_SHIM_INFO_LEN) ? 1 : -1];
+typedef char kshim_version_qword[(offsetof(npp_shim_data_t, version) % 8 == 0) ? 1 : -1];
+typedef char kshim_tmpl_fits[(sizeof(((npp_shim_data_t *)0)->info_tmpl) >=
+                              NPP_SHIM_INFO_LEN) ? 1 : -1];
 
 /* The data block records one original qword per product-ID site a row can
  * edit, and an adopted install journals those sites plus the redirects. */
-typedef char kshim_pid_sites_match[(DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES +
-                                    DS45_SHIM_OUTPUT_PATCHES + DS45_SHIM_RECV_PATCHES +
-                                    DS45_SHIM_POWEROFF_PATCHES ==
-                                    DS45_SHIM_PID_SITES) ? 1 : -1];
-typedef char kshim_adopt_fits_journal[(DS45_SHIM_PID_SITES + KSHIM_REDIRECTS <=
-                                       DS45_KPATCH_MAX) ? 1 : -1];
-typedef char kshim_pid_words_aligned[(offsetof(ds45_shim_data_t, pid_orig) % 8 == 0 &&
-                                      offsetof(ds45_shim_data_t, pid_applied) % 8 == 0) ? 1 : -1];
+typedef char kshim_pid_sites_match[(NPP_SHIM_PID_PATCHES + NPP_SHIM_INLINE_PATCHES +
+                                    NPP_SHIM_OUTPUT_PATCHES + NPP_SHIM_RECV_PATCHES +
+                                    NPP_SHIM_POWEROFF_PATCHES ==
+                                    NPP_SHIM_PID_SITES) ? 1 : -1];
+typedef char kshim_adopt_fits_journal[(NPP_SHIM_PID_SITES + KSHIM_REDIRECTS <=
+                                       NPP_KPATCH_MAX) ? 1 : -1];
+typedef char kshim_pid_words_aligned[(offsetof(npp_shim_data_t, pid_orig) % 8 == 0 &&
+                                      offsetof(npp_shim_data_t, pid_applied) % 8 == 0) ? 1 : -1];
 
 /* What a successful (or adopted) install left behind, for unload. g_base and
  * g_zero_size are the fixed blob region [g_base, g_base + g_zero_size) that the
@@ -104,7 +104,7 @@ typedef char kshim_pid_words_aligned[(offsetof(ds45_shim_data_t, pid_orig) % 8 =
  * exec_base and flush_desc - is no longer in hand. g_scrub_armed is set only by
  * kshim_unhook once it has confirmed the redirects reverted, so a half-reverted
  * unload never zeroes a blob a live redirect still points at. */
-static ds45_kjournal_t g_journal;
+static npp_kjournal_t g_journal;
 static kshim_result_t  g_state = KSHIM_OFF;
 static uint64_t        g_base;
 static uint64_t        g_zero_size;
@@ -155,8 +155,8 @@ static void put_be64(uint8_t *p, uint64_t v)
 static int off_is_reloc(uint32_t off)
 {
 	int i;
-	for (i = 0; i < DS45_SHIM_RELOC_COUNT; i++)
-		if (ds45_shim_relocs[i] == off)
+	for (i = 0; i < NPP_SHIM_RELOC_COUNT; i++)
+		if (npp_shim_relocs[i] == off)
 			return 1;
 	return 0;
 }
@@ -169,7 +169,7 @@ static uint64_t qword_hash(uint64_t v)
 
 	for (i = 0; i < 8; i++)
 		b[i] = (uint8_t)(v >> (56 - 8 * i));
-	return ds45_fnv1a64(b, 8);
+	return npp_fnv1a64(b, 8);
 }
 
 /* The 8-aligned qword containing addr (addr & ~7) hashes to expect; 0 if it
@@ -180,7 +180,7 @@ static int hash_ok(uint64_t addr, uint64_t expect)
 {
 	uint64_t cur;
 
-	if (ds45_lv2_read(addr & ~7ULL, &cur))
+	if (npp_lv2_read(addr & ~7ULL, &cur))
 		return 0;
 	return qword_hash(cur) == expect;
 }
@@ -204,17 +204,17 @@ static int site_is_recv(int i)
  * inline rows, then the output rows (sites 3-6 = output_patches[0..3]), then the
  * receive-limit rows (sites 7-9 = recv_patches[0..2]), then the power-off rows
  * (sites 10-13 = poweroff_patches[0..3]). */
-static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
+static const npp_kpatch_t *pid_site(const npp_shim_kernel_t *k, int i)
 {
-	if (i < DS45_SHIM_PID_PATCHES)
+	if (i < NPP_SHIM_PID_PATCHES)
 		return &k->pid_patches[i];
-	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES)
-		return &k->inline_patches[i - DS45_SHIM_PID_PATCHES];
-	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES + DS45_SHIM_OUTPUT_PATCHES)
-		return &k->output_patches[i - DS45_SHIM_PID_PATCHES - DS45_SHIM_INLINE_PATCHES];
+	if (i < NPP_SHIM_PID_PATCHES + NPP_SHIM_INLINE_PATCHES)
+		return &k->inline_patches[i - NPP_SHIM_PID_PATCHES];
+	if (i < NPP_SHIM_PID_PATCHES + NPP_SHIM_INLINE_PATCHES + NPP_SHIM_OUTPUT_PATCHES)
+		return &k->output_patches[i - NPP_SHIM_PID_PATCHES - NPP_SHIM_INLINE_PATCHES];
 	if (i < SITE_PO0)
-		return &k->recv_patches[i - DS45_SHIM_PID_PATCHES - DS45_SHIM_INLINE_PATCHES -
-		                        DS45_SHIM_OUTPUT_PATCHES];
+		return &k->recv_patches[i - NPP_SHIM_PID_PATCHES - NPP_SHIM_INLINE_PATCHES -
+		                        NPP_SHIM_OUTPUT_PATCHES];
 	return &k->poweroff_patches[i - SITE_PO0];
 }
 
@@ -232,7 +232,7 @@ static const ds45_kpatch_t *pid_site(const ds45_shim_kernel_t *k, int i)
  * (The other order leaves a window in which the original transport read, with the
  * limit still 0x50, copies a 79-byte DualSense report into the pad driver's
  * 64-byte stack buffer.) */
-static const uint8_t PID_ORDER[DS45_SHIM_PID_SITES] = {
+static const uint8_t PID_ORDER[NPP_SHIM_PID_SITES] = {
 	0, 1, 2, SITE_BUF, SITE_BUF1, SITE_OUT_CALL, SITE_OUT_CAP,
 	SITE_PO0, SITE_PO0 + 1, SITE_PO0 + 2, SITE_PO0 + 3,
 	SITE_RECV0, SITE_RECV0 + 1, SITE_RECV0 + 2
@@ -267,11 +267,11 @@ static int poweroff_act(void)
 	return g_cfg.shim_poweroff_hook != 0 && g_cfg.shim_poweroff_mode == 1;
 }
 
-static int site_selected(const ds45_shim_kernel_t *k, int i)
+static int site_selected(const npp_shim_kernel_t *k, int i)
 {
-	if (i < DS45_SHIM_PID_PATCHES)
+	if (i < NPP_SHIM_PID_PATCHES)
 		return 1;
-	if (i < DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES)
+	if (i < NPP_SHIM_PID_PATCHES + NPP_SHIM_INLINE_PATCHES)
 		return g_cfg.shim_inline_pid != 0;
 	if (i >= SITE_PO0) {
 		if (!g_cfg.shim_poweroff_hook)
@@ -297,22 +297,22 @@ static int site_selected(const ds45_shim_kernel_t *k, int i)
  * power-off sender and for a teardown site (11-13) the teardown routine.
  * Deliberately NOT the current config: what the install applied is what gets
  * restored, like the inline words. */
-static int site_restorable(const ds45_shim_kernel_t *k, int i)
+static int site_restorable(const npp_shim_kernel_t *k, int i)
 {
 	if (pid_site(k, i)->kind == 0)
 		return 0;
 	if (i >= SITE_PO0)
 		return (i == SITE_PO0 ? k->orig_poweroff : k->orig_teardown) != 0;
-	if (i >= DS45_SHIM_PID_PATCHES + DS45_SHIM_INLINE_PATCHES && k->orig_output == 0)
+	if (i >= NPP_SHIM_PID_PATCHES + NPP_SHIM_INLINE_PATCHES && k->orig_output == 0)
 		return 0;
 	return 1;
 }
 
 /* Whether the qword q is what row p was researched against: a PTR row compares
  * the value, every other kind the FNV of the qword. */
-static int site_matches(const ds45_kpatch_t *p, uint64_t q)
+static int site_matches(const npp_kpatch_t *p, uint64_t q)
 {
-	if (p->kind == DS45_KPATCH_PTR)
+	if (p->kind == NPP_KPATCH_PTR)
 		return q == p->expect;
 	return qword_hash(q) == p->expect;
 }
@@ -325,18 +325,18 @@ static int site_matches(const ds45_kpatch_t *p, uint64_t q)
  * block. (A branch row's new instruction is not known to kpatch until the blob's
  * load base is known, so the check is made here, ahead of the blob placement, as
  * well as by the final kpatch_apply.) 0 if any site differs or cannot be read. */
-static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int site[],
-                       int *n, uint64_t orig[DS45_SHIM_PID_SITES], uint32_t *applied)
+static int pid_capture(const npp_shim_kernel_t *k, npp_kpatch_t *out, int site[],
+                       int *n, uint64_t orig[NPP_SHIM_PID_SITES], uint32_t *applied)
 {
-	const ds45_kpatch_t *p;
+	const npp_kpatch_t *p;
 	uint64_t cur;
 	int i, j;
 
 	*n = 0;
 	*applied = 0;
-	for (i = 0; i < DS45_SHIM_PID_SITES; i++)
+	for (i = 0; i < NPP_SHIM_PID_SITES; i++)
 		orig[i] = 0;
-	for (j = 0; j < DS45_SHIM_PID_SITES; j++) {
+	for (j = 0; j < NPP_SHIM_PID_SITES; j++) {
 		i = PID_ORDER[j];
 		if (!site_selected(k, i))
 			continue;
@@ -348,7 +348,7 @@ static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int site
 			return 0;
 		/* a PTR slot is read at its own (8-aligned) address, an instruction row
 		 * by the qword holding it */
-		if (ds45_lv2_read(p->kind == DS45_KPATCH_PTR ? p->addr : (p->addr & ~7ULL),
+		if (npp_lv2_read(p->kind == NPP_KPATCH_PTR ? p->addr : (p->addr & ~7ULL),
 		                  &cur) ||
 		    !site_matches(p, cur))
 			return 0;
@@ -367,21 +367,21 @@ static int pid_capture(const ds45_shim_kernel_t *k, ds45_kpatch_t *out, int site
  * (sites 11-13) for the power-off branches. The final transaction and adoption
  * both go through this, so an adopted install is recomputed exactly as it was
  * written. */
-static uint64_t pid_value(int site, const ds45_kpatch_t *p, uint64_t base)
+static uint64_t pid_value(int site, const npp_kpatch_t *p, uint64_t base)
 {
 	/* the power-off sites (10-13) are branches into the blob whichever the kind (a
 	 * `bl` or a `b`): site 10 aims at the power-off entry, sites 11-13 at the
 	 * teardown entry */
 	if (site >= SITE_PO0 &&
-	    (p->kind == DS45_KPATCH_BRANCH || p->kind == DS45_KPATCH_BRANCHL))
-		return base + (site == SITE_PO0 ? DS45_SHIM_OFF_POWEROFF : DS45_SHIM_OFF_TEARDOWN);
+	    (p->kind == NPP_KPATCH_BRANCH || p->kind == NPP_KPATCH_BRANCHL))
+		return base + (site == SITE_PO0 ? NPP_SHIM_OFF_POWEROFF : NPP_SHIM_OFF_TEARDOWN);
 	switch (p->kind) {
-	case DS45_KPATCH_BRANCH:
-		return base + DS45_SHIM_OFF_PID_OK;
-	case DS45_KPATCH_BRANCHL:
-		return base + DS45_SHIM_OFF_OUTPUT;
-	case DS45_KPATCH_PTR:
-		return base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pktbuf) +
+	case NPP_KPATCH_BRANCH:
+		return base + NPP_SHIM_OFF_PID_OK;
+	case NPP_KPATCH_BRANCHL:
+		return base + NPP_SHIM_OFF_OUTPUT;
+	case NPP_KPATCH_PTR:
+		return base + NPP_SHIM_OFF_DATA + offsetof(npp_shim_data_t, pktbuf) +
 		       (site == SITE_BUF1 ? 1 : 0);
 	default:
 		return p->value;
@@ -395,24 +395,24 @@ static uint64_t pid_value(int site, const ds45_kpatch_t *p, uint64_t base)
  * cannot be formed.
  * The BRANCH arm serves the helper row (tests/test_kshim.c
  * test_helper_branch_row), the BRANCHL and PTR arms the output sites. */
-static int pid_patched_qword(int site, const ds45_kpatch_t *p, uint64_t orig,
+static int pid_patched_qword(int site, const npp_kpatch_t *p, uint64_t orig,
                              uint64_t base, uint64_t *out)
 {
 	const uint64_t v = pid_value(site, p, base);
 	uint32_t w;
 
-	if (p->kind == DS45_KPATCH_PTR) {
+	if (p->kind == NPP_KPATCH_PTR) {
 		*out = v;
 		return 1;
 	}
-	if (p->kind == DS45_KPATCH_WORD) {
+	if (p->kind == NPP_KPATCH_WORD) {
 		if (v > 0xFFFFFFFFULL)
 			return 0;
 		w = (uint32_t)v;
-	} else if (p->kind == DS45_KPATCH_BRANCH) {
+	} else if (p->kind == NPP_KPATCH_BRANCH) {
 		if (kpatch_branch_word(p->addr, v, &w))
 			return 0;
-	} else if (p->kind == DS45_KPATCH_BRANCHL) {
+	} else if (p->kind == NPP_KPATCH_BRANCHL) {
 		if (kpatch_branchl_word(p->addr, v, &w))
 			return 0;
 	} else {
@@ -432,13 +432,13 @@ static uint32_t adopt_applied(uint64_t base)
 	uint64_t q;
 	uint32_t applied;
 
-	if (ds45_lv2_read(base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_applied),
+	if (npp_lv2_read(base + NPP_SHIM_OFF_DATA + offsetof(npp_shim_data_t, pid_applied),
 	                  &q)) {
-		DS45_TRACE("kshim_adopt_applied_unreadable");
+		NPP_TRACE("kshim_adopt_applied_unreadable");
 		return 0;
 	}
 	applied = (uint32_t)(q >> 32);          /* the high word of its big-endian qword */
-	DS45_TRACE_HEX("kshim_adopt_applied", applied);
+	NPP_TRACE_HEX("kshim_adopt_applied", applied);
 	return applied;
 }
 
@@ -446,20 +446,20 @@ static uint32_t adopt_applied(uint64_t base)
  * populates it (site_restorable), the recorded original is what the row was
  * researched against, and the site still holds exactly that original with the
  * row's edit in it. Fills *orig. Reads only. */
-static int adopt_site_ours(const ds45_shim_kernel_t *k, uint64_t base, int i,
+static int adopt_site_ours(const npp_shim_kernel_t *k, uint64_t base, int i,
                            uint64_t *orig)
 {
-	const ds45_kpatch_t *p;
+	const npp_kpatch_t *p;
 	uint64_t cur, want;
 
 	if (!site_restorable(k, i))
 		return 0;
 	p = pid_site(k, i);
-	return !ds45_lv2_read(base + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, pid_orig) +
+	return !npp_lv2_read(base + NPP_SHIM_OFF_DATA + offsetof(npp_shim_data_t, pid_orig) +
 	                      8 * (uint64_t)i, orig) &&
 	       site_matches(p, *orig) &&
 	       pid_patched_qword(i, p, *orig, base, &want) &&
-	       !ds45_lv2_read(p->addr & ~7ULL, &cur) && cur == want;
+	       !npp_lv2_read(p->addr & ~7ULL, &cur) && cur == want;
 }
 
 /* The receive-limit sites (7-9) the adopted install recorded as applied that are
@@ -471,7 +471,7 @@ static int adopt_site_ours(const ds45_shim_kernel_t *k, uint64_t base, int i,
  * limits, and a limit we cannot lower must keep its bounce - restoring the input
  * slot to the original transport read under a limit of 0x50 lets a 79-byte
  * DualSense report overrun the pad driver's 64-byte stack buffer. Reads only. */
-static uint32_t adopt_recv_unsafe(const ds45_shim_kernel_t *k, uint64_t base,
+static uint32_t adopt_recv_unsafe(const npp_shim_kernel_t *k, uint64_t base,
                                   uint32_t applied)
 {
 	uint64_t orig;
@@ -504,18 +504,18 @@ static uint32_t adopt_recv_unsafe(const ds45_shim_kernel_t *k, uint64_t base,
  * `enabled` and `po_mode` as the install left them, so until the next reboot the
  * hooks keep behaving as installed (in act mode a DualSense's close request would
  * keep being rewritten) wherever a skipped site still branches into the blob. */
-static int adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
-                           uint32_t applied, int recv, ds45_kjournal_t *j)
+static int adopt_pid_sites(const npp_shim_kernel_t *k, uint64_t base,
+                           uint32_t applied, int recv, npp_kjournal_t *j)
 {
 	uint64_t orig;
 	int i, jj, skipped = 0;
 
-	for (jj = 0; jj < DS45_SHIM_PID_SITES; jj++) {
+	for (jj = 0; jj < NPP_SHIM_PID_SITES; jj++) {
 		i = PID_ORDER[jj];
 		if (!(applied & (1u << i)) || site_is_recv(i) != (recv != 0))
 			continue;
 		if (!adopt_site_ours(k, base, i, &orig)) {   /* not ours to restore: as found */
-			DS45_TRACE_HEX("kshim_adopt_pid_skipped", (uint64_t)i);
+			NPP_TRACE_HEX("kshim_adopt_pid_skipped", (uint64_t)i);
 			skipped++;
 			continue;
 		}
@@ -531,26 +531,26 @@ static int adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
  * the magic and this build's version. A blob left by a build with another
  * data-block layout is not adopted: the plugin reaches into the block by this
  * build's offsets. Fills *base. */
-static int already_installed(const ds45_shim_kernel_t *k, uint64_t *base)
+static int already_installed(const npp_shim_kernel_t *k, uint64_t *base)
 {
 	uint64_t ev, en, iv, b, magic, ver;
 
-	if (ds45_lv2_read(k->event_slot, &ev) || ds45_lv2_read(k->enable_slot, &en) ||
-	    ds45_lv2_read(k->input_slot, &iv))
+	if (npp_lv2_read(k->event_slot, &ev) || npp_lv2_read(k->enable_slot, &en) ||
+	    npp_lv2_read(k->input_slot, &iv))
 		return 0;
-	if (ev < DS45_SHIM_OFF_EVENT)
+	if (ev < NPP_SHIM_OFF_EVENT)
 		return 0;
-	b = ev - DS45_SHIM_OFF_EVENT;
-	if (en != b + DS45_SHIM_OFF_ENABLE || iv != b + DS45_SHIM_OFF_INPUT)
+	b = ev - NPP_SHIM_OFF_EVENT;
+	if (en != b + NPP_SHIM_OFF_ENABLE || iv != b + NPP_SHIM_OFF_INPUT)
 		return 0;
-	if (ds45_lv2_read(b + DS45_SHIM_OFF_DATA, &magic))
+	if (npp_lv2_read(b + NPP_SHIM_OFF_DATA, &magic))
 		return 0;
-	if (magic != DS45_SHIM_MAGIC)
+	if (magic != NPP_SHIM_MAGIC)
 		return 0;
 	/* the version is the high word of its big-endian qword (enabled follows) */
-	if (ds45_lv2_read(b + DS45_SHIM_OFF_DATA + offsetof(ds45_shim_data_t, version), &ver))
+	if (npp_lv2_read(b + NPP_SHIM_OFF_DATA + offsetof(npp_shim_data_t, version), &ver))
 		return 0;
-	if ((uint32_t)(ver >> 32) != DS45_SHIM_VERSION)
+	if ((uint32_t)(ver >> 32) != NPP_SHIM_VERSION)
 		return 0;
 	*base = b;
 	return 1;
@@ -561,73 +561,73 @@ static int already_installed(const ds45_shim_kernel_t *k, uint64_t *base)
  * zeroed. Field offsets come from the shared ABI struct, which has identical
  * layout on the plugin, the blob and the host (fixed-width fields at natural
  * alignment, no pointers). */
-static void build_data_block(const ds45_shim_kernel_t *k,
-                             const uint64_t pid_orig[DS45_SHIM_PID_SITES],
+static void build_data_block(const npp_shim_kernel_t *k,
+                             const uint64_t pid_orig[NPP_SHIM_PID_SITES],
                              uint32_t pid_applied, uint8_t *buf)
 {
 	uint8_t *cfg, *t;
 	int i;
 
-	memset(buf, 0, sizeof(ds45_shim_data_t));
-	put_be64(buf + offsetof(ds45_shim_data_t, magic), DS45_SHIM_MAGIC);
-	put_be32(buf + offsetof(ds45_shim_data_t, version), DS45_SHIM_VERSION);
-	put_be32(buf + offsetof(ds45_shim_data_t, enabled), 1);
-	put_be64(buf + offsetof(ds45_shim_data_t, orig_event), k->event_expect);
-	put_be64(buf + offsetof(ds45_shim_data_t, orig_enable), k->enable_expect);
-	put_be64(buf + offsetof(ds45_shim_data_t, orig_input), k->input_expect);
-	put_be64(buf + offsetof(ds45_shim_data_t, pad_vtable), k->pad_vtable);
-	put_be64(buf + offsetof(ds45_shim_data_t, pad_mgr), k->pad_mgr);
-	put_be64(buf + offsetof(ds45_shim_data_t, conn_tbl), k->conn_tbl);
-	put_be32(buf + offsetof(ds45_shim_data_t, stable_id), g_cfg.shim_stable_id ? 1 : 0);
+	memset(buf, 0, sizeof(npp_shim_data_t));
+	put_be64(buf + offsetof(npp_shim_data_t, magic), NPP_SHIM_MAGIC);
+	put_be32(buf + offsetof(npp_shim_data_t, version), NPP_SHIM_VERSION);
+	put_be32(buf + offsetof(npp_shim_data_t, enabled), 1);
+	put_be64(buf + offsetof(npp_shim_data_t, orig_event), k->event_expect);
+	put_be64(buf + offsetof(npp_shim_data_t, orig_enable), k->enable_expect);
+	put_be64(buf + offsetof(npp_shim_data_t, orig_input), k->input_expect);
+	put_be64(buf + offsetof(npp_shim_data_t, pad_vtable), k->pad_vtable);
+	put_be64(buf + offsetof(npp_shim_data_t, pad_mgr), k->pad_mgr);
+	put_be64(buf + offsetof(npp_shim_data_t, conn_tbl), k->conn_tbl);
+	put_be32(buf + offsetof(npp_shim_data_t, stable_id), g_cfg.shim_stable_id ? 1 : 0);
 	/* the output hook's stage (0..2; anything else is observe) and the sender it
 	 * tail-calls. Without SHIM_INPUT_HOOK the stage is 0 whatever the mode: the
 	 * blob must never rewrite the output (and so never let the DualSense into its
 	 * 79-byte report) when the input bounce that can receive it is not installed
 	 * (site_selected leaves the cap word and the receive limits out as well). */
-	put_be32(buf + offsetof(ds45_shim_data_t, out_mode),
+	put_be32(buf + offsetof(npp_shim_data_t, out_mode),
 	         (g_cfg.shim_input_hook &&
 	          g_cfg.shim_output_mode >= 0 && g_cfg.shim_output_mode <= 2)
 	             ? (uint32_t)g_cfg.shim_output_mode : 0);
-	put_be64(buf + offsetof(ds45_shim_data_t, orig_output), k->orig_output);
+	put_be64(buf + offsetof(npp_shim_data_t, orig_output), k->orig_output);
 	/* the power-off hook's targets (the row's two code addresses, zero when it names
 	 * none) and its stage: 1 (act) only with the hook on and SHIM_POWEROFF_MODE
 	 * exactly 1, 0 (observe) for everything else - an out-of-range mode included,
 	 * the same rule site_selected uses to leave the observers out */
-	put_be64(buf + offsetof(ds45_shim_data_t, orig_poweroff), k->orig_poweroff);
-	put_be64(buf + offsetof(ds45_shim_data_t, orig_teardown), k->orig_teardown);
-	put_be32(buf + offsetof(ds45_shim_data_t, po_mode), poweroff_act() ? 1 : 0);
+	put_be64(buf + offsetof(npp_shim_data_t, orig_poweroff), k->orig_poweroff);
+	put_be64(buf + offsetof(npp_shim_data_t, orig_teardown), k->orig_teardown);
+	put_be32(buf + offsetof(npp_shim_data_t, po_mode), poweroff_act() ? 1 : 0);
 
-	cfg = buf + offsetof(ds45_shim_data_t, cfg);
-	cfg[offsetof(ds45_shim_cfg_t, deadzone)]     = (uint8_t)g_cfg.stick_deadzone;
-	cfg[offsetof(ds45_shim_cfg_t, map_touchpad)] = (uint8_t)g_cfg.map_touchpad;
-	cfg[offsetof(ds45_shim_cfg_t, map_mute)]     = (uint8_t)g_cfg.map_mute;
-	cfg[offsetof(ds45_shim_cfg_t, sixaxis)]      = (uint8_t)g_cfg.sixaxis;
-	cfg[offsetof(ds45_shim_cfg_t, swap_xy)]      = (uint8_t)g_cfg.swap_xy;
-	cfg[offsetof(ds45_shim_cfg_t, invert_x)]     = (uint8_t)g_cfg.invert_x;
-	cfg[offsetof(ds45_shim_cfg_t, invert_y)]     = (uint8_t)g_cfg.invert_y;
-	cfg[offsetof(ds45_shim_cfg_t, invert_z)]     = (uint8_t)g_cfg.invert_z;
-	cfg[offsetof(ds45_shim_cfg_t, invert_g)]     = (uint8_t)g_cfg.invert_g;
-	put_be16(cfg + offsetof(ds45_shim_cfg_t, accel_scale),
+	cfg = buf + offsetof(npp_shim_data_t, cfg);
+	cfg[offsetof(npp_shim_cfg_t, deadzone)]     = (uint8_t)g_cfg.stick_deadzone;
+	cfg[offsetof(npp_shim_cfg_t, map_touchpad)] = (uint8_t)g_cfg.map_touchpad;
+	cfg[offsetof(npp_shim_cfg_t, map_mute)]     = (uint8_t)g_cfg.map_mute;
+	cfg[offsetof(npp_shim_cfg_t, sixaxis)]      = (uint8_t)g_cfg.sixaxis;
+	cfg[offsetof(npp_shim_cfg_t, swap_xy)]      = (uint8_t)g_cfg.swap_xy;
+	cfg[offsetof(npp_shim_cfg_t, invert_x)]     = (uint8_t)g_cfg.invert_x;
+	cfg[offsetof(npp_shim_cfg_t, invert_y)]     = (uint8_t)g_cfg.invert_y;
+	cfg[offsetof(npp_shim_cfg_t, invert_z)]     = (uint8_t)g_cfg.invert_z;
+	cfg[offsetof(npp_shim_cfg_t, invert_g)]     = (uint8_t)g_cfg.invert_g;
+	put_be16(cfg + offsetof(npp_shim_cfg_t, accel_scale),
 	         (uint16_t)(int16_t)g_cfg.accel_scale);
-	put_be16(cfg + offsetof(ds45_shim_cfg_t, gyro_scale),
+	put_be16(cfg + offsetof(npp_shim_cfg_t, gyro_scale),
 	         (uint16_t)(int16_t)g_cfg.gyro_scale);
 
 	/* the DS3 info template (identity bytes zero; the blob fills them per pad) */
-	t = buf + offsetof(ds45_shim_data_t, info_tmpl);
-	for (i = 0; i < DS45_SHIM_INFO_LEN; i++)
+	t = buf + offsetof(npp_shim_data_t, info_tmpl);
+	for (i = 0; i < NPP_SHIM_INFO_LEN; i++)
 		t[i] = k->info_tmpl[i];
 
 	/* what the word edits replace, so a later load that adopts this blob can
 	 * switch them back on its unload (kernel RAM only) */
-	for (i = 0; i < DS45_SHIM_PID_SITES; i++)
-		put_be64(buf + offsetof(ds45_shim_data_t, pid_orig) + 8 * i, pid_orig[i]);
-	put_be32(buf + offsetof(ds45_shim_data_t, pid_applied), pid_applied);
+	for (i = 0; i < NPP_SHIM_PID_SITES; i++)
+		put_be64(buf + offsetof(npp_shim_data_t, pid_orig) + 8 * i, pid_orig[i]);
+	put_be32(buf + offsetof(npp_shim_data_t, pid_applied), pid_applied);
 }
 
-static void put_redirect(ds45_kpatch_t *p, uint64_t slot, uint64_t expect,
+static void put_redirect(npp_kpatch_t *p, uint64_t slot, uint64_t expect,
                          uint64_t value)
 {
-	p->kind = DS45_KPATCH_PTR;
+	p->kind = NPP_KPATCH_PTR;
 	p->addr = slot;
 	p->expect = expect;
 	p->value = value;
@@ -635,17 +635,17 @@ static void put_redirect(ds45_kpatch_t *p, uint64_t slot, uint64_t expect,
 
 /* ------------------------------------------------------------------------ */
 
-kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
+kshim_result_t kshim_install_from(const npp_shim_kernel_t *tab, int n)
 {
-	const ds45_shim_kernel_t *k = NULL;
-	ds45_kpatch_t check[KSHIM_REDIRECTS + 1], final[KSHIM_FINAL_MAX];
-	ds45_kpatch_t recv_rows[DS45_SHIM_RECV_PATCHES];
-	ds45_kjournal_t j;
-	uint8_t db[sizeof(ds45_shim_data_t)];
+	const npp_shim_kernel_t *k = NULL;
+	npp_kpatch_t check[KSHIM_REDIRECTS + 1], final[KSHIM_FINAL_MAX];
+	npp_kpatch_t recv_rows[NPP_SHIM_RECV_PATCHES];
+	npp_kjournal_t j;
+	uint8_t db[sizeof(npp_shim_data_t)];
 	uint64_t spare_slot, base = 0, size, kernel_toc, flush_opd;
-	uint64_t pid_orig[DS45_SHIM_PID_SITES];
+	uint64_t pid_orig[NPP_SHIM_PID_SITES];
 	uint32_t off, bw, pid_applied;
-	int pid_site_of[DS45_SHIM_PID_SITES];
+	int pid_site_of[NPP_SHIM_PID_SITES];
 	int i, r, npid, nfront, nfinal, pid_ok, skipped, spare_borrowed = 0;
 
 	g_state = KSHIM_OFF;
@@ -669,11 +669,11 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 				break;
 			}
 	if (!k) {
-		DS45_TRACE("kshim_no_entry");
+		NPP_TRACE("kshim_no_entry");
 		return KSHIM_NO_ENTRY;
 	}
 	if (!k->info_tmpl) {
-		DS45_TRACE("kshim_row_no_template");
+		NPP_TRACE("kshim_row_no_template");
 		return KSHIM_FAILED;
 	}
 
@@ -709,7 +709,7 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 			 * g_state stays KSHIM_OFF, so neither the unload nor the scrub acts on
 			 * it (adopt_recv_unsafe). */
 			if (unsafe) {
-				DS45_TRACE_HEX("kshim_adopt_refused", unsafe);
+				NPP_TRACE_HEX("kshim_adopt_refused", unsafe);
 				g_journal.n = 0;
 				g_base = 0;
 				g_zero_size = 0;
@@ -732,11 +732,11 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 			 * hooks) but never scrub a base we did not place - a stale-but-harmless
 			 * blob must not block adoption, so this is not a failure. */
 			g_base = base;
-			g_zero_size = (uint64_t)DS45_SHIM_BLOB_LEN +
+			g_zero_size = (uint64_t)NPP_SHIM_BLOB_LEN +
 			              (k->flush_desc ? KSHIM_FLUSH_OPD_LEN : 0);
 			if (base != k->exec_base || base > k->exec_bound ||
 			    g_zero_size > k->exec_bound - base) {
-				DS45_TRACE("kshim_adopt_base_unexpected");
+				NPP_TRACE("kshim_adopt_base_unexpected");
 				g_zero_size = 0;
 			}
 			/* An applied site that was skipped (not journalled, so not reverted)
@@ -750,16 +750,16 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 			 * install in the same boot fails its zero-check until reboot (trace
 			 * kshim_adopt_blob_kept). Not a failure of this adoption. */
 			if (skipped) {
-				DS45_TRACE_HEX("kshim_adopt_blob_kept", (uint64_t)skipped);
+				NPP_TRACE_HEX("kshim_adopt_blob_kept", (uint64_t)skipped);
 				g_zero_size = 0;
 			}
 			g_scrub_armed = 0;
 			g_state = KSHIM_ALREADY;
-			DS45_TRACE("kshim_already");
+			NPP_TRACE("kshim_already");
 			return KSHIM_ALREADY;
 		}
-		DS45_TRACE_HEX("kshim_verify_step", (uint64_t)r);
-		DS45_TRACE("kshim_verify_FAILED");
+		NPP_TRACE_HEX("kshim_verify_step", (uint64_t)r);
+		NPP_TRACE("kshim_verify_FAILED");
 		return KSHIM_FAILED;
 	}
 
@@ -769,18 +769,18 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	 * [base, base + size) ends at or before exec_bound, and it currently reads
 	 * zero - so nothing else is clobbered. No allocator is called. */
 	base = k->exec_base;
-	size = (uint64_t)DS45_SHIM_BLOB_LEN +
+	size = (uint64_t)NPP_SHIM_BLOB_LEN +
 	       (k->flush_desc ? KSHIM_FLUSH_OPD_LEN : 0);
-	if ((base & 7) || base < DS45_LV2_BASE ||
+	if ((base & 7) || base < NPP_LV2_BASE ||
 	    base > k->exec_bound || size > k->exec_bound - base) {
-		DS45_TRACE("kshim_exec_window");
+		NPP_TRACE("kshim_exec_window");
 		goto fail;
 	}
 	for (off = 0; off < size; off += 8) {
 		uint64_t zq;
 
-		if (ds45_lv2_read(base + off, &zq) || zq != 0) {
-			DS45_TRACE("kshim_exec_not_zero");
+		if (npp_lv2_read(base + off, &zq) || zq != 0) {
+			NPP_TRACE("kshim_exec_not_zero");
 			goto fail;
 		}
 	}
@@ -792,28 +792,28 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	 * finished instruction and a PTR row a pointer; neither has a range to
 	 * check. */
 	for (i = 0; i < npid; i++) {
-		if (final[i].kind != DS45_KPATCH_BRANCH && final[i].kind != DS45_KPATCH_BRANCHL)
+		if (final[i].kind != NPP_KPATCH_BRANCH && final[i].kind != NPP_KPATCH_BRANCHL)
 			continue;
-		r = final[i].kind == DS45_KPATCH_BRANCHL
+		r = final[i].kind == NPP_KPATCH_BRANCHL
 		    ? kpatch_branchl_word(final[i].addr,
 		                          pid_value(pid_site_of[i], &final[i], base), &bw)
 		    : kpatch_branch_word(final[i].addr,
 		                         pid_value(pid_site_of[i], &final[i], base), &bw);
 		if (r) {
-			DS45_TRACE("kshim_exec_range");
+			NPP_TRACE("kshim_exec_range");
 			goto fail;
 		}
 	}
 
 	/* 5. copy the blob, rebasing every relocated word to the load base */
-	for (off = 0; off < DS45_SHIM_BLOB_LEN; off += 8) {
-		uint64_t q = be64(ds45_shim_blob + off);
+	for (off = 0; off < NPP_SHIM_BLOB_LEN; off += 8) {
+		uint64_t q = be64(npp_shim_blob + off);
 
 		if (off_is_reloc(off))
 			q += base;
-		if (ds45_lv2_write(base + off, q)) {
-			DS45_TRACE_HEX("kshim_blob_off", off);
-			DS45_TRACE("kshim_blob_FAILED");
+		if (npp_lv2_write(base + off, q)) {
+			NPP_TRACE_HEX("kshim_blob_off", off);
+			NPP_TRACE("kshim_blob_FAILED");
 			goto fail;
 		}
 	}
@@ -822,8 +822,8 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	 * g_cfg, enabled) */
 	build_data_block(k, pid_orig, pid_applied, db);
 	for (off = 0; off < sizeof(db); off += 8)
-		if (ds45_lv2_write(base + DS45_SHIM_OFF_DATA + off, be64(db + off))) {
-			DS45_TRACE("kshim_data_FAILED");
+		if (npp_lv2_write(base + NPP_SHIM_OFF_DATA + off, be64(db + off))) {
+			NPP_TRACE("kshim_data_FAILED");
 			goto fail;
 		}
 
@@ -832,24 +832,24 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	 * place just past the blob. The kernel TOC is read from the allocator's own
 	 * OPD (+8). flush_desc == 0 would mean the poke is already coherent. */
 	if (k->flush_desc) {
-		if (ds45_lv2_read(k->alloc_desc + 8, &kernel_toc)) {
-			DS45_TRACE("kshim_toc_FAILED");
+		if (npp_lv2_read(k->alloc_desc + 8, &kernel_toc)) {
+			NPP_TRACE("kshim_toc_FAILED");
 			goto fail;
 		}
-		flush_opd = base + DS45_SHIM_BLOB_LEN;
-		if (ds45_lv2_write(flush_opd, k->flush_desc) ||
-		    ds45_lv2_write(flush_opd + 8, kernel_toc)) {
-			DS45_TRACE("kshim_flush_opd_FAILED");
+		flush_opd = base + NPP_SHIM_BLOB_LEN;
+		if (npp_lv2_write(flush_opd, k->flush_desc) ||
+		    npp_lv2_write(flush_opd + 8, kernel_toc)) {
+			NPP_TRACE("kshim_flush_opd_FAILED");
 			goto fail;
 		}
 		spare_borrowed = 1;
-		if (ds45_lv2_write(spare_slot, flush_opd)) {
-			DS45_TRACE("kshim_flush_slot_FAILED");
+		if (npp_lv2_write(spare_slot, flush_opd)) {
+			NPP_TRACE("kshim_flush_slot_FAILED");
 			goto fail;
 		}
-		(void)kshim_spare_call(k->spare_syscall, base, DS45_SHIM_BLOB_LEN);
-		if (ds45_lv2_write(spare_slot, k->spare_slot_expect)) {
-			DS45_TRACE("kshim_flush_restore_FAILED");
+		(void)kshim_spare_call(k->spare_syscall, base, NPP_SHIM_BLOB_LEN);
+		if (npp_lv2_write(spare_slot, k->spare_slot_expect)) {
+			NPP_TRACE("kshim_flush_restore_FAILED");
 			goto fail;
 		}
 		spare_borrowed = 0;
@@ -883,10 +883,10 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	 * edits, to isolate the completion hooks from the helper patch on hardware. */
 	if (g_cfg.shim_event_hook)
 		put_redirect(&final[nfinal++], k->event_slot, k->event_expect,
-		             base + DS45_SHIM_OFF_EVENT);
+		             base + NPP_SHIM_OFF_EVENT);
 	if (g_cfg.shim_enable_hook)
 		put_redirect(&final[nfinal++], k->enable_slot, k->enable_expect,
-		             base + DS45_SHIM_OFF_ENABLE);
+		             base + NPP_SHIM_OFF_ENABLE);
 	/* The input redirect only when SHIM_INPUT_HOOK is set (design Amendment 3).
 	 * With it off, the start-up and enable completion still install (helper, inline
 	 * words, event and enable), the input slot is left original and omitted from
@@ -896,15 +896,15 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	 * still confirms a clean kernel without writing. */
 	if (g_cfg.shim_input_hook)
 		put_redirect(&final[nfinal++], k->input_slot, k->input_expect,
-		             base + DS45_SHIM_OFF_INPUT);
+		             base + NPP_SHIM_OFF_INPUT);
 	for (i = 0; i < npid - nfront; i++)
 		final[nfinal++] = recv_rows[i];
 
 	r = kpatch_apply(final, nfinal, &j);
 	if (r != 0) {
 		/* kpatch_apply has already reverted its own partial writes. */
-		DS45_TRACE_HEX("kshim_patch_step", (uint64_t)r);
-		DS45_TRACE("kshim_patch_FAILED");
+		NPP_TRACE_HEX("kshim_patch_step", (uint64_t)r);
+		NPP_TRACE("kshim_patch_FAILED");
 		goto fail;
 	}
 
@@ -913,7 +913,7 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	g_zero_size = size;
 	g_scrub_armed = 0;        /* unhook arms the scrub once the revert is confirmed */
 	g_state = KSHIM_INSTALLED;
-	DS45_TRACE("kshim_installed");
+	NPP_TRACE("kshim_installed");
 	return KSHIM_INSTALLED;
 
 fail:
@@ -922,7 +922,7 @@ fail:
 	 * and kpatch_apply has already undone any patch it half-applied, so there is
 	 * nothing else to undo. A refusal before the flush writes nothing at all. */
 	if (spare_borrowed)
-		(void)ds45_lv2_write(spare_slot, k->spare_slot_expect);
+		(void)npp_lv2_write(spare_slot, k->spare_slot_expect);
 	g_state = KSHIM_FAILED;
 	g_journal.n = 0;
 	return KSHIM_FAILED;
@@ -930,7 +930,7 @@ fail:
 
 kshim_result_t kshim_install(void)
 {
-	return kshim_install_from(ds45_shim_table, ds45_shim_table_count);
+	return kshim_install_from(npp_shim_table, npp_shim_table_count);
 }
 
 /* Step 1 of unload: switch the redirects back and revert the product-ID words,
@@ -945,7 +945,7 @@ kshim_result_t kshim_install(void)
  * zeroing that blob. */
 void kshim_unhook(void)
 {
-	ds45_kjournal_t saved;
+	npp_kjournal_t saved;
 	uint64_t cur;
 	int i, stuck = 1;
 
@@ -956,7 +956,7 @@ void kshim_unhook(void)
 	kpatch_revert(&g_journal);
 
 	for (i = 0; i < saved.n; i++)
-		if (ds45_lv2_read(saved.qaddr[i], &cur) || cur != saved.orig[i]) {
+		if (npp_lv2_read(saved.qaddr[i], &cur) || cur != saved.orig[i]) {
 			stuck = 0;
 			break;
 		}
@@ -967,10 +967,10 @@ void kshim_unhook(void)
 		g_scrub_armed = g_zero_size != 0;
 	} else {
 		g_scrub_armed = 0;
-		DS45_TRACE("kshim_remove_kept");
+		NPP_TRACE("kshim_remove_kept");
 	}
 
-	DS45_TRACE("kshim_unhooked");
+	NPP_TRACE("kshim_unhooked");
 	g_state = KSHIM_OFF;
 	g_journal.n = 0;
 }
@@ -979,7 +979,7 @@ void kshim_unhook(void)
  * restoring the pristine fill a later install's zero-check needs (RAM-only; a
  * reboot clears it regardless). A no-op unless the preceding unhook armed it, so
  * it never zeroes a blob a still-live redirect points at. The caller drains any
- * in-blob thread before calling this. ds45_lv2_write reads each poke back, and a
+ * in-blob thread before calling this. npp_lv2_write reads each poke back, and a
  * read-back of the first and last qword confirms the ends landed. */
 void kshim_scrub(void)
 {
@@ -990,26 +990,26 @@ void kshim_scrub(void)
 	g_scrub_armed = 0;
 
 	for (off = 0; off < g_zero_size; off += 8)
-		(void)ds45_lv2_write(g_base + off, 0);
-	if ((ds45_lv2_read(g_base, &zq) || zq != 0) ||
+		(void)npp_lv2_write(g_base + off, 0);
+	if ((npp_lv2_read(g_base, &zq) || zq != 0) ||
 	    (g_zero_size >= 8 &&
-	     (ds45_lv2_read(g_base + g_zero_size - 8, &zq) || zq != 0)))
-		DS45_TRACE("kshim_remove_not_zero");
+	     (npp_lv2_read(g_base + g_zero_size - 8, &zq) || zq != 0)))
+		NPP_TRACE("kshim_remove_not_zero");
 
-	DS45_TRACE("kshim_removed");
+	NPP_TRACE("kshim_removed");
 }
 
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 /* Debug tracing (design Amendment 3): the base of the installed data block, so
  * the plugin's housekeeping can read the diagnostic counters back with
- * ds45_lv2_read. 1 and *data_base = g_base + DS45_SHIM_OFF_DATA when a fresh or
+ * npp_lv2_read. 1 and *data_base = g_base + NPP_SHIM_OFF_DATA when a fresh or
  * adopted install is live; 0 otherwise (and *data_base is left alone). */
 int kshim_dbg_data_base(uint64_t *data_base)
 {
 	if (g_state != KSHIM_INSTALLED && g_state != KSHIM_ALREADY)
 		return 0;
 	if (data_base)
-		*data_base = g_base + DS45_SHIM_OFF_DATA;
+		*data_base = g_base + NPP_SHIM_OFF_DATA;
 	return 1;
 }
 
@@ -1020,7 +1020,7 @@ int kshim_dbg_data_base(uint64_t *data_base)
  * proves the region is clean. It traces only exec_probe_call (right before the
  * stub call, so a boot trace that stops at the flush vs at the call tells a
  * flush-stage hang from a stub fault); main.c traces *out and the return value. */
-int kshim_exec_probe(const ds45_shim_kernel_t *k, uint64_t *out)
+int kshim_exec_probe(const npp_shim_kernel_t *k, uint64_t *out)
 {
 	const uint32_t magic = 0x5AED;
 	uint64_t base       = k->exec_base;
@@ -1037,21 +1037,21 @@ int kshim_exec_probe(const ds45_shim_kernel_t *k, uint64_t *out)
 	/* Pre-poke checks (write and borrow nothing on failure): base aligned and in
 	 * window with the whole 40-byte span under exec_bound (overflow-safe); the
 	 * spare slot still the ni stub; the whole span reads zero. */
-	if ((base & 7) || base < DS45_LV2_BASE ||
+	if ((base & 7) || base < NPP_LV2_BASE ||
 	    base > k->exec_bound || span > k->exec_bound - base)
 		return 1;
-	if (ds45_lv2_read(spare_slot, &cur) || cur != k->spare_slot_expect)
+	if (npp_lv2_read(spare_slot, &cur) || cur != k->spare_slot_expect)
 		return 2;
 	for (off = 0; off < span; off += 8)
-		if (ds45_lv2_read(base + off, &zq) || zq != 0)
+		if (npp_lv2_read(base + off, &zq) || zq != 0)
 			return 3;
 	/* the kernel TOC the flush and exec OPDs need (the allocator OPD's +8) */
-	if (ds45_lv2_read(k->alloc_desc + 8, &kernel_toc))
+	if (npp_lv2_read(k->alloc_desc + 8, &kernel_toc))
 		return 4;
 
 	/* li r3,<magic> ; blr - one big-endian qword */
 	stub = ((uint64_t)(0x38600000u | magic) << 32) | 0x4E800020u;
-	if (ds45_lv2_write(base, stub)) {
+	if (npp_lv2_write(base, stub)) {
 		rc = 5;
 		goto cleanup;
 	}
@@ -1059,14 +1059,14 @@ int kshim_exec_probe(const ds45_shim_kernel_t *k, uint64_t *out)
 	/* flush the 8 stub bytes through the borrowed spare slot, exactly like the
 	 * install flush: point the slot at { flush entry, TOC }, call, restore it */
 	if (k->flush_desc) {
-		if (ds45_lv2_write(flush_opd, k->flush_desc) ||
-		    ds45_lv2_write(flush_opd + 8, kernel_toc) ||
-		    ds45_lv2_write(spare_slot, flush_opd)) {
+		if (npp_lv2_write(flush_opd, k->flush_desc) ||
+		    npp_lv2_write(flush_opd + 8, kernel_toc) ||
+		    npp_lv2_write(spare_slot, flush_opd)) {
 			rc = 6;
 			goto cleanup;
 		}
 		(void)kshim_spare_call(k->spare_syscall, base, 8);
-		if (ds45_lv2_write(spare_slot, k->spare_slot_expect)) {
+		if (npp_lv2_write(spare_slot, k->spare_slot_expect)) {
 			rc = 6;
 			goto cleanup;
 		}
@@ -1074,13 +1074,13 @@ int kshim_exec_probe(const ds45_shim_kernel_t *k, uint64_t *out)
 
 	/* point the spare slot at { exec_base, TOC } and call the stub once - the
 	 * whole point of the probe; the stub is in place now, so make the call */
-	if (ds45_lv2_write(exec_opd, base) ||
-	    ds45_lv2_write(exec_opd + 8, kernel_toc) ||
-	    ds45_lv2_write(spare_slot, exec_opd)) {
+	if (npp_lv2_write(exec_opd, base) ||
+	    npp_lv2_write(exec_opd + 8, kernel_toc) ||
+	    npp_lv2_write(spare_slot, exec_opd)) {
 		rc = 7;
 		goto cleanup;
 	}
-	DS45_TRACE("exec_probe_call");
+	NPP_TRACE("exec_probe_call");
 	if (out)
 		*out = kshim_spare_call(k->spare_syscall, 0, 0);   /* set *out before the restore */
 	else
@@ -1090,16 +1090,16 @@ cleanup:
 	/* Single exit: restore the borrowed spare slot (retry once, like install's
 	 * fail:), then zero the stub and both scratch OPDs and verify. Reached for a
 	 * clean run (rc 0) and for codes 5-7; codes 1-4 returned before any write. */
-	if (ds45_lv2_write(spare_slot, k->spare_slot_expect))
-		(void)ds45_lv2_write(spare_slot, k->spare_slot_expect);
+	if (npp_lv2_write(spare_slot, k->spare_slot_expect))
+		(void)npp_lv2_write(spare_slot, k->spare_slot_expect);
 	for (off = 0; off < span; off += 8)
-		(void)ds45_lv2_write(base + off, 0);
+		(void)npp_lv2_write(base + off, 0);
 	for (off = 0; off < span; off += 8)
-		if (ds45_lv2_read(base + off, &zq) || zq != 0) {
+		if (npp_lv2_read(base + off, &zq) || zq != 0) {
 			if (rc == 0)
 				rc = 7;
 			break;
 		}
 	return rc;
 }
-#endif /* DS45_DEBUG */
+#endif /* NPP_DEBUG */

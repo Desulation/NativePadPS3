@@ -69,8 +69,8 @@ Invoke-Case 'restore strips both names' {
 }
 
 Invoke-Case 'trace name matches the plugin' {
-    $hdr = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../src/ds45pad.h')
-    $m = $hdr | Select-String -Pattern '^#define\s+DS45_BOOT_FILE\s+"([^"]+)"' | Select-Object -First 1
+    $hdr = Get-Content -LiteralPath (Join-Path $PSScriptRoot '../src/npp.h')
+    $m = $hdr | Select-String -Pattern '^#define\s+NPP_BOOT_FILE\s+"([^"]+)"' | Select-Object -First 1
     $m -and ($m.Matches[0].Groups[1].Value -ceq $TraceFile)
 }
 

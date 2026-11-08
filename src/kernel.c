@@ -1,9 +1,9 @@
 /*
- * DS45PAD - kernel table matching and the validated cache. See kernel.h.
+ * NPP - kernel table matching and the validated cache. See kernel.h.
  */
 
 #include <stddef.h>
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 #include <sys/process.h>   /* system_call_N: PS3MAPI firmware query */
 #include <sys/sys_time.h>  /* scan timing */
 #endif
@@ -11,11 +11,11 @@
 #include "lv2.h"
 #include "kernel.h"
 
-/* Fingerprinted entries are added here (and wrapped in DS45_NO_TABLE, a
+/* Fingerprinted entries are added here (and wrapped in NPP_NO_TABLE, a
  * test-only define). The legacy entry has no fingerprint and is always
  * present: 0x34FBB0 - 0x3680. */
-const ds45_kernel_t ds45_kernel_table[] = {
-#ifndef DS45_NO_TABLE
+const npp_kernel_t npp_kernel_table[] = {
+#ifndef NPP_NO_TABLE
 	/* DEX 4.92 (Evilnat): TOC 0x3759C0 - 0x35E0 holds the Bluetooth HID
 	 * object (0x4325E0); its live report is at +0xE8. Found by diffing two
 	 * dumps of the window taken with a DualSense connected, untouched and
@@ -24,21 +24,21 @@ const ds45_kernel_t ds45_kernel_table[] = {
 #endif
 	{ "CEX 4.93 (legacy)", 0, 0, 0x800000000034C530ULL, 0xE8 },
 };
-const int ds45_kernel_table_count =
-	(int)(sizeof(ds45_kernel_table) / sizeof(ds45_kernel_table[0]));
+const int npp_kernel_table_count =
+	(int)(sizeof(npp_kernel_table) / sizeof(npp_kernel_table[0]));
 
 int kernel_fingerprint_matches(uint64_t fp_addr, uint64_t fp_hash)
 {
-	uint8_t buf[DS45_FP_LEN];
+	uint8_t buf[NPP_FP_LEN];
 
 	if (fp_addr == 0)
 		return 0;
-	if (ds45_lv2_read_bytes(fp_addr, buf, DS45_FP_LEN) != 0)
+	if (npp_lv2_read_bytes(fp_addr, buf, NPP_FP_LEN) != 0)
 		return 0;
-	return ds45_fnv1a64(buf, DS45_FP_LEN) == fp_hash;
+	return npp_fnv1a64(buf, NPP_FP_LEN) == fp_hash;
 }
 
-const ds45_kernel_t *kernel_match_table(const ds45_kernel_t *tab, int n)
+const npp_kernel_t *kernel_match_table(const npp_kernel_t *tab, int n)
 {
 	int i;
 
@@ -107,7 +107,7 @@ static int get_hex(const char **pp, const char *end, uint64_t *out)
 	return 0;
 }
 
-int kernel_cache_load(ds45_kernel_t *out)
+int kernel_cache_load(npp_kernel_t *out)
 {
 	char buf[160];
 	const char *p, *end;
@@ -116,8 +116,8 @@ int kernel_cache_load(ds45_kernel_t *out)
 
 	if (!out)
 		return -1;
-	/* The real ds45_read_file does not NUL-terminate. */
-	n = ds45_read_file(ds45_path(DS45_PATH_KERNEL_CACHE), buf, (int)sizeof(buf) - 1);
+	/* The real npp_read_file does not NUL-terminate. */
+	n = npp_read_file(npp_path(NPP_PATH_KERNEL_CACHE), buf, (int)sizeof(buf) - 1);
 	if (n <= 0)
 		return -1;
 	buf[n] = 0;
@@ -152,7 +152,7 @@ int kernel_cache_load(ds45_kernel_t *out)
 	return 0;
 }
 
-int kernel_cache_store(const ds45_kernel_t *k)
+int kernel_cache_store(const npp_kernel_t *k)
 {
 	char buf[128];
 	char *p = buf;
@@ -168,12 +168,12 @@ int kernel_cache_store(const ds45_kernel_t *k)
 	*p++ = ' '; p = put_hex(p, k->slot_addr);
 	*p++ = ' '; p = put_hex(p, k->report_off);
 	*p++ = '\n';
-	return ds45_write_file(ds45_path(DS45_PATH_KERNEL_CACHE), buf, (int)(p - buf));
+	return npp_write_file(npp_path(NPP_PATH_KERNEL_CACHE), buf, (int)(p - buf));
 }
 
 void kernel_cache_delete(void)
 {
-	ds45_delete_file(ds45_path(DS45_PATH_KERNEL_CACHE));
+	npp_delete_file(npp_path(NPP_PATH_KERNEL_CACHE));
 }
 
 /* ------------------------------------------------------------------------ */
@@ -181,10 +181,10 @@ void kernel_cache_delete(void)
 /* ------------------------------------------------------------------------ */
 
 /* The real pattern comes from a later task; until then the scan never runs. */
-const ds45_scan_pattern_t ds45_scan_pattern = { NULL, 0, 0, 0 };
+const npp_scan_pattern_t npp_scan_pattern = { NULL, 0, 0, 0 };
 
-#define RING_MASK (DS45_SCAN_MAX_INSNS - 1)
-typedef char ds45_scan_ring_is_pow2[(DS45_SCAN_MAX_INSNS & RING_MASK) == 0 ? 1 : -1];
+#define RING_MASK (NPP_SCAN_MAX_INSNS - 1)
+typedef char npp_scan_ring_is_pow2[(NPP_SCAN_MAX_INSNS & RING_MASK) == 0 ? 1 : -1];
 
 typedef struct {
 	uint64_t insns_addr;   /* address of insns[0] */
@@ -194,7 +194,7 @@ typedef struct {
 	uint32_t report_off;
 } scan_hit_t;
 
-static int insn_is(const ds45_insn_match_t *m, uint32_t w)
+static int insn_is(const npp_insn_match_t *m, uint32_t w)
 {
 	return (w & m->mask) == m->value;
 }
@@ -207,29 +207,29 @@ static int32_t simm16(uint32_t w)
 	return (v & 0x8000) ? v - 0x10000 : v;
 }
 
-static int pattern_valid(const ds45_scan_pattern_t *pat)
+static int pattern_valid(const npp_scan_pattern_t *pat)
 {
 	return pat && pat->insns && pat->count > 0 &&
-	       pat->count <= DS45_SCAN_MAX_INSNS &&
+	       pat->count <= NPP_SCAN_MAX_INSNS &&
 	       pat->toc_ld_index >= 0 && pat->toc_ld_index < pat->count &&
 	       pat->report_off_index >= 0 && pat->report_off_index < pat->count;
 }
 
-/* Nearest stdu r1 at or before insn_addr, at most DS45_SCAN_PROLOGUE_RANGE
+/* Nearest stdu r1 at or before insn_addr, at most NPP_SCAN_PROLOGUE_RANGE
  * bytes back and never below the window. 0 if there is none. */
 static uint64_t find_prologue(uint64_t insn_addr)
 {
-	static const ds45_insn_match_t stdu = DS45_INSN_STDU_R1;
+	static const npp_insn_match_t stdu = NPP_INSN_STDU_R1;
 	uint64_t lo, a, q = 0, q_addr = 0;
 
-	lo = (insn_addr - DS45_LV2_BASE >= DS45_SCAN_PROLOGUE_RANGE)
-	     ? insn_addr - DS45_SCAN_PROLOGUE_RANGE : DS45_LV2_BASE;
+	lo = (insn_addr - NPP_LV2_BASE >= NPP_SCAN_PROLOGUE_RANGE)
+	     ? insn_addr - NPP_SCAN_PROLOGUE_RANGE : NPP_LV2_BASE;
 	for (a = insn_addr; ; a -= 4) {
 		uint32_t w;
 
 		if (q_addr != (a & ~7ULL)) {       /* q_addr 0 = nothing read yet */
 			q_addr = a & ~7ULL;
-			if (ds45_lv2_read(q_addr, &q) != 0)
+			if (npp_lv2_read(q_addr, &q) != 0)
 				return 0;
 		}
 		w = (a & 4) ? (uint32_t)q : (uint32_t)(q >> 32);
@@ -250,12 +250,12 @@ static int resolve_tocs(scan_hit_t *hits, int n)
 	for (i = 0; i < n; i++)
 		if (hits[i].start)
 			pending++;
-	for (a = DS45_LV2_BASE; a < DS45_LV2_BOUND && pending; a += 8) {
-		if (ds45_lv2_read(a, &q) != 0)
+	for (a = NPP_LV2_BASE; a < NPP_LV2_BOUND && pending; a += 8) {
+		if (npp_lv2_read(a, &q) != 0)
 			return -1;
 		/* start 0 (no prologue) never pairs, so neither a zero qword nor
 		 * the initial prev can match */
-		if (q >= DS45_LV2_BASE && q < DS45_LV2_BOUND)
+		if (q >= NPP_LV2_BASE && q < NPP_LV2_BOUND)
 			for (i = 0; i < n; i++)
 				if (hits[i].start && hits[i].start == prev && !hits[i].toc) {
 					hits[i].toc = q;
@@ -266,10 +266,10 @@ static int resolve_tocs(scan_hit_t *hits, int n)
 	return 0;
 }
 
-int kernel_scan(const ds45_scan_pattern_t *pat, ds45_kernel_t *out)
+int kernel_scan(const npp_scan_pattern_t *pat, npp_kernel_t *out)
 {
-	scan_hit_t hits[DS45_SCAN_MAX_HITS];
-	uint32_t ring[DS45_SCAN_MAX_INSNS];
+	scan_hit_t hits[NPP_SCAN_MAX_HITS];
+	uint32_t ring[NPP_SCAN_MAX_INSNS];
 	uint32_t nwords = 0;
 	uint64_t a, q;
 	uint64_t r_fp = 0, r_hash = 0, r_slot = 0;
@@ -282,8 +282,8 @@ int kernel_scan(const ds45_scan_pattern_t *pat, ds45_kernel_t *out)
 	/* Pass 1: one walk, every qword read once. The last count words are kept
 	 * in a ring, so a pattern straddling qwords is matched without
 	 * re-reading. */
-	for (a = DS45_LV2_BASE; a < DS45_LV2_BOUND; a += 8) {
-		if (ds45_lv2_read(a, &q) != 0)
+	for (a = NPP_LV2_BASE; a < NPP_LV2_BOUND; a += 8) {
+		if (npp_lv2_read(a, &q) != 0)
 			return -1;
 		for (half = 0; half < 2; half++) {
 			uint32_t first;
@@ -303,7 +303,7 @@ int kernel_scan(const ds45_scan_pattern_t *pat, ds45_kernel_t *out)
 			off = simm16(ring[(first + (uint32_t)pat->report_off_index) & RING_MASK]);
 			if (off < 0)
 				continue;                  /* dropped, not counted */
-			if (nhits == DS45_SCAN_MAX_HITS)
+			if (nhits == NPP_SCAN_MAX_HITS)
 				return -1;                 /* too many: ambiguous */
 			hits[nhits].insns_addr = a + 4 * (uint64_t)half -
 			                         4 * (uint64_t)(pat->count - 1);
@@ -331,10 +331,10 @@ int kernel_scan(const ds45_scan_pattern_t *pat, ds45_kernel_t *out)
 		if (!hits[i].toc)
 			continue;
 		slot = hits[i].toc + (uint64_t)(int64_t)hits[i].disp;
-		if ((slot & 7) || slot < DS45_LV2_BASE || slot > DS45_LV2_BOUND - 8)
+		if ((slot & 7) || slot < NPP_LV2_BASE || slot > NPP_LV2_BOUND - 8)
 			continue;
 		fp = (hits[i].insns_addr + 4 * (uint64_t)pat->toc_ld_index) & ~7ULL;
-		if (fp > DS45_LV2_BOUND - DS45_FP_LEN)
+		if (fp > NPP_LV2_BOUND - NPP_FP_LEN)
 			continue;   /* fp >= BASE already: insns_addr is in the window */
 
 		if (found) {
@@ -343,11 +343,11 @@ int kernel_scan(const ds45_scan_pattern_t *pat, ds45_kernel_t *out)
 			continue;
 		}
 		{
-			uint8_t buf[DS45_FP_LEN];
+			uint8_t buf[NPP_FP_LEN];
 
-			if (ds45_lv2_read_bytes(fp, buf, DS45_FP_LEN) != 0)
+			if (npp_lv2_read_bytes(fp, buf, NPP_FP_LEN) != 0)
 				continue;
-			r_hash = ds45_fnv1a64(buf, DS45_FP_LEN);
+			r_hash = npp_fnv1a64(buf, NPP_FP_LEN);
 		}
 		r_fp = fp;
 		r_slot = slot;
@@ -369,110 +369,110 @@ int kernel_scan(const ds45_scan_pattern_t *pat, ds45_kernel_t *out)
 /* resolution                                                                */
 /* ------------------------------------------------------------------------ */
 
-static ds45_kernel_t        g_active_rec;
-static const ds45_kernel_t *g_active;
-static ds45_kmatch_t        g_active_src = DS45_KMATCH_NONE;
+static npp_kernel_t        g_active_rec;
+static const npp_kernel_t *g_active;
+static npp_kmatch_t        g_active_src = NPP_KMATCH_NONE;
 
-int kernel_record_usable(const ds45_kernel_t *k)
+int kernel_record_usable(const npp_kernel_t *k)
 {
 	return k && (k->slot_addr & 7) == 0 &&
-	       k->slot_addr >= DS45_LV2_BASE && k->slot_addr <= DS45_LV2_BOUND - 8 &&
-	       (k->report_off & 7) == 0 && k->report_off <= DS45_REPORT_OFF_MAX;
+	       k->slot_addr >= NPP_LV2_BASE && k->slot_addr <= NPP_LV2_BOUND - 8 &&
+	       (k->report_off & 7) == 0 && k->report_off <= NPP_REPORT_OFF_MAX;
 }
 
-static ds45_kmatch_t activate(const ds45_kernel_t *k, ds45_kmatch_t src,
-                              ds45_kernel_t *out)
+static npp_kmatch_t activate(const npp_kernel_t *k, npp_kmatch_t src,
+                              npp_kernel_t *out)
 {
 	g_active_rec = *k;
 	g_active     = &g_active_rec;
 	g_active_src = src;
 	if (out)
 		*out = *k;
-	DS45_TRACE_HEX("kernel_slot_lo", k->slot_addr);
-	DS45_TRACE_HEX("kernel_report_off", k->report_off);
+	NPP_TRACE_HEX("kernel_slot_lo", k->slot_addr);
+	NPP_TRACE_HEX("kernel_report_off", k->report_off);
 	return src;
 }
 
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 static uint64_t now_us(void)
 {
 	return (uint64_t)sys_time_get_system_time();
 }
 #endif
 
-ds45_kmatch_t kernel_resolve_from(const ds45_kernel_t *tab, int n,
-                                  const ds45_scan_pattern_t *pat,
-                                  ds45_kernel_t *out)
+npp_kmatch_t kernel_resolve_from(const npp_kernel_t *tab, int n,
+                                  const npp_scan_pattern_t *pat,
+                                  npp_kernel_t *out)
 {
-	const ds45_kernel_t *hit;
-	ds45_kernel_t rec;
+	const npp_kernel_t *hit;
+	npp_kernel_t rec;
 	int i, r;
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 	uint64_t t0;
 #endif
 
 	g_active     = NULL;
-	g_active_src = DS45_KMATCH_NONE;
+	g_active_src = NPP_KMATCH_NONE;
 
 	/* 1. a verified fingerprint */
 	hit = kernel_match_table(tab, n);
 	if (hit && kernel_record_usable(hit))
-		return activate(hit, DS45_KMATCH_TABLE, out);
+		return activate(hit, NPP_KMATCH_TABLE, out);
 
 	/* 2. the cache: its fingerprint was re-checked by the loader; a record
 	 * that still cannot be read from is a miss and is not kept */
 	if (kernel_cache_load(&rec) == 0) {
 		if (kernel_record_usable(&rec))
-			return activate(&rec, DS45_KMATCH_CACHE, out);
-		DS45_TRACE("kernel_cache_unusable_deleted");
+			return activate(&rec, NPP_KMATCH_CACHE, out);
+		NPP_TRACE("kernel_cache_unusable_deleted");
 		kernel_cache_delete();
 	}
 
 	/* 3. the scan; only a usable result is cached */
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 	t0 = now_us();
 #endif
 	r = kernel_scan(pat, &rec);
-#ifdef DS45_DEBUG
-	DS45_TRACE_HEX("kernel_scan_ms", (now_us() - t0) / 1000);
+#ifdef NPP_DEBUG
+	NPP_TRACE_HEX("kernel_scan_ms", (now_us() - t0) / 1000);
 #endif
 	if (r == 0 && kernel_record_usable(&rec)) {
 		if (kernel_cache_store(&rec) != 0)
-			DS45_TRACE("kernel_cache_store_FAILED");
-		return activate(&rec, DS45_KMATCH_SCAN, out);
+			NPP_TRACE("kernel_cache_store_FAILED");
+		return activate(&rec, NPP_KMATCH_SCAN, out);
 	}
 
 	/* 4. the unverified legacy entry, left to the cross-check */
 	if (tab)
 		for (i = 0; i < n; i++)
 			if (tab[i].fp_addr == 0 && kernel_record_usable(&tab[i]))
-				return activate(&tab[i], DS45_KMATCH_LEGACY, out);
+				return activate(&tab[i], NPP_KMATCH_LEGACY, out);
 
-	return DS45_KMATCH_NONE;
+	return NPP_KMATCH_NONE;
 }
 
-ds45_kmatch_t kernel_resolve(ds45_kernel_t *out)
+npp_kmatch_t kernel_resolve(npp_kernel_t *out)
 {
-	return kernel_resolve_from(ds45_kernel_table, ds45_kernel_table_count,
-	                           &ds45_scan_pattern, out);
+	return kernel_resolve_from(npp_kernel_table, npp_kernel_table_count,
+	                           &npp_scan_pattern, out);
 }
 
-const ds45_kernel_t *kernel_active(void)
+const npp_kernel_t *kernel_active(void)
 {
 	return g_active;
 }
 
-ds45_kmatch_t kernel_active_source(void)
+npp_kmatch_t kernel_active_source(void)
 {
-	return g_active ? g_active_src : DS45_KMATCH_NONE;
+	return g_active ? g_active_src : NPP_KMATCH_NONE;
 }
 
 void kernel_reject_active(void)
 {
 	kernel_cache_delete();
 	g_active     = NULL;
-	g_active_src = DS45_KMATCH_NONE;
-	DS45_TRACE("kernel_rejected");
+	g_active_src = NPP_KMATCH_NONE;
+	NPP_TRACE("kernel_rejected");
 }
 
 /* ------------------------------------------------------------------------ */
@@ -483,7 +483,7 @@ void kernel_reject_active(void)
 #define PS3MAPI_OPCODE_GET_FW_TYPE  0x0013
 #define PS3MAPI_OPCODE_GET_FW_VER   0x0014
 
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 int kernel_fw_query(char *type, int cap, uint32_t *ver)
 {
 	/* Generous: Cobra copies a short string ("CEX", "DEX", ...). */
@@ -518,7 +518,7 @@ int kernel_fw_query(char *type, int cap, uint32_t *ver)
 
 void kernel_log_fw(void)
 {
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 	char tag[32];
 	const char prefix[] = "fw_type=";
 	int32_t rc;
@@ -528,12 +528,12 @@ void kernel_log_fw(void)
 	rc = kernel_fw_query(tag + (sizeof(prefix) - 1),
 	                     (int)(sizeof(tag) - (sizeof(prefix) - 1)), &ver);
 	if (rc != 0) {
-		DS45_TRACE_HEX("fw_type_err", rc);
+		NPP_TRACE_HEX("fw_type_err", rc);
 	} else {
 		for (i = 0; prefix[i]; i++)
 			tag[i] = prefix[i];
-		DS45_TRACE(tag);
+		NPP_TRACE(tag);
 	}
-	DS45_TRACE_HEX("fw_version", ver);
+	NPP_TRACE_HEX("fw_version", ver);
 #endif
 }

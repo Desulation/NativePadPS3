@@ -1,5 +1,5 @@
 /*
- * DS45PAD - virtual DualShock 3 built on the libpad LDD interface.
+ * NPP - virtual DualShock 3 built on the libpad LDD interface.
  *
  * Syscall 574 requests an LDD pad and capabilities; the granted device type
  * and capabilities must be read back, not assumed. Syscall 573 controls data
@@ -14,7 +14,7 @@
 #include <sys/timer.h>
 #include <cell/pad.h>
 
-#include "ds45pad.h"
+#include "npp.h"
 
 /* sys_io debug pad syscalls. Present on Cobra/Mamba CFW and on DEX kernels;
  * ldd_register() falls back to the plain SDK entry point when they are not. */
@@ -40,7 +40,7 @@ static inline int32_t sys_pad_ldd_set_insert_mode(int32_t handle, uint16_t addr,
  * Historical hang reports in this repository predate the pointer-argument
  * correction above and do not prove a universal HEN restriction. Retest on
  * the target firmware; keep the conservative startup default OFF. */
-int ldd_set_insert_into_game(ds45_pad_t *pad, int on)
+int ldd_set_insert_into_game(npp_pad_t *pad, int on)
 {
 	uint32_t mode;
 	int32_t result;
@@ -51,12 +51,12 @@ int ldd_set_insert_into_game(ds45_pad_t *pad, int on)
 	mode = on ? LDD_INSERT_INTO_GAME_ON : LDD_INSERT_INTO_GAME_OFF;
 	result = sys_pad_ldd_set_insert_mode(pad->handle, 0x100, &mode, 4);
 	if (result != 0) {
-		ds45_boot_mark_hex("insert_mode_FAILED", (uint32_t)result);
+		npp_boot_mark_hex("insert_mode_FAILED", (uint32_t)result);
 		return result;
 	}
 	pad->insert_on = on;
 
-	ds45_boot_mark(on ? "insert_into_game_ON" : "insert_into_game_OFF");
+	npp_boot_mark(on ? "insert_into_game_ON" : "insert_into_game_OFF");
 	return 0;
 }
 
@@ -73,14 +73,14 @@ static int registered_count(void)
 {
 	int i, n = 0;
 
-	for (i = 0; i < DS45_MAX_PADS; i++)
+	for (i = 0; i < NPP_MAX_PADS; i++)
 		if (g_pads[i].handle >= 0)
 			n++;
 
 	return n;
 }
 
-int ldd_register(ds45_pad_t *pad)
+int ldd_register(npp_pad_t *pad)
 {
 	uint8_t scratch[0x114];
 	/* volatile: the syscall writes this through the pointer, which the
@@ -97,7 +97,7 @@ int ldd_register(ds45_pad_t *pad)
 	 * physical controller - each adoption creating another pad, until every
 	 * slot was gone and the console listed seven controllers. */
 	if (registered_count() >= (int)g_cfg.max_pads) {
-		ds45_boot_mark("ldd_refused_max_pads");
+		npp_boot_mark("ldd_refused_max_pads");
 		return -1;
 	}
 
@@ -119,34 +119,34 @@ int ldd_register(ds45_pad_t *pad)
 		/* No debug syscalls on this kernel. We still get a working pad,
 		 * just without the conformity flag, so PS button and XMB control
 		 * work but the strictest games may still refuse it. */
-		ds45_boot_mark("ldd_syscall_FAILED_using_fallback");
+		npp_boot_mark("ldd_syscall_FAILED_using_fallback");
 		handle = cellPadLddRegisterController();
 		if (handle < 0) {
-			ds45_boot_mark("ldd_fallback_FAILED");
+			npp_boot_mark("ldd_fallback_FAILED");
 			return -1;
 		}
 		pad->handle = handle;
 	} else {
-		ds45_boot_mark_hex("ldd_syscall_ok_handle", (uint32_t)handle);
+		npp_boot_mark_hex("ldd_syscall_ok_handle", (uint32_t)handle);
 		pad->handle = handle;
 
 	}
 	if (g_cfg.insert_into_game) {
 		int res = ldd_set_insert_into_game(pad, 1);
 		if (res != 0) {
-			ds45_boot_mark_hex("ldd_insert_game_err", (uint32_t)res);
+			npp_boot_mark_hex("ldd_insert_game_err", (uint32_t)res);
 		}
 	} else {
-		ds45_boot_mark("ldd_insert_into_game_off");
+		npp_boot_mark("ldd_insert_into_game_off");
 	}
 
 	pad->port = cellPadLddGetPortNo(pad->handle);
-	if (pad->port < 0 || pad->port >= DS45_MAX_PORT_NUM) {
-		ds45_boot_mark_hex("ldd_invalid_port", (uint32_t)pad->port);
+	if (pad->port < 0 || pad->port >= NPP_MAX_PORT_NUM) {
+		npp_boot_mark_hex("ldd_invalid_port", (uint32_t)pad->port);
 		ldd_unregister(pad);
 		return -1;
 	}
-	ds45_boot_mark_hex("ldd_port", (uint32_t)pad->port);
+	npp_boot_mark_hex("ldd_port", (uint32_t)pad->port);
 
 	/* Read back what the system now advertises for our port. This is the
 	 * number that decides whether a game demanding an official DualShock 3
@@ -155,19 +155,19 @@ int ldd_register(ds45_pad_t *pad)
 		CellPadInfo2 info;
 
 		if (cellPadGetInfo2(&info) == CELL_PAD_OK) {
-			ds45_boot_mark_hex("ldd_cap",
+			npp_boot_mark_hex("ldd_cap",
 			                   info.device_capability[pad->port]);
-			ds45_boot_mark_hex("ldd_devtype",
+			npp_boot_mark_hex("ldd_devtype",
 			                   info.device_type[pad->port]);
 		} else {
-			ds45_boot_mark("ldd_getinfo2_FAILED");
+			npp_boot_mark("ldd_getinfo2_FAILED");
 		}
 	}
 
 	/* Ask for the extended 24 code report: pressure sensitive buttons and
 	 * the sixaxis words are only delivered when both are enabled. */
 	cellPadSetPortSetting((uint32_t)pad->port,
-	                      DS45_SETTING_PRESS_ON | DS45_SETTING_SENSOR_ON);
+	                      NPP_SETTING_PRESS_ON | NPP_SETTING_SENSOR_ON);
 
 	pad->out.player = (uint8_t)((pad->port % 4) + 1);
 	pad->out.led_r  = player_rgb[pad->port % 4][0];
@@ -185,7 +185,7 @@ int ldd_register(ds45_pad_t *pad)
 	return 0;
 }
 
-void ldd_unregister(ds45_pad_t *pad)
+void ldd_unregister(npp_pad_t *pad)
 {
 	if (pad->handle >= 0) {
 		if (pad->insert_on)
@@ -202,14 +202,14 @@ void ldd_unregister(ds45_pad_t *pad)
  * This lives here rather than in the USB path so it works on every transport:
  * the first version only checked it while reading a cabled controller, which
  * left no way at all to arm the pad in Bluetooth mode. */
-#define COMBO_TOGGLE_INSERT (DS45_B_OPTIONS | DS45_B_SHARE | DS45_B_R3)
+#define COMBO_TOGGLE_INSERT (NPP_B_OPTIONS | NPP_B_SHARE | NPP_B_R3)
 
 /* Samples the combination must be steady before it counts, in either
  * direction. The generic pad's report flickers, so a plain edge test saw one
  * press as several and toggled the mode three times in a row. */
 #define COMBO_DEBOUNCE 6
 
-void ldd_check_combo(ds45_pad_t *pad)
+void ldd_check_combo(npp_pad_t *pad)
 {
 	int held = (pad->state.buttons & COMBO_TOGGLE_INSERT) == COMBO_TOGGLE_INSERT;
 	if (!g_cfg.allow_insert_combo)
@@ -245,7 +245,7 @@ static int clamp(int v, int lo, int hi)
 /* Pressure for a digital button. In RAMP mode the value climbs while the
  * button is held, which gives games that read analog pressure (Metal Gear
  * Solid 4 and friends) something to work with. */
-static uint16_t pressure_for(ds45_pad_t *pad, int slot, int held)
+static uint16_t pressure_for(npp_pad_t *pad, int slot, int held)
 {
 	uint32_t ticks;
 
@@ -254,7 +254,7 @@ static uint16_t pressure_for(ds45_pad_t *pad, int slot, int held)
 		return 0;
 	}
 
-	if (g_cfg.pressure == DS45_PRESSURE_DIGITAL)
+	if (g_cfg.pressure == NPP_PRESSURE_DIGITAL)
 		return 255;
 
 	ticks = pad->press_ticks[slot] + g_cfg.poll_ms;
@@ -268,69 +268,69 @@ static uint16_t pressure_for(ds45_pad_t *pad, int slot, int held)
 	return (uint16_t)((ticks * 255) / g_cfg.pressure_ramp_ms);
 }
 
-void ldd_translate(ds45_pad_t *pad, const ds45_state_t *st, uint16_t *button)
+void ldd_translate(npp_pad_t *pad, const npp_state_t *st, uint16_t *button)
 {
 	uint16_t d1 = 0, d2 = 0, ldd = 0;
 	uint8_t lx, ly, rx, ry;
 	uint32_t b = st->buttons;
 	int i;
 
-	for (i = 0; i < DS45_PAD_LEN; i++)
+	for (i = 0; i < NPP_PAD_LEN; i++)
 		button[i] = 0;
 
 	/* A firmware-owned source already delivers its normal controls. Raw USB
 	 * ownership instead needs every control forwarded, even with PS_ONLY=1. */
-	if (g_cfg.ps_only && pad->link == DS45_LINK_BT) {
-		button[DS45_BTN_LDD] = (b & DS45_B_PS) ? DS45_CTRL_LDD_PS : 0;
-		button[DS45_BTN_ANALOG_LEFT_X] = DS45_STICK_CENTER;
-		button[DS45_BTN_ANALOG_LEFT_Y] = DS45_STICK_CENTER;
-		button[DS45_BTN_ANALOG_RIGHT_X] = DS45_STICK_CENTER;
-		button[DS45_BTN_ANALOG_RIGHT_Y] = DS45_STICK_CENTER;
-		for (i = DS45_BTN_SENSOR_X; i <= DS45_BTN_SENSOR_G; i++)
-			button[i] = DS45_SENSOR_CENTER;
+	if (g_cfg.ps_only && pad->link == NPP_LINK_BT) {
+		button[NPP_BTN_LDD] = (b & NPP_B_PS) ? NPP_CTRL_LDD_PS : 0;
+		button[NPP_BTN_ANALOG_LEFT_X] = NPP_STICK_CENTER;
+		button[NPP_BTN_ANALOG_LEFT_Y] = NPP_STICK_CENTER;
+		button[NPP_BTN_ANALOG_RIGHT_X] = NPP_STICK_CENTER;
+		button[NPP_BTN_ANALOG_RIGHT_Y] = NPP_STICK_CENTER;
+		for (i = NPP_BTN_SENSOR_X; i <= NPP_BTN_SENSOR_G; i++)
+			button[i] = NPP_SENSOR_CENTER;
 		return;
 	}
 
 	/* --- digital buttons ------------------------------------------------ */
-	if (b & DS45_B_SHARE)    d1 |= DS45_CTRL_SELECT;
-	if (b & DS45_B_OPTIONS)  d1 |= DS45_CTRL_START;
-	if (b & DS45_B_L3)       d1 |= DS45_CTRL_L3;
-	if (b & DS45_B_R3)       d1 |= DS45_CTRL_R3;
-	if (b & DS45_B_UP)       d1 |= DS45_CTRL_UP;
-	if (b & DS45_B_RIGHT)    d1 |= DS45_CTRL_RIGHT;
-	if (b & DS45_B_DOWN)     d1 |= DS45_CTRL_DOWN;
-	if (b & DS45_B_LEFT)     d1 |= DS45_CTRL_LEFT;
+	if (b & NPP_B_SHARE)    d1 |= NPP_CTRL_SELECT;
+	if (b & NPP_B_OPTIONS)  d1 |= NPP_CTRL_START;
+	if (b & NPP_B_L3)       d1 |= NPP_CTRL_L3;
+	if (b & NPP_B_R3)       d1 |= NPP_CTRL_R3;
+	if (b & NPP_B_UP)       d1 |= NPP_CTRL_UP;
+	if (b & NPP_B_RIGHT)    d1 |= NPP_CTRL_RIGHT;
+	if (b & NPP_B_DOWN)     d1 |= NPP_CTRL_DOWN;
+	if (b & NPP_B_LEFT)     d1 |= NPP_CTRL_LEFT;
 
-	if (b & DS45_B_SQUARE)   d2 |= DS45_CTRL_SQUARE;
-	if (b & DS45_B_CROSS)    d2 |= DS45_CTRL_CROSS;
-	if (b & DS45_B_CIRCLE)   d2 |= DS45_CTRL_CIRCLE;
-	if (b & DS45_B_TRIANGLE) d2 |= DS45_CTRL_TRIANGLE;
-	if (b & DS45_B_L1)       d2 |= DS45_CTRL_L1;
-	if (b & DS45_B_R1)       d2 |= DS45_CTRL_R1;
-	if (b & DS45_B_L2)       d2 |= DS45_CTRL_L2;
-	if (b & DS45_B_R2)       d2 |= DS45_CTRL_R2;
+	if (b & NPP_B_SQUARE)   d2 |= NPP_CTRL_SQUARE;
+	if (b & NPP_B_CROSS)    d2 |= NPP_CTRL_CROSS;
+	if (b & NPP_B_CIRCLE)   d2 |= NPP_CTRL_CIRCLE;
+	if (b & NPP_B_TRIANGLE) d2 |= NPP_CTRL_TRIANGLE;
+	if (b & NPP_B_L1)       d2 |= NPP_CTRL_L1;
+	if (b & NPP_B_R1)       d2 |= NPP_CTRL_R1;
+	if (b & NPP_B_L2)       d2 |= NPP_CTRL_L2;
+	if (b & NPP_B_R2)       d2 |= NPP_CTRL_R2;
 
-	if (b & DS45_B_PS) {
-		ldd |= DS45_CTRL_LDD_PS;
+	if (b & NPP_B_PS) {
+		ldd |= NPP_CTRL_LDD_PS;
 	}
 
-	button[DS45_BTN_DIGITAL1] = d1;
-	button[DS45_BTN_DIGITAL2] = d2;
-	button[DS45_BTN_LDD]      = ldd;
+	button[NPP_BTN_DIGITAL1] = d1;
+	button[NPP_BTN_DIGITAL2] = d2;
+	button[NPP_BTN_LDD]      = ldd;
 
 	/* --- remappable extras ---------------------------------------------- */
-	if (b & DS45_B_TOUCHPAD) ds45_apply_map(g_cfg.map_touchpad, button);
-	if (b & DS45_B_MUTE)     ds45_apply_map(g_cfg.map_mute, button);
-	if (b & DS45_B_FN_L)     ds45_apply_map(g_cfg.map_fn_l, button);
-	if (b & DS45_B_FN_R)     ds45_apply_map(g_cfg.map_fn_r, button);
-	if (b & DS45_B_PADDLE_L) ds45_apply_map(g_cfg.map_paddle_l, button);
-	if (b & DS45_B_PADDLE_R) ds45_apply_map(g_cfg.map_paddle_r, button);
+	if (b & NPP_B_TOUCHPAD) npp_apply_map(g_cfg.map_touchpad, button);
+	if (b & NPP_B_MUTE)     npp_apply_map(g_cfg.map_mute, button);
+	if (b & NPP_B_FN_L)     npp_apply_map(g_cfg.map_fn_l, button);
+	if (b & NPP_B_FN_R)     npp_apply_map(g_cfg.map_fn_r, button);
+	if (b & NPP_B_PADDLE_L) npp_apply_map(g_cfg.map_paddle_l, button);
+	if (b & NPP_B_PADDLE_R) npp_apply_map(g_cfg.map_paddle_r, button);
 
-	if (g_cfg.touch_mode == DS45_TOUCH_BUTTONS && st->touch[0].active) {
+	if (g_cfg.touch_mode == NPP_TOUCH_BUTTONS && st->touch[0].active) {
 		if (st->touch[0].x < 960)
-			ds45_apply_map(g_cfg.map_touch_left, button);
+			npp_apply_map(g_cfg.map_touch_left, button);
 		else
-			ds45_apply_map(g_cfg.map_touch_right, button);
+			npp_apply_map(g_cfg.map_touch_right, button);
 	}
 
 	/* --- sticks ---------------------------------------------------------- */
@@ -339,34 +339,34 @@ void ldd_translate(ds45_pad_t *pad, const ds45_state_t *st, uint16_t *button)
 	 * values are not what a PS3 game expects. */
 	sticks_transform(pad, st, &lx, &ly, &rx, &ry);
 
-	if (g_cfg.touch_mode == DS45_TOUCH_RSTICK && st->touch[0].active) {
+	if (g_cfg.touch_mode == NPP_TOUCH_RSTICK && st->touch[0].active) {
 		/* Touchpad is 1920 wide; height differs between models but the
 		 * error is small enough that a single divisor reads fine. */
 		rx = (uint8_t)clamp((int)st->touch[0].x * 255 / 1920, 0, 255);
 		ry = (uint8_t)clamp((int)st->touch[0].y * 255 / 1000, 0, 255);
 	}
 
-	button[DS45_BTN_ANALOG_LEFT_X]  = lx;
-	button[DS45_BTN_ANALOG_LEFT_Y]  = ly;
-	button[DS45_BTN_ANALOG_RIGHT_X] = rx;
-	button[DS45_BTN_ANALOG_RIGHT_Y] = ry;
+	button[NPP_BTN_ANALOG_LEFT_X]  = lx;
+	button[NPP_BTN_ANALOG_LEFT_Y]  = ly;
+	button[NPP_BTN_ANALOG_RIGHT_X] = rx;
+	button[NPP_BTN_ANALOG_RIGHT_Y] = ry;
 
 	/* --- pressure -------------------------------------------------------- */
-	button[DS45_BTN_PRESS_UP]       = pressure_for(pad, 0,  b & DS45_B_UP);
-	button[DS45_BTN_PRESS_DOWN]     = pressure_for(pad, 1,  b & DS45_B_DOWN);
-	button[DS45_BTN_PRESS_LEFT]     = pressure_for(pad, 2,  b & DS45_B_LEFT);
-	button[DS45_BTN_PRESS_RIGHT]    = pressure_for(pad, 3,  b & DS45_B_RIGHT);
-	button[DS45_BTN_PRESS_TRIANGLE] = pressure_for(pad, 4,  b & DS45_B_TRIANGLE);
-	button[DS45_BTN_PRESS_CIRCLE]   = pressure_for(pad, 5,  b & DS45_B_CIRCLE);
-	button[DS45_BTN_PRESS_CROSS]    = pressure_for(pad, 6,  b & DS45_B_CROSS);
-	button[DS45_BTN_PRESS_SQUARE]   = pressure_for(pad, 7,  b & DS45_B_SQUARE);
-	button[DS45_BTN_PRESS_L1]       = pressure_for(pad, 8,  b & DS45_B_L1);
-	button[DS45_BTN_PRESS_R1]       = pressure_for(pad, 9,  b & DS45_B_R1);
+	button[NPP_BTN_PRESS_UP]       = pressure_for(pad, 0,  b & NPP_B_UP);
+	button[NPP_BTN_PRESS_DOWN]     = pressure_for(pad, 1,  b & NPP_B_DOWN);
+	button[NPP_BTN_PRESS_LEFT]     = pressure_for(pad, 2,  b & NPP_B_LEFT);
+	button[NPP_BTN_PRESS_RIGHT]    = pressure_for(pad, 3,  b & NPP_B_RIGHT);
+	button[NPP_BTN_PRESS_TRIANGLE] = pressure_for(pad, 4,  b & NPP_B_TRIANGLE);
+	button[NPP_BTN_PRESS_CIRCLE]   = pressure_for(pad, 5,  b & NPP_B_CIRCLE);
+	button[NPP_BTN_PRESS_CROSS]    = pressure_for(pad, 6,  b & NPP_B_CROSS);
+	button[NPP_BTN_PRESS_SQUARE]   = pressure_for(pad, 7,  b & NPP_B_SQUARE);
+	button[NPP_BTN_PRESS_L1]       = pressure_for(pad, 8,  b & NPP_B_L1);
+	button[NPP_BTN_PRESS_R1]       = pressure_for(pad, 9,  b & NPP_B_R1);
 
 	/* The triggers are genuinely analog on both controllers, so they never
 	 * need emulating. */
-	button[DS45_BTN_PRESS_L2] = st->l2;
-	button[DS45_BTN_PRESS_R2] = st->r2;
+	button[NPP_BTN_PRESS_L2] = st->l2;
+	button[NPP_BTN_PRESS_R2] = st->r2;
 
 	/* --- motion ---------------------------------------------------------- */
 	if (g_cfg.sixaxis) {
@@ -374,23 +374,23 @@ void ldd_translate(ds45_pad_t *pad, const ds45_state_t *st, uint16_t *button)
 
 		if (g_cfg.swap_xy) { ax = 1; ay = 0; }
 
-		button[DS45_BTN_SENSOR_X] =
+		button[NPP_BTN_SENSOR_X] =
 			sixaxis_from_accel(st->accel[ax], g_cfg.accel_scale, g_cfg.invert_x);
-		button[DS45_BTN_SENSOR_Y] =
+		button[NPP_BTN_SENSOR_Y] =
 			sixaxis_from_accel(st->accel[ay], g_cfg.accel_scale, g_cfg.invert_y);
-		button[DS45_BTN_SENSOR_Z] =
+		button[NPP_BTN_SENSOR_Z] =
 			sixaxis_from_accel(st->accel[2], g_cfg.accel_scale, g_cfg.invert_z);
-		button[DS45_BTN_SENSOR_G] =
+		button[NPP_BTN_SENSOR_G] =
 			sixaxis_from_gyro(st->gyro[1], g_cfg.gyro_scale, g_cfg.invert_g);
 	} else {
-		button[DS45_BTN_SENSOR_X] = DS45_SENSOR_CENTER;
-		button[DS45_BTN_SENSOR_Y] = DS45_SENSOR_CENTER;
-		button[DS45_BTN_SENSOR_Z] = DS45_SENSOR_CENTER;
-		button[DS45_BTN_SENSOR_G] = DS45_SENSOR_CENTER;
+		button[NPP_BTN_SENSOR_X] = NPP_SENSOR_CENTER;
+		button[NPP_BTN_SENSOR_Y] = NPP_SENSOR_CENTER;
+		button[NPP_BTN_SENSOR_Z] = NPP_SENSOR_CENTER;
+		button[NPP_BTN_SENSOR_G] = NPP_SENSOR_CENTER;
 	}
 }
 
-void ldd_inject(ds45_pad_t *pad)
+void ldd_inject(npp_pad_t *pad)
 {
 	CellPadData data;
 	int result, ps;
@@ -399,12 +399,12 @@ void ldd_inject(ds45_pad_t *pad)
 		return;
 
 	memset(&data, 0, sizeof(data));
-	data.len = DS45_PAD_LEN;
+	data.len = NPP_PAD_LEN;
 
 	ldd_translate(pad, &pad->state, (uint16_t *)data.button);
 
-	ps = (data.button[DS45_BTN_LDD] & DS45_CTRL_LDD_PS) != 0;
-	if (g_cfg.ps_only && pad->link == DS45_LINK_BT &&
+	ps = (data.button[NPP_BTN_LDD] & NPP_CTRL_LDD_PS) != 0;
+	if (g_cfg.ps_only && pad->link == NPP_LINK_BT &&
 	    pad->ps_seeded && ps == pad->ps_sent && !pad->inject_error)
 		return;
 
@@ -413,7 +413,7 @@ void ldd_inject(ds45_pad_t *pad)
 	result = cellPadLddDataInsert(pad->handle, &data);
 	if (result != CELL_PAD_OK) {
 		if (result != pad->inject_error)
-			ds45_boot_mark_hex("ldd_insert_FAILED", (uint32_t)result);
+			npp_boot_mark_hex("ldd_insert_FAILED", (uint32_t)result);
 		pad->inject_error = result;
 		return;
 	}

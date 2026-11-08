@@ -1,5 +1,5 @@
 /*
- * DS45PAD - analog stick response.
+ * NPP - analog stick response.
  *
  * This is the part that makes the sticks behave like a DualShock 3's rather
  * than like a generic gamepad's, and it is worth explaining why they differ at
@@ -39,10 +39,10 @@
 #include <string.h>
 #include <cell/cell_fs.h>
 
-#include "ds45pad.h"
+#include "npp.h"
 
-/* Fixed point: axes are normalised to +/- DS45_UNIT internally. */
-#define DS45_UNIT 1024
+/* Fixed point: axes are normalised to +/- NPP_UNIT internally. */
+#define NPP_UNIT 1024
 
 /* Starting assumption before anything has been learned: a conservative range
  * that suits a short-travel Hall effect module. The saturation clamp absorbs
@@ -83,7 +83,7 @@ static int clampi(int v, int lo, int hi)
 	return v;
 }
 
-static void axis_defaults(ds45_axis_cal_t *a)
+static void axis_defaults(npp_axis_cal_t *a)
 {
 	a->min = CAL_DEFAULT_MIN;
 	a->max = CAL_DEFAULT_MAX;
@@ -96,19 +96,19 @@ static void axis_defaults(ds45_axis_cal_t *a)
 }
 
 /* Both half-spans have to be wide enough to be believable. */
-static int axis_sane(const ds45_axis_cal_t *a)
+static int axis_sane(const npp_axis_cal_t *a)
 {
 	return (int)a->ctr - (int)a->min >= CAL_MIN_SPAN &&
 	       (int)a->max - (int)a->ctr >= CAL_MIN_SPAN;
 }
 
-void sticks_cal_defaults(ds45_stickcal_t *cal)
+void sticks_cal_defaults(npp_stickcal_t *cal)
 {
 	int i;
 
 	memset(cal, 0, sizeof(*cal));
 
-	for (i = 0; i < DS45_AXIS_NUM; i++)
+	for (i = 0; i < NPP_AXIS_NUM; i++)
 		axis_defaults(&cal->axis[i]);
 }
 
@@ -147,7 +147,7 @@ void sticks_cal_defaults(ds45_stickcal_t *cal)
  */
 #define CAL_WINDOW    512   /* samples per window - a few seconds of play    */
 #define CAL_CONFIRM     8   /* hits before a bucket is treated as genuine    */
-#define CAL_BUCKETS   DS45_CAL_BUCKETS
+#define CAL_BUCKETS   NPP_CAL_BUCKETS
 
 /* Move `cur` a fraction of the way toward `est`. Widening is quick, since it
  * is how a stick's true reach gets discovered; narrowing is eight times slower
@@ -163,7 +163,7 @@ static int step_toward(int cur, int est, int widening)
 	return cur + (d >> (widening ? 1 : 3));
 }
 
-static void learn_range(ds45_axis_cal_t *c, uint8_t raw, int *dirty)
+static void learn_range(npp_axis_cal_t *c, uint8_t raw, int *dirty)
 {
 	int b, lo = -1, hi = -1, est, now;
 
@@ -218,7 +218,7 @@ static void learn_range(ds45_axis_cal_t *c, uint8_t raw, int *dirty)
 	c->win_count = 0;
 }
 
-static void learn(ds45_axis_cal_t *c, uint8_t raw, int *dirty)
+static void learn(npp_axis_cal_t *c, uint8_t raw, int *dirty)
 {
 	learn_range(c, raw, dirty);
 
@@ -284,9 +284,9 @@ static uint32_t isqrt32(uint32_t n)
 	return root >> 1;
 }
 
-/* Raw byte -> +/- DS45_UNIT, using the two half-spans separately so an
+/* Raw byte -> +/- NPP_UNIT, using the two half-spans separately so an
  * off-centre stick still reaches full scale on both sides. */
-static int normalise(uint8_t raw, const ds45_axis_cal_t *c)
+static int normalise(uint8_t raw, const npp_axis_cal_t *c)
 {
 	int v = (int)raw - (int)c->ctr;
 	int span;
@@ -301,7 +301,7 @@ static int normalise(uint8_t raw, const ds45_axis_cal_t *c)
 			span = 1;
 	}
 
-	return clampi((v * DS45_UNIT) / span, -DS45_UNIT, DS45_UNIT);
+	return clampi((v * NPP_UNIT) / span, -NPP_UNIT, NPP_UNIT);
 }
 
 /* Radial deadzone that rescales the remainder, so the usable range stays
@@ -323,14 +323,14 @@ static void deadzone(int *x, int *y, int dz)
 		return;
 	}
 
-	scaled = (int)(((mag - (uint32_t)dz) * DS45_UNIT) /
-	               (uint32_t)(DS45_UNIT - dz));
+	scaled = (int)(((mag - (uint32_t)dz) * NPP_UNIT) /
+	               (uint32_t)(NPP_UNIT - dz));
 
 	*x = (int)(((long)*x * scaled) / (long)mag);
 	*y = (int)(((long)*y * scaled) / (long)mag);
 }
 
-/* +/- DS45_UNIT -> 0..255 with 0x80 at rest. The two sides use different
+/* +/- NPP_UNIT -> 0..255 with 0x80 at rest. The two sides use different
  * scales because 0x80 is not the midpoint of 0..255: there are 128 steps
  * below it and 127 above. */
 static uint8_t to_byte(int v)
@@ -338,14 +338,14 @@ static uint8_t to_byte(int v)
 	int out;
 
 	if (v < 0)
-		out = 128 + (v * 128) / DS45_UNIT;
+		out = 128 + (v * 128) / NPP_UNIT;
 	else
-		out = 128 + (v * 127) / DS45_UNIT;
+		out = 128 + (v * 127) / NPP_UNIT;
 
 	return (uint8_t)clampi(out, 0, 255);
 }
 
-static void one_stick(ds45_pad_t *pad, int ax, int ay,
+static void one_stick(npp_pad_t *pad, int ax, int ay,
                       uint8_t raw_x, uint8_t raw_y, int learnable,
                       uint8_t *out_x, uint8_t *out_y)
 {
@@ -359,7 +359,7 @@ static void one_stick(ds45_pad_t *pad, int ax, int ay,
 	x = normalise(raw_x, &pad->cal.axis[ax]);
 	y = normalise(raw_y, &pad->cal.axis[ay]);
 
-	dz = (int)(DS45_UNIT * g_cfg.stick_deadzone) / 100;
+	dz = (int)(NPP_UNIT * g_cfg.stick_deadzone) / 100;
 	deadzone(&x, &y, dz);
 
 	/* The DualShock 3 curve. Per axis, not radial: scaling the magnitude
@@ -367,15 +367,15 @@ static void one_stick(ds45_pad_t *pad, int ax, int ay,
 	 * opposite of what is needed. */
 	sat = (int)g_cfg.stick_saturation;
 	if (sat > 0 && sat != 100) {
-		x = clampi((x * 100) / sat, -DS45_UNIT, DS45_UNIT);
-		y = clampi((y * 100) / sat, -DS45_UNIT, DS45_UNIT);
+		x = clampi((x * 100) / sat, -NPP_UNIT, NPP_UNIT);
+		y = clampi((y * 100) / sat, -NPP_UNIT, NPP_UNIT);
 	}
 
 	*out_x = to_byte(x);
 	*out_y = to_byte(y);
 }
 
-void sticks_transform(ds45_pad_t *pad, const ds45_state_t *st,
+void sticks_transform(npp_pad_t *pad, const npp_state_t *st,
                       uint8_t *lx, uint8_t *ly, uint8_t *rx, uint8_t *ry)
 {
 	/* Only a report that genuinely carried stick data may teach the
@@ -398,8 +398,8 @@ void sticks_transform(ds45_pad_t *pad, const ds45_state_t *st,
 	if (!st->lx && !st->ly && !st->rx && !st->ry)
 		learnable = 0;
 
-	one_stick(pad, DS45_AXIS_LX, DS45_AXIS_LY, st->lx, st->ly, learnable, lx, ly);
-	one_stick(pad, DS45_AXIS_RX, DS45_AXIS_RY, st->rx, st->ry, learnable, rx, ry);
+	one_stick(pad, NPP_AXIS_LX, NPP_AXIS_LY, st->lx, st->ly, learnable, lx, ly);
+	one_stick(pad, NPP_AXIS_RX, NPP_AXIS_RY, st->rx, st->ry, learnable, rx, ry);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -409,17 +409,17 @@ void sticks_transform(ds45_pad_t *pad, const ds45_state_t *st,
 /* very first menu after a reboot is already correct.                        */
 /* ------------------------------------------------------------------------ */
 
-static const char axis_tag[DS45_AXIS_NUM] = { 'A', 'B', 'C', 'D' };
+static const char axis_tag[NPP_AXIS_NUM] = { 'A', 'B', 'C', 'D' };
 
 void sticks_load(void)
 {
 	static char text[256];
-	ds45_stickcal_t cal;
+	npp_stickcal_t cal;
 	int len, i, p;
 
 	sticks_cal_defaults(&cal);
 
-	len = ds45_read_file(ds45_path(DS45_PATH_CAL), text, sizeof(text) - 1);
+	len = npp_read_file(npp_path(NPP_PATH_CAL), text, sizeof(text) - 1);
 	if (len > 0) {
 		text[len] = 0;
 
@@ -428,10 +428,10 @@ void sticks_load(void)
 		for (p = 0; p + 3 < len; p++) {
 			int v[3], n = 0, k;
 
-			for (i = 0; i < DS45_AXIS_NUM; i++)
+			for (i = 0; i < NPP_AXIS_NUM; i++)
 				if (text[p] == axis_tag[i])
 					break;
-			if (i == DS45_AXIS_NUM)
+			if (i == NPP_AXIS_NUM)
 				continue;
 
 			k = p + 1;
@@ -447,7 +447,7 @@ void sticks_load(void)
 			}
 
 			if (n == 3 && v[0] < v[1] && v[1] < v[2] && v[2] <= 255) {
-				ds45_axis_cal_t a;
+				npp_axis_cal_t a;
 
 				/* Zero first: the histogram and window counter must not
 				 * start from whatever was on the stack. */
@@ -469,7 +469,7 @@ void sticks_load(void)
 		}
 	}
 
-	for (i = 0; i < DS45_MAX_PADS; i++)
+	for (i = 0; i < NPP_MAX_PADS; i++)
 		g_pads[i].cal = cal;
 }
 
@@ -492,7 +492,7 @@ static int put_dec(char *buf, int v)
 void sticks_save_if_dirty(int force)
 {
 	char text[128];
-	ds45_pad_t *src = NULL;
+	npp_pad_t *src = NULL;
 	int i, n = 0, fd;
 	uint64_t written;
 
@@ -501,7 +501,7 @@ void sticks_save_if_dirty(int force)
 		return;
 	}
 
-	for (i = 0; i < DS45_MAX_PADS; i++) {
+	for (i = 0; i < NPP_MAX_PADS; i++) {
 		if (g_pads[i].in_use && g_pads[i].cal.dirty) {
 			src = &g_pads[i];
 			break;
@@ -511,7 +511,7 @@ void sticks_save_if_dirty(int force)
 	if (!src)
 		return;
 
-	for (i = 0; i < DS45_AXIS_NUM; i++) {
+	for (i = 0; i < NPP_AXIS_NUM; i++) {
 		text[n++] = axis_tag[i];
 		text[n++] = ' ';
 		n += put_dec(&text[n], src->cal.axis[i].min);
@@ -522,7 +522,7 @@ void sticks_save_if_dirty(int force)
 		text[n++] = '\n';
 	}
 
-	if (cellFsOpen(ds45_path(DS45_PATH_CAL), CELL_FS_O_WRONLY | CELL_FS_O_CREAT |
+	if (cellFsOpen(npp_path(NPP_PATH_CAL), CELL_FS_O_WRONLY | CELL_FS_O_CREAT |
 	               CELL_FS_O_TRUNC, &fd, NULL, 0) == CELL_FS_SUCCEEDED) {
 		cellFsWrite(fd, text, (uint64_t)n, &written);
 		cellFsClose(fd);

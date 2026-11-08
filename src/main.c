@@ -1,5 +1,5 @@
 /*
- * DS45PAD - full DualShock 4 / DualSense support for the PlayStation 3.
+ * NPP - full DualShock 4 / DualSense support for the PlayStation 3.
  *
  * Build twice from the same sources:
  *
@@ -21,25 +21,25 @@
 #include <sys/timer.h>
 #include <cell/pad.h>
 
-#include "ds45pad.h"
+#include "npp.h"
 #include "hook.h"
-#ifndef DS45_GAME
+#ifndef NPP_GAME
 #include "kernel.h"
 #include "btcheck.h"
 #include "kshim.h"
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 #include <stddef.h>            /* offsetof, for the shim diagnostic trace */
-#include "lv2.h"               /* ds45_lv2_read */
-#include "../shim/shim_abi.h"  /* ds45_shim_data_t field offsets */
+#include "lv2.h"               /* npp_lv2_read */
+#include "../shim/shim_abi.h"  /* npp_shim_data_t field offsets */
 #endif
 #endif
 
-int ds45_start(uint64_t arg);
-int ds45_stop(void);
+int npp_start(uint64_t arg);
+int npp_stop(void);
 
 SYS_MODULE_INFO(NATIVEPADPS3, 0, 1, 0);
-SYS_MODULE_START(ds45_start);
-SYS_MODULE_STOP(ds45_stop);
+SYS_MODULE_START(npp_start);
+SYS_MODULE_STOP(npp_stop);
 
 #define THREAD_NAME      "nativepadps3"
 #define STOP_THREAD_NAME "nppstop"
@@ -56,12 +56,12 @@ SYS_MODULE_STOP(ds45_stop);
 #define ANNOUNCE_MS      8000
 
 /* g_cfg lives in config.c next to its parser. */
-ds45_pad_t g_pads[DS45_MAX_PADS];
+npp_pad_t g_pads[NPP_MAX_PADS];
 
 static sys_ppu_thread_t thread_id = (sys_ppu_thread_t)-1;
 static volatile int     running;
 
-#ifndef DS45_GAME
+#ifndef NPP_GAME
 
 /* ------------------------------------------------------------------------ */
 /* Rumble                                                                    */
@@ -76,18 +76,18 @@ static volatile int     running;
 typedef struct {
 	uint8_t motor[2];    /* [0] small/high frequency, [1] large/low frequency */
 	uint8_t reserved[6];
-} ds45_act_param_t;
+} npp_act_param_t;
 
-static ds45_detour_t  act_detour;
-static uint8_t        act_small[DS45_MAX_PORT_NUM];
-static uint8_t        act_large[DS45_MAX_PORT_NUM];
+static npp_detour_t  act_detour;
+static uint8_t        act_small[NPP_MAX_PORT_NUM];
+static uint8_t        act_large[NPP_MAX_PORT_NUM];
 
-static int act_direct_hook(uint32_t port_no, ds45_act_param_t *param)
+static int act_direct_hook(uint32_t port_no, npp_act_param_t *param)
 {
-	typedef int (*orig_t)(uint32_t, ds45_act_param_t *);
+	typedef int (*orig_t)(uint32_t, npp_act_param_t *);
 	orig_t orig = (orig_t)(uintptr_t)act_detour.saved;
 
-	if (param && port_no < DS45_MAX_PORT_NUM) {
+	if (param && port_no < NPP_MAX_PORT_NUM) {
 		act_small[port_no] = param->motor[0];
 		act_large[port_no] = param->motor[1];
 	}
@@ -100,21 +100,21 @@ static void rumble_install(void)
 	if (!g_cfg.rumble)
 		return;
 
-	ds45_detour("sys_io", NID_CELL_PAD_SET_ACT_DIRECT,
+	npp_detour("sys_io", NID_CELL_PAD_SET_ACT_DIRECT,
 	            (void *)act_direct_hook, &act_detour);
 }
 
 static void rumble_remove(void)
 {
-	ds45_detour_remove(&act_detour);
+	npp_detour_remove(&act_detour);
 }
 
 /* ------------------------------------------------------------------------ */
 /* VSH Pad Input Interception (Bluetooth Passthrough)                       */
 /* ------------------------------------------------------------------------ */
 
-static ds45_opd_detour_t getdata_detour;
-static ds45_opd_detour_t getdataextra_detour;
+static npp_opd_detour_t getdata_detour;
+static npp_opd_detour_t getdataextra_detour;
 
 static void *const keep_vsh_imports[] = {
 	(void *)cellPadGetData,
@@ -125,8 +125,8 @@ static int is_bt_source_port(uint32_t port_no)
 {
 	int i;
 
-	for (i = 0; i < DS45_MAX_PADS; i++) {
-		if (g_pads[i].in_use && g_pads[i].link == DS45_LINK_BT &&
+	for (i = 0; i < NPP_MAX_PADS; i++) {
+		if (g_pads[i].in_use && g_pads[i].link == NPP_LINK_BT &&
 		    g_pads[i].handle >= 0 && g_pads[i].src_port == (int)port_no)
 			return 1;
 	}
@@ -144,15 +144,15 @@ static void silence_pad_data(CellPadData *data)
 	for (s = 0; s < data->len && s < CELL_PAD_MAX_CODES; s++)
 		data->button[s] = 0;
 
-	if (data->len > DS45_BTN_ANALOG_LEFT_Y) {
-		data->button[DS45_BTN_ANALOG_LEFT_X]  = DS45_STICK_CENTER;
-		data->button[DS45_BTN_ANALOG_LEFT_Y]  = DS45_STICK_CENTER;
-		data->button[DS45_BTN_ANALOG_RIGHT_X] = DS45_STICK_CENTER;
-		data->button[DS45_BTN_ANALOG_RIGHT_Y] = DS45_STICK_CENTER;
+	if (data->len > NPP_BTN_ANALOG_LEFT_Y) {
+		data->button[NPP_BTN_ANALOG_LEFT_X]  = NPP_STICK_CENTER;
+		data->button[NPP_BTN_ANALOG_LEFT_Y]  = NPP_STICK_CENTER;
+		data->button[NPP_BTN_ANALOG_RIGHT_X] = NPP_STICK_CENTER;
+		data->button[NPP_BTN_ANALOG_RIGHT_Y] = NPP_STICK_CENTER;
 	}
 
-	for (s = DS45_BTN_SENSOR_X; s <= DS45_BTN_SENSOR_G && s < data->len; s++)
-		data->button[s] = DS45_SENSOR_CENTER;
+	for (s = NPP_BTN_SENSOR_X; s <= NPP_BTN_SENSOR_G && s < data->len; s++)
+		data->button[s] = NPP_SENSOR_CENTER;
 }
 
 static int vsh_getdata_hook(uint32_t port_no, CellPadData *data)
@@ -198,17 +198,17 @@ static int vsh_getdataextra_hook(uint32_t port_no, uint32_t *device_type,
 
 static void vsh_hooks_install(void)
 {
-	ds45_detour_opd((void *)cellPadGetData,
+	npp_detour_opd((void *)cellPadGetData,
 	                (void *)vsh_getdata_hook, &getdata_detour);
-	ds45_detour_opd((void *)cellPadGetDataExtra,
+	npp_detour_opd((void *)cellPadGetDataExtra,
 	                (void *)vsh_getdataextra_hook, &getdataextra_detour);
-	ds45_boot_mark("vsh_hooks_installed");
+	npp_boot_mark("vsh_hooks_installed");
 }
 
 static void vsh_hooks_remove(void)
 {
-	ds45_detour_opd_remove(&getdata_detour);
-	ds45_detour_opd_remove(&getdataextra_detour);
+	npp_detour_opd_remove(&getdata_detour);
+	npp_detour_opd_remove(&getdataextra_detour);
 }
 
 /* Push whatever the game last asked for to each controller. Only send when
@@ -218,11 +218,11 @@ static void rumble_update(void)
 {
 	int i;
 
-	for (i = 0; i < DS45_MAX_PADS; i++) {
-		ds45_pad_t *pad = &g_pads[i];
+	for (i = 0; i < NPP_MAX_PADS; i++) {
+		npp_pad_t *pad = &g_pads[i];
 		uint8_t weak, strong;
 
-		if (!pad->in_use || pad->port < 0 || pad->port >= DS45_MAX_PORT_NUM)
+		if (!pad->in_use || pad->port < 0 || pad->port >= NPP_MAX_PORT_NUM)
 			continue;
 
 		if (!g_cfg.rumble) {
@@ -254,8 +254,8 @@ static void refresh_ports(void)
 {
 	int i;
 
-	for (i = 0; i < DS45_MAX_PADS; i++) {
-		ds45_pad_t *pad = &g_pads[i];
+	for (i = 0; i < NPP_MAX_PADS; i++) {
+		npp_pad_t *pad = &g_pads[i];
 		int port;
 
 		if (!pad->in_use || pad->handle < 0)
@@ -289,19 +289,19 @@ static void dump_ports_once(void)
 	done = 1;
 
 	if (cellPadGetInfo2(&info) != CELL_PAD_OK) {
-		ds45_boot_mark("ports_getinfo2_FAILED");
+		npp_boot_mark("ports_getinfo2_FAILED");
 		return;
 	}
 
-	ds45_boot_mark_hex("ports_now_connect", info.now_connect);
+	npp_boot_mark_hex("ports_now_connect", info.now_connect);
 
-	for (port = 0; port < DS45_MAX_PORT_NUM; port++) {
-		if (!(info.port_status[port] & DS45_STATUS_CONNECTED))
+	for (port = 0; port < NPP_MAX_PORT_NUM; port++) {
+		if (!(info.port_status[port] & NPP_STATUS_CONNECTED))
 			continue;
 
 		/* One packed line per port: type in the high byte, capability in
 		 * the low byte. type 5 = our LDD pad, 0 = a standard pad. */
-		ds45_boot_mark_hex(
+		npp_boot_mark_hex(
 			(port == 0) ? "port0_type_cap" :
 			(port == 1) ? "port1_type_cap" :
 			(port == 2) ? "port2_type_cap" :
@@ -317,20 +317,20 @@ static void dump_ports_once(void)
 /* Shim diagnostic trace (design Amendment 3, debug VSH builds only)         */
 /*                                                                           */
 /* Each housekeeping tick, when the shim is installed, read its data-block    */
-/* diagnostic counters (via ds45_lv2_read at the base kshim placed it, plus   */
+/* diagnostic counters (via npp_lv2_read at the base kshim placed it, plus   */
 /* the ABI field offsets) and append one line to the boot trace. The file is  */
 /* flushed to the HDD, so the trajectory survives a network drop and can be   */
 /* read back over FTP. Nothing of this exists in release or game builds.      */
 /* ------------------------------------------------------------------------ */
-#ifdef DS45_DEBUG
-/* One 32-bit counter: ds45_lv2_read fetches the aligned qword holding it; the
+#ifdef NPP_DEBUG
+/* One 32-bit counter: npp_lv2_read fetches the aligned qword holding it; the
  * field is the high word of the big-endian qword when its offset is 8-aligned,
  * the low word otherwise. 0 if the read refuses. */
 static uint32_t shim_dbg_u32(uint64_t data_base, size_t field_off)
 {
 	uint64_t q;
 
-	if (ds45_lv2_read(data_base + (field_off & ~7ULL), &q))
+	if (npp_lv2_read(data_base + (field_off & ~7ULL), &q))
 		return 0;
 	return (field_off & 4) ? (uint32_t)q : (uint32_t)(q >> 32);
 }
@@ -372,7 +372,7 @@ static void shim_dbg_cap_line(uint64_t base, const char *tag, size_t len_off,
 
 	if (len > sizeof cap)
 		len = sizeof cap;
-	if (ds45_lv2_read_bytes(base + cap_off, cap, (int)sizeof cap))
+	if (npp_lv2_read_bytes(base + cap_off, cap, (int)sizeof cap))
 		return;
 	if (len == *last_len && memcmp(cap, last, len) == 0)
 		return;
@@ -388,7 +388,7 @@ static void shim_dbg_cap_line(uint64_t base, const char *tag, size_t len_off,
 		*p++ = hex[cap[i] & 0xF];
 	}
 	*p++ = '\n';
-	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+	npp_append_file(NPP_BOOT_FILE, line, (int)(p - line));
 }
 
 /* The last raw DualSense report the input hook read, before translation
@@ -403,15 +403,15 @@ static void shim_dbg_inraw(uint64_t base)
 	uint8_t cap[64];
 	char line[192];   /* "inraw len=0x" + 8 + " seq=0x" + 8 + ' ' + 128 hex digits + '\n' = 165 */
 	char *p = line;
-	uint32_t seq = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_raw_seq));
+	uint32_t seq = shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_in_raw_seq));
 	uint32_t len, i;
 
 	if (seq == last_seq)
 		return;
-	len = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_raw_len));
+	len = shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_in_raw_len));
 	if (len > sizeof cap)
 		len = sizeof cap;
-	if (ds45_lv2_read_bytes(base + offsetof(ds45_shim_data_t, dbg_in_raw), cap, (int)sizeof cap))
+	if (npp_lv2_read_bytes(base + offsetof(npp_shim_data_t, dbg_in_raw), cap, (int)sizeof cap))
 		return;
 	last_seq = seq;
 
@@ -425,7 +425,7 @@ static void shim_dbg_inraw(uint64_t base)
 		*p++ = hex[cap[i] & 0xF];
 	}
 	*p++ = '\n';
-	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+	npp_append_file(NPP_BOOT_FILE, line, (int)(p - line));
 }
 
 /* The last payload of any kind ("outcap"), then the last motor-on payload
@@ -435,12 +435,12 @@ static void shim_dbg_outcap(uint64_t base)
 	static uint8_t last_cap[64], last_on[64], last_off[64];
 	static uint32_t len_cap, len_on, len_off;
 
-	shim_dbg_cap_line(base, "outcap", offsetof(ds45_shim_data_t, dbg_out_cap_len),
-	                  offsetof(ds45_shim_data_t, dbg_out_cap), last_cap, &len_cap);
-	shim_dbg_cap_line(base, "outon", offsetof(ds45_shim_data_t, dbg_out_on_len),
-	                  offsetof(ds45_shim_data_t, dbg_out_on_cap), last_on, &len_on);
-	shim_dbg_cap_line(base, "outoff", offsetof(ds45_shim_data_t, dbg_out_off_len),
-	                  offsetof(ds45_shim_data_t, dbg_out_off_cap), last_off, &len_off);
+	shim_dbg_cap_line(base, "outcap", offsetof(npp_shim_data_t, dbg_out_cap_len),
+	                  offsetof(npp_shim_data_t, dbg_out_cap), last_cap, &len_cap);
+	shim_dbg_cap_line(base, "outon", offsetof(npp_shim_data_t, dbg_out_on_len),
+	                  offsetof(npp_shim_data_t, dbg_out_on_cap), last_on, &len_on);
+	shim_dbg_cap_line(base, "outoff", offsetof(npp_shim_data_t, dbg_out_off_len),
+	                  offsetof(npp_shim_data_t, dbg_out_off_cap), last_off, &len_off);
 }
 
 /* Power-off hook counters ("podbg"): close-send hook entries, calls for a
@@ -455,12 +455,12 @@ static void shim_dbg_podbg(uint64_t base)
 	char line[112];   /* "podbg" + 6 tags (" calls=", " ds=", " rew=", " pass=", " td=", " mode=" = 32) + 6 * 10 + '\n' = 98 */
 	char *p = line;
 
-	v[0] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_po_calls));
-	v[1] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_po_ds));
-	v[2] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_po_rewritten));
-	v[3] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_po_passed));
-	v[4] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_td_calls));
-	v[5] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, po_mode));
+	v[0] = shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_po_calls));
+	v[1] = shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_po_ds));
+	v[2] = shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_po_rewritten));
+	v[3] = shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_po_passed));
+	v[4] = shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_td_calls));
+	v[5] = shim_dbg_u32(base, offsetof(npp_shim_data_t, po_mode));
 	/* The first call always writes: in observe mode every value is still zero at
 	 * install, so a compare against the zeroed static would print nothing until
 	 * the first hook event, and "the line appeared" is the install check. */
@@ -482,7 +482,7 @@ static void shim_dbg_podbg(uint64_t base)
 	p = shim_dbg_tag(p, " mode=");
 	p = shim_dbg_hex(p, v[5]);
 	*p++ = '\n';
-	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+	npp_append_file(NPP_BOOT_FILE, line, (int)(p - line));
 }
 
 /* The power-off event ring ("poevt"): one line per record newer than the last
@@ -500,7 +500,7 @@ static void shim_dbg_poevt(uint64_t base)
 	uint8_t done[8] = {0};
 	int n, s, best, j;
 
-	if (ds45_lv2_read_bytes(base + offsetof(ds45_shim_data_t, po_ring), ring, (int)sizeof ring))
+	if (npp_lv2_read_bytes(base + offsetof(npp_shim_data_t, po_ring), ring, (int)sizeof ring))
 		return;
 
 	for (n = 0; n < 8; n++) {
@@ -536,7 +536,7 @@ static void shim_dbg_poevt(uint64_t base)
 			*p++ = hex[ring[16 * best + j] & 0xF];
 		}
 		*p++ = '\n';
-		ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+		npp_append_file(NPP_BOOT_FILE, line, (int)(p - line));
 	}
 }
 
@@ -553,75 +553,75 @@ static void shim_dbg_trace(void)
 		return;
 
 	p = shim_dbg_tag(p, "shimdbg ev=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_event_calls)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_event_calls)));
 	p = shim_dbg_tag(p, " en=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_enable_calls)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_enable_calls)));
 	p = shim_dbg_tag(p, " in=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_input_calls)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_input_calls)));
 	p = shim_dbg_tag(p, " inds=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_input_ds)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_input_ds)));
 	p = shim_dbg_tag(p, " padmiss=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_input_padmiss)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_input_padmiss)));
 	p = shim_dbg_tag(p, " comp=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_completed)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, stat_completed)));
 	p = shim_dbg_tag(p, " en2=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_enabled)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, stat_enabled)));
 	p = shim_dbg_tag(p, " xl=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_translated)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, stat_translated)));
 	p = shim_dbg_tag(p, " ps=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, stat_passed)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, stat_passed)));
 	p = shim_dbg_tag(p, " lastpid=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_last_pid)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_last_pid)));
 	p = shim_dbg_tag(p, " lastvt=");
-	(void)ds45_lv2_read(base + offsetof(ds45_shim_data_t, dbg_last_vtable), &vt);
+	(void)npp_lv2_read(base + offsetof(npp_shim_data_t, dbg_last_vtable), &vt);
 	p = shim_dbg_hex(p, (uint32_t)(vt >> 32));
 	p = shim_dbg_hex(p, (uint32_t)vt);
 	/* stage 1b: identities taken from a Bluetooth address, completions that fell
 	 * back to the counter, and the last connection handle looked up */
 	p = shim_dbg_tag(p, " idbd=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_id_bd)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_id_bd)));
 	p = shim_dbg_tag(p, " idfb=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_id_fallback)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_id_fallback)));
 	p = shim_dbg_tag(p, " hnd=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_last_handle)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_last_handle)));
 	/* DS3-route output hook: calls entered, calls for a DualSense, calls rewritten,
 	 * calls passed through unchanged, and the last call's payload length */
 	p = shim_dbg_tag(p, " outc=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_calls)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_out_calls)));
 	p = shim_dbg_tag(p, " outds=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_ds)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_out_ds)));
 	p = shim_dbg_tag(p, " outxl=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_translated)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_out_translated)));
 	p = shim_dbg_tag(p, " outps=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_passed)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_out_passed)));
 	p = shim_dbg_tag(p, " outlen=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_last_len)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_out_last_len)));
 	/* rumble-aware capture: motor-on payloads seen, and zero-motor payloads that
 	 * followed one from the same pad */
 	p = shim_dbg_tag(p, " outon=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_on_count)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_out_on_count)));
 	p = shim_dbg_tag(p, " outoff=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_out_off_count)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_out_off_count)));
 	/* DS3-route input (the full report): reads of a DualSense through the bounce
 	 * buffer, reads of 66-79 bytes, results dropped for not fitting the caller's
 	 * buffer, and errors */
 	p = shim_dbg_tag(p, " inb=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_bounce)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_in_bounce)));
 	p = shim_dbg_tag(p, " inbig=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_big)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_in_big)));
 	p = shim_dbg_tag(p, " indrop=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_drop)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_in_drop)));
 	p = shim_dbg_tag(p, " inerr=");
-	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_in_err)));
+	p = shim_dbg_hex(p, shim_dbg_u32(base, offsetof(npp_shim_data_t, dbg_in_err)));
 	*p++ = '\n';
 
-	ds45_append_file(DS45_BOOT_FILE, line, (int)(p - line));
+	npp_append_file(NPP_BOOT_FILE, line, (int)(p - line));
 	shim_dbg_outcap(base);
 	shim_dbg_inraw(base);
 	shim_dbg_podbg(base);
 	shim_dbg_poevt(base);
 }
-#endif /* DS45_DEBUG */
+#endif /* NPP_DEBUG */
 
 /* ------------------------------------------------------------------------ */
 /* Bluetooth kernel support                                                  */
@@ -633,20 +633,20 @@ static void shim_dbg_trace(void)
  * mode never reads the Bluetooth report, so it never reports this. */
 static int bt_unsupported(void)
 {
-	if (g_cfg.mode == DS45_MODE_USB)
+	if (g_cfg.mode == NPP_MODE_USB)
 		return 0;
-	return kernel_active_source() == DS45_KMATCH_NONE ||
+	return kernel_active_source() == NPP_KMATCH_NONE ||
 	       passthru_btcheck_state() == BTCHECK_FAILED;
 }
 
-#endif /* !DS45_GAME */
+#endif /* !NPP_GAME */
 
 static void pads_reset(void)
 {
 	int i;
 
 	memset(g_pads, 0, sizeof(g_pads));
-	for (i = 0; i < DS45_MAX_PADS; i++) {
+	for (i = 0; i < NPP_MAX_PADS; i++) {
 		g_pads[i].handle   = -1;
 		g_pads[i].port     = -1;
 		g_pads[i].src_port = -1;
@@ -657,9 +657,9 @@ static void pads_reset(void)
 	}
 }
 
-static void ds45_thread(uint64_t arg)
+static void npp_thread(uint64_t arg)
 {
-#ifdef DS45_GAME
+#ifdef NPP_GAME
 	uint32_t game_tick = 0;
 #else
 	uint32_t since_rescan = 0;
@@ -669,7 +669,7 @@ static void ds45_thread(uint64_t arg)
 	int bt_toast_shown = 0;
 	int last_btcheck = -1;
 	int usb_ok;
-#ifdef DS45_LV2DUMP
+#ifdef NPP_LV2DUMP
 	lv2dump_t lv2dump = { 0, 0, 0, 0, 0, 0 };
 	static lv2capture_t lv2capture;   /* zeroed; off the 16 KiB stack */
 #endif
@@ -680,28 +680,28 @@ static void ds45_thread(uint64_t arg)
 	/* Startup is traced to a file, one marker written *before* each step that
 	 * touches the system. If the console ever hangs while loading the plugin,
 	 * the last marker in that file names the step that did it. */
-	ds45_boot_mark("start");
-	ds45_boot_mark(DS45PAD_VERSION);
-	ds45_paths_init();
+	npp_boot_mark("start");
+	npp_boot_mark(NPP_VERSION);
+	npp_paths_init();
 
-	ds45_config_defaults(&g_cfg);
-	ds45_config_load(&g_cfg, ds45_path(DS45_PATH_CONFIG));
-	ds45_boot_mark("config");
+	npp_config_defaults(&g_cfg);
+	npp_config_load(&g_cfg, npp_path(NPP_PATH_CONFIG));
+	npp_boot_mark("config");
 
 	if (!g_cfg.enable) {
 		/* Loaded, and deliberately inert. Nothing below this point runs, so
 		 * if the console still misbehaves the module itself is not the
 		 * cause. */
-		ds45_boot_mark("DISABLED_by_config");
+		npp_boot_mark("DISABLED_by_config");
 		sys_ppu_thread_exit(0);
 		return;
 	}
 
 	pads_reset();
 	sticks_load();
-	ds45_boot_mark("sticks");
+	npp_boot_mark("sticks");
 
-#ifdef DS45_GAME
+#ifdef NPP_GAME
 	/* Inside a game process the job is different and much smaller: correct the
 	 * stick curve on the way to the game and touch nothing else. No virtual
 	 * pad, so no device-type problem - see gamehook.c.
@@ -710,7 +710,7 @@ static void ds45_thread(uint64_t arg)
 	 * module list of a running title has libio and libfs but no libusbd - so
 	 * an import of it leaves the loader unable to resolve the module, and
 	 * PS3MAPI just sits there loading forever. */
-	ds45_boot_mark("game_mode");
+	npp_boot_mark("game_mode");
 
 	/* Slot 0 holds the calibration the game hook corrects against. Claim it:
 	 * sticks_save_if_dirty() only considers slots in use, and in this build
@@ -735,7 +735,7 @@ static void ds45_thread(uint64_t arg)
 	gamehook_remove();
 
 	/* Restoring the descriptor does not evict a game thread already executing
-	 * inside the hook, and the module is freed as soon as ds45_stop() returns.
+	 * inside the hook, and the module is freed as soon as npp_stop() returns.
 	 * Without a pause here, unloading the plugin while the game is polling the
 	 * pad can leave a thread running in memory that has just been released. */
 	sys_timer_usleep(300 * 1000);
@@ -749,16 +749,16 @@ static void ds45_thread(uint64_t arg)
 	/* No cellSysmoduleLoadModule() here on purpose: libusbd is already up in
 	 * the VSH process, and importing sysmodule pulls a stub the VSH may not
 	 * resolve at load time - which hangs the console instead of failing. */
-	if (g_cfg.mode != DS45_MODE_BT) {
-		ds45_boot_mark("usb_init");
+	if (g_cfg.mode != NPP_MODE_BT) {
+		npp_boot_mark("usb_init");
 		usb_ok = (usb_init() == 0);
 	} else {
 		usb_ok = 0;
 	}
-	ds45_boot_mark(usb_ok ? "usb_init_OK" : "usb_inactive_or_failed");
+	npp_boot_mark(usb_ok ? "usb_init_OK" : "usb_inactive_or_failed");
 
 	rumble_install();
-	ds45_boot_mark("rumble");
+	npp_boot_mark("rumble");
 
 	/* The cross-check lock must exist before the detours can call in. */
 	passthru_init();
@@ -767,15 +767,15 @@ static void ds45_thread(uint64_t arg)
 	/* Where this kernel keeps the Bluetooth report: once, before the loop.
 	 * A pad that connects meanwhile is adopted on the first rescan after. */
 	kernel_log_fw();
-	if (g_cfg.mode != DS45_MODE_USB) {
-		ds45_kmatch_t kmatch;
+	if (g_cfg.mode != NPP_MODE_USB) {
+		npp_kmatch_t kmatch;
 		kshim_result_t kshim;
 		int probe_ran = 0;
 
-		ds45_boot_mark("kernel_resolve");
+		npp_boot_mark("kernel_resolve");
 		kmatch = kernel_resolve(NULL);
-		ds45_boot_mark("kernel_resolve_done");
-		DS45_TRACE_HEX("kmatch", kmatch);
+		npp_boot_mark("kernel_resolve_done");
+		NPP_TRACE_HEX("kmatch", kmatch);
 		(void)kmatch;                /* release: the trace compiles away */
 
 		/* On a fingerprinted kernel, install the DS3-route shim so a DualSense
@@ -799,56 +799,56 @@ static void ds45_thread(uint64_t arg)
 		 * fingerprint-matched row, exactly where the shim would otherwise go. */
 		if (g_cfg.probe_exec) {
 			probe_ran = 1;
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 			{
-				const ds45_shim_kernel_t *ek = NULL;
+				const npp_shim_kernel_t *ek = NULL;
 				uint64_t exec_out = 0;
 				int ei;
 
-				for (ei = 0; ei < ds45_shim_table_count; ei++)
-					if (ds45_shim_table[ei].fp_addr != 0 &&
-					    kernel_fingerprint_matches(ds45_shim_table[ei].fp_addr,
-					                               ds45_shim_table[ei].fp_hash)) {
-						ek = &ds45_shim_table[ei];
+				for (ei = 0; ei < npp_shim_table_count; ei++)
+					if (npp_shim_table[ei].fp_addr != 0 &&
+					    kernel_fingerprint_matches(npp_shim_table[ei].fp_addr,
+					                               npp_shim_table[ei].fp_hash)) {
+						ek = &npp_shim_table[ei];
 						break;
 					}
-				ds45_boot_mark("exec_probe");
+				npp_boot_mark("exec_probe");
 				if (ek) {
 					int pr = kshim_exec_probe(ek, &exec_out);
 
 					if (pr == 0)
-						DS45_TRACE_HEX("exec_probe", exec_out);
+						NPP_TRACE_HEX("exec_probe", exec_out);
 					else
-						DS45_TRACE_HEX("exec_probe_FAILED", (uint64_t)pr);
+						NPP_TRACE_HEX("exec_probe_FAILED", (uint64_t)pr);
 				} else {
-					DS45_TRACE("exec_probe_no_entry");
+					NPP_TRACE("exec_probe_no_entry");
 				}
 			}
 #endif
 		}
 		if (!probe_ran && g_cfg.enable_shim) {
-			ds45_boot_mark("kshim_install");
+			npp_boot_mark("kshim_install");
 			kshim = kshim_install();
-			DS45_TRACE_HEX("kshim", kshim);
+			NPP_TRACE_HEX("kshim", kshim);
 			(void)kshim;             /* release: the trace compiles away */
 		} else if (!probe_ran) {
-			DS45_TRACE("kshim_gated_off");
+			NPP_TRACE("kshim_gated_off");
 		}
 	}
 
 	if (g_cfg.diag) {
-		diag_msg("=== NativePadPS3 " DS45PAD_VERSION " ===");
+		diag_msg("=== NativePadPS3 " NPP_VERSION " ===");
 		diag_dump_ports();
 	}
 
-	ds45_boot_mark("loop");
+	npp_boot_mark("loop");
 	while (running) {
 		sys_timer_usleep(g_cfg.poll_ms * 1000);
 
 		if (usb_ok)
 			usb_poll();
 
-		if (g_cfg.mode != DS45_MODE_USB)
+		if (g_cfg.mode != NPP_MODE_USB)
 			passthru_poll();
 
 		rumble_update();
@@ -859,18 +859,18 @@ static void ds45_thread(uint64_t arg)
 		if (!announced && uptime >= ANNOUNCE_MS) {
 			announced = 1;
 			if (g_cfg.notify) {
-				ds45_boot_mark("notify");
+				npp_boot_mark("notify");
 				if (bt_unsupported()) {
 					bt_toast_shown = 1;
-					ds45_notify(TOAST_BT_UNSUPPORTED);
+					npp_notify(TOAST_BT_UNSUPPORTED);
 				} else {
-					ds45_notify("NativePadPS3 Caricato / Loaded");
+					npp_notify("NativePadPS3 Caricato / Loaded");
 				}
-				ds45_boot_mark("notify_ok");
+				npp_boot_mark("notify_ok");
 			}
 		}
 
-#ifdef DS45_LV2DUMP
+#ifdef NPP_LV2DUMP
 		/* Debug builds, DUMP_LV2 = 1: after the XMB is up, two dumps once a
 		 * Bluetooth pad is connected. Each holds this thread for a few
 		 * seconds while 8 MiB are read through syscall 6. */
@@ -901,7 +901,7 @@ static void ds45_thread(uint64_t arg)
 			if (usb_ok)
 				usb_report_probes();
 
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 			/* The shim's diagnostic counters to the HDD trace (a no-op unless
 			 * the shim is installed), so the trajectory survives a network
 			 * drop (design Amendment 3). */
@@ -917,28 +917,28 @@ static void ds45_thread(uint64_t arg)
 			 * Bluetooth pads when nothing is attached over USB. Not gated on
 			 * capacity: a bound source pad waits here for the cross-check
 			 * before it is registered, and passthru_scan binds at most one. */
-			if (g_cfg.mode == DS45_MODE_BT ||
-			    (g_cfg.mode == DS45_MODE_AUTO && ds45_usb_pads_active() == 0))
+			if (g_cfg.mode == NPP_MODE_BT ||
+			    (g_cfg.mode == NPP_MODE_AUTO && npp_usb_pads_active() == 0))
 				passthru_scan();
 
-			if (g_cfg.mode != DS45_MODE_USB) {
+			if (g_cfg.mode != NPP_MODE_USB) {
 				int st = passthru_btcheck_state();
 
-				DS45_TRACE_HEX("btcheck_vsh_samples",
+				NPP_TRACE_HEX("btcheck_vsh_samples",
 				               passthru_btcheck_vsh_samples());
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 				passthru_trace_vsh_reads();
 #endif
 				if (st != last_btcheck) {
 					last_btcheck = st;
-					DS45_TRACE_HEX("btcheck", st);
+					NPP_TRACE_HEX("btcheck", st);
 				}
 				/* A cross-check that fails after the announcement still
 				 * gets its toast, once. */
 				if (announced && !bt_toast_shown && g_cfg.notify &&
 				    bt_unsupported()) {
 					bt_toast_shown = 1;
-					ds45_notify(TOAST_BT_UNSUPPORTED);
+					npp_notify(TOAST_BT_UNSUPPORTED);
 				}
 			}
 		}
@@ -956,7 +956,7 @@ static void ds45_thread(uint64_t arg)
 	diag_flush();
 
 	sys_ppu_thread_exit(0);
-#endif /* DS45_GAME */
+#endif /* NPP_GAME */
 }
 
 /* ------------------------------------------------------------------------ */
@@ -968,13 +968,13 @@ static inline void thread_exit(uint64_t val)
 	system_call_1(41, val);
 }
 
-int ds45_start(uint64_t arg)
+int npp_start(uint64_t arg)
 {
 	int result;
 	(void)arg;
 
 	running = 1;
-	result = sys_ppu_thread_create(&thread_id, ds45_thread, 0, THREAD_PRIO,
+	result = sys_ppu_thread_create(&thread_id, npp_thread, 0, THREAD_PRIO,
 	                      THREAD_STACK, SYS_PPU_THREAD_CREATE_JOINABLE,
 	                      THREAD_NAME);
 	if (result != 0) {
@@ -986,7 +986,7 @@ int ds45_start(uint64_t arg)
 	return SYS_PRX_RESIDENT;
 }
 
-static void ds45_stop_thread(uint64_t arg)
+static void npp_stop_thread(uint64_t arg)
 {
 	uint64_t exit_code;
 
@@ -998,7 +998,7 @@ static void ds45_stop_thread(uint64_t arg)
 	if (thread_id != (sys_ppu_thread_t)-1)
 		sys_ppu_thread_join(thread_id, &exit_code);
 
-#ifndef DS45_GAME
+#ifndef NPP_GAME
 	/* Unload the kernel shim in two steps. kshim_unhook() switches the redirects
 	 * and product-ID words back so the DS3 driver stops calling into the blob
 	 * (and arms the scrub only if that reverting actually stuck). Then drain: the
@@ -1010,24 +1010,24 @@ static void ds45_stop_thread(uint64_t arg)
 	sys_timer_usleep(150 * 1000);
 	kshim_scrub();
 
-	/* Never in the game build. ds45_notify() resolves vshtask by walking the
+	/* Never in the game build. npp_notify() resolves vshtask by walking the
 	 * table at 0x1008C + 0x984, which only *is* an import table in the VSH
 	 * process. In a game process that address holds arbitrary EBOOT data being
 	 * read as import stubs: every pointer taken from it is range checked, but
 	 * a plausible address is not necessarily a mapped one, so the walk can
 	 * fault. A notification cannot reach the screen from a game anyway. */
 	if (g_cfg.notify)
-		ds45_notify("NativePadPS3 Disattivato / Unloaded");
+		npp_notify("NativePadPS3 Disattivato / Unloaded");
 #endif
 	sys_ppu_thread_exit(0);
 }
 
-int ds45_stop(void)
+int npp_stop(void)
 {
 	sys_ppu_thread_t t;
 	uint64_t exit_code;
 
-	sys_ppu_thread_create(&t, ds45_stop_thread, 0, THREAD_PRIO,
+	sys_ppu_thread_create(&t, npp_stop_thread, 0, THREAD_PRIO,
 	                      THREAD_STACK, SYS_PPU_THREAD_CREATE_JOINABLE,
 	                      STOP_THREAD_NAME);
 	sys_ppu_thread_join(t, &exit_code);

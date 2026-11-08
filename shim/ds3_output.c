@@ -1,5 +1,5 @@
 /*
- * DS45PAD kernel shim - the DualShock 3 output payload to a DualSense
+ * NPP kernel shim - the DualShock 3 output payload to a DualSense
  * Bluetooth output report 0x31.
  *
  * Built twice: natively by the host tests, and freestanding into the shim blob

@@ -8,10 +8,10 @@
 
 #define PORT 0
 
-static ds45_btraw_t mk_raw(uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry,
+static npp_btraw_t mk_raw(uint8_t lx, uint8_t ly, uint8_t rx, uint8_t ry,
 			   uint16_t d1, uint16_t d2)
 {
-	ds45_btraw_t r;
+	npp_btraw_t r;
 	memset(&r, 0, sizeof(r));
 	r.lx = lx; r.ly = ly; r.rx = rx; r.ry = ry;
 	r.hat = 8;
@@ -25,12 +25,12 @@ static CellPadData mk_vsh(uint16_t lx, uint16_t ly, uint16_t rx, uint16_t ry,
 	CellPadData d;
 	memset(&d, 0, sizeof(d));
 	d.len = 24;
-	d.button[DS45_BTN_ANALOG_LEFT_X]  = lx;
-	d.button[DS45_BTN_ANALOG_LEFT_Y]  = ly;
-	d.button[DS45_BTN_ANALOG_RIGHT_X] = rx;
-	d.button[DS45_BTN_ANALOG_RIGHT_Y] = ry;
-	d.button[DS45_BTN_DIGITAL1] = d1;
-	d.button[DS45_BTN_DIGITAL2] = d2;
+	d.button[NPP_BTN_ANALOG_LEFT_X]  = lx;
+	d.button[NPP_BTN_ANALOG_LEFT_Y]  = ly;
+	d.button[NPP_BTN_ANALOG_RIGHT_X] = rx;
+	d.button[NPP_BTN_ANALOG_RIGHT_Y] = ry;
+	d.button[NPP_BTN_DIGITAL1] = d1;
+	d.button[NPP_BTN_DIGITAL2] = d2;
 	return d;
 }
 
@@ -39,7 +39,7 @@ static CellPadData mk_vsh(uint16_t lx, uint16_t ly, uint16_t rx, uint16_t ry,
 static btcheck_state_t round_match(int i, uint64_t t)
 {
 	uint8_t x = (uint8_t)(0x40 + (i & 0x3F));
-	ds45_btraw_t r = mk_raw(x, 0x80, 0x80, 0x80, 0, 0);
+	npp_btraw_t r = mk_raw(x, 0x80, 0x80, 0x80, 0, 0);
 	CellPadData  d = mk_vsh(x, 0x80, 0x80, 0x80, 0, 0);
 	btcheck_state_t s = btcheck_feed_raw(&r, 1, t);
 	btcheck_observe_vsh(PORT, &d);
@@ -48,7 +48,7 @@ static btcheck_state_t round_match(int i, uint64_t t)
 
 static int test_decode_rejects_report_ids(void)
 {
-	ds45_btraw_t o;
+	npp_btraw_t o;
 	CHECK(bt_report_decode(0xA131808080800800ULL, 0, &o) == -1);
 	CHECK(bt_report_decode(0xA111808080800800ULL, 0, &o) == -1);
 	CHECK(bt_report_decode(0xA001808080800800ULL, 0, &o) == -1);
@@ -64,7 +64,7 @@ static int test_decode_rejects_report_ids(void)
 
 static int test_decode_rejects_bad_hat(void)
 {
-	ds45_btraw_t o;
+	npp_btraw_t o;
 	uint64_t hat;
 	CHECK(bt_report_decode(0xA101808080800900ULL, 0, &o) == -1);   /* hat 9 */
 	CHECK(bt_report_decode(0xA101808080800F00ULL, 0, &o) == -1);   /* hat 15 */
@@ -80,7 +80,7 @@ static int test_decode_rejects_bad_hat(void)
 
 static int test_decode_fields(void)
 {
-	ds45_btraw_t o;
+	npp_btraw_t o;
 	/* sticks 11 22 33 44; b0 = Triangle|Cross | hat 1 (Up+Right);
 	 * b1 = R1|Options|R3; b2 = PS; l2=0x55 r2=0x66 */
 	uint64_t w0 = 0xA101112233448101ULL & ~0xFFFFULL;
@@ -93,16 +93,16 @@ static int test_decode_fields(void)
 	CHECK(o.hat == 1);
 	CHECK(o.l2 == 0x55 && o.r2 == 0x66);
 	CHECK(o.ps == 1);
-	CHECK(o.d1 == (DS45_CTRL_PS | DS45_CTRL_UP | DS45_CTRL_RIGHT |
-		       DS45_CTRL_START | DS45_CTRL_R3));
-	CHECK(o.d2 == (DS45_CTRL_TRIANGLE | DS45_CTRL_CROSS | DS45_CTRL_R1));
+	CHECK(o.d1 == (NPP_CTRL_PS | NPP_CTRL_UP | NPP_CTRL_RIGHT |
+		       NPP_CTRL_START | NPP_CTRL_R3));
+	CHECK(o.d2 == (NPP_CTRL_TRIANGLE | NPP_CTRL_CROSS | NPP_CTRL_R1));
 	/* remaining face/shoulder bits, hat 6 (Left) */
 	w0 = 0xA101808080800000ULL | ((uint64_t)(0x10 | 0x40 | 0x06) << 8) |
 	     (0x01 | 0x04 | 0x08 | 0x10 | 0x40);
 	CHECK(bt_report_decode(w0, 0, &o) == 0);
-	CHECK(o.d1 == (DS45_CTRL_LEFT | DS45_CTRL_SELECT | DS45_CTRL_L3));
-	CHECK(o.d2 == (DS45_CTRL_SQUARE | DS45_CTRL_CIRCLE | DS45_CTRL_L1 |
-		       DS45_CTRL_L2 | DS45_CTRL_R2));
+	CHECK(o.d1 == (NPP_CTRL_LEFT | NPP_CTRL_SELECT | NPP_CTRL_L3));
+	CHECK(o.d2 == (NPP_CTRL_SQUARE | NPP_CTRL_CIRCLE | NPP_CTRL_L1 |
+		       NPP_CTRL_L2 | NPP_CTRL_R2));
 	CHECK(o.ps == 0);
 	return 0;
 }
@@ -127,7 +127,7 @@ static int test_pass_after_50_matches(void)
 
 static int test_tolerance_2(void)
 {
-	ds45_btraw_t r = mk_raw(100, 100, 100, 100, 0, 0);
+	npp_btraw_t r = mk_raw(100, 100, 100, 100, 0, 0);
 	CellPadData  d;
 	int i, k;
 
@@ -135,7 +135,7 @@ static int test_tolerance_2(void)
 	 * raw side alternates between two states so it is live. */
 	btcheck_reset(PORT);
 	for (i = 0; i < 50; i++) {
-		ds45_btraw_t ri = (i & 1) ? mk_raw(110, 110, 110, 110, 0, 0) : r;
+		npp_btraw_t ri = (i & 1) ? mk_raw(110, 110, 110, 110, 0, 0) : r;
 		btcheck_feed_raw(&ri, 1, 1000 + (uint64_t)i);
 		d = (i & 1) ? mk_vsh(108, 112, 108, 112, 0, 0)
 			    : mk_vsh(102, 98, 102, 98, 0, 0);
@@ -171,16 +171,16 @@ static int test_tolerance_2(void)
 
 static int test_buttons_must_match(void)
 {
-	ds45_btraw_t r = mk_raw(128, 128, 128, 128, DS45_CTRL_UP, DS45_CTRL_CROSS);
+	npp_btraw_t r = mk_raw(128, 128, 128, 128, NPP_CTRL_UP, NPP_CTRL_CROSS);
 	CellPadData  d;
 	btcheck_reset(PORT);
 	btcheck_feed_raw(&r, 1, 1000);
 	/* d2 differs: mismatch; matches would otherwise pass at 50 */
-	d = mk_vsh(128, 128, 128, 128, DS45_CTRL_UP, DS45_CTRL_CIRCLE);
+	d = mk_vsh(128, 128, 128, 128, NPP_CTRL_UP, NPP_CTRL_CIRCLE);
 	btcheck_observe_vsh(PORT, &d);
-	d = mk_vsh(128, 128, 128, 128, DS45_CTRL_DOWN, DS45_CTRL_CROSS);
+	d = mk_vsh(128, 128, 128, 128, NPP_CTRL_DOWN, NPP_CTRL_CROSS);
 	btcheck_observe_vsh(PORT, &d);
-	d = mk_vsh(128, 128, 128, 128, DS45_CTRL_UP, DS45_CTRL_CROSS);
+	d = mk_vsh(128, 128, 128, 128, NPP_CTRL_UP, NPP_CTRL_CROSS);
 	btcheck_observe_vsh(PORT, &d);
 	CHECK(btcheck_state() == BTCHECK_PENDING);
 	return 0;
@@ -196,10 +196,10 @@ static int test_ps_bit_ignored(void)
 		btcheck_reset(PORT);
 		for (i = 0; i < 50; i++) {
 			uint8_t x = (i & 1) ? 0x90 : 0x80;
-			ds45_btraw_t r = mk_raw(x, 0x80, 0x80, 0x80,
-				(uint16_t)(DS45_CTRL_UP | (pass == 0 ? DS45_CTRL_PS : 0)), 0);
+			npp_btraw_t r = mk_raw(x, 0x80, 0x80, 0x80,
+				(uint16_t)(NPP_CTRL_UP | (pass == 0 ? NPP_CTRL_PS : 0)), 0);
 			CellPadData d = mk_vsh(x, 0x80, 0x80, 0x80,
-				(uint16_t)(DS45_CTRL_UP | (pass == 1 ? DS45_CTRL_PS : 0)), 0);
+				(uint16_t)(NPP_CTRL_UP | (pass == 1 ? NPP_CTRL_PS : 0)), 0);
 			r.ps = (pass == 0);
 			btcheck_feed_raw(&r, 1, 1000 + (uint64_t)i);
 			btcheck_observe_vsh(PORT, &d);
@@ -212,7 +212,7 @@ static int test_ps_bit_ignored(void)
 static int test_fail_after_11_mismatches(void)
 {
 	int i;
-	ds45_btraw_t r = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
+	npp_btraw_t r = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
 	btcheck_reset(PORT);
 	btcheck_feed_raw(&r, 1, 1000);
 	for (i = 0; i < 10; i++) {
@@ -234,7 +234,7 @@ static int test_fail_after_11_mismatches(void)
 static int test_mismatch_after_pass_ignored(void)
 {
 	int i;
-	ds45_btraw_t r = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
+	npp_btraw_t r = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
 	btcheck_reset(PORT);
 	for (i = 0; i < 50; i++) round_match(i, 1000 + (uint64_t)i);
 	CHECK(btcheck_state() == BTCHECK_PASSED);
@@ -247,7 +247,7 @@ static int test_mismatch_after_pass_ignored(void)
 	return 0;
 }
 
-static ds45_btraw_t distinct_raw(int k)    /* never within tolerance of (10,10,10,10) */
+static npp_btraw_t distinct_raw(int k)    /* never within tolerance of (10,10,10,10) */
 {
 	return mk_raw((uint8_t)(200 + k), 200, 200, 200, 0, (uint16_t)k);
 }
@@ -256,8 +256,8 @@ static int test_history_window(void)
 {
 	int i;
 	CellPadData d;
-	ds45_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
-	ds45_btraw_t b;
+	npp_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
+	npp_btraw_t b;
 
 	/* `a` plus 7 later distinct states: still one of the last 8, so it
 	 * matches. (One match, then 10 mismatches: not past the limit. Had the
@@ -295,8 +295,8 @@ static int test_repeated_raw_does_not_evict_history(void)
 {
 	int i;
 	CellPadData d;
-	ds45_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
-	ds45_btraw_t b = distinct_raw(0);
+	npp_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
+	npp_btraw_t b = distinct_raw(0);
 
 	/* 20 identical raw samples after an older distinct one: the older
 	 * state is still in the history, so a lagging VSH read of it matches */
@@ -320,7 +320,7 @@ static int test_repeated_raw_does_not_evict_history(void)
 static int test_static_raw_never_passes(void)
 {
 	int i;
-	ds45_btraw_t r = mk_raw(128, 128, 128, 128, 0, 0);
+	npp_btraw_t r = mk_raw(128, 128, 128, 128, 0, 0);
 	CellPadData d;
 	btcheck_reset(PORT);
 	btcheck_feed_raw(&r, 1, 1000);
@@ -363,8 +363,8 @@ static int test_old_entry_match_is_neutral(void)
 {
 	int i;
 	CellPadData d;
-	ds45_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
-	ds45_btraw_t b = mk_raw(50, 50, 50, 50, 0, 0);
+	npp_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
+	npp_btraw_t b = mk_raw(50, 50, 50, 50, 0, 0);
 
 	btcheck_reset(PORT);
 	btcheck_feed_raw(&a, 1, 1000);
@@ -394,7 +394,7 @@ static int test_last_match_resets_on_disconnect_and_reset(void)
 {
 	int i;
 	CellPadData d;
-	ds45_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
+	npp_btraw_t a = mk_raw(10, 10, 10, 10, 0, 0);
 
 	/* match, disconnect while pending, reconnect with the same raw state:
 	 * the new history entry is a fresh match again */
@@ -431,7 +431,7 @@ static int test_unchanged_vsh_samples_not_counted(void)
 {
 	int i;
 	CellPadData d;
-	ds45_btraw_t r = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
+	npp_btraw_t r = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
 	btcheck_reset(PORT);
 	btcheck_feed_raw(&r, 1, 1000);
 	d = mk_vsh(0x80, 0x80, 0x80, 0x80, 0, 0);
@@ -440,18 +440,18 @@ static int test_unchanged_vsh_samples_not_counted(void)
 	CHECK(btcheck_vsh_samples_seen() == 1);   /* first one counts */
 	CHECK(btcheck_state() == BTCHECK_PENDING);
 	/* only pad data that feeds the comparison matters for "changed" */
-	d.button[DS45_BTN_SENSOR_X] = 0x1234;
+	d.button[NPP_BTN_SENSOR_X] = 0x1234;
 	btcheck_observe_vsh(PORT, &d);
 	CHECK(btcheck_vsh_samples_seen() == 1);
-	d.button[DS45_BTN_DIGITAL2] = DS45_CTRL_CROSS;
+	d.button[NPP_BTN_DIGITAL2] = NPP_CTRL_CROSS;
 	btcheck_observe_vsh(PORT, &d);
 	CHECK(btcheck_vsh_samples_seen() == 2);
 	/* back to the earlier value is a change again */
-	d.button[DS45_BTN_DIGITAL2] = 0;
+	d.button[NPP_BTN_DIGITAL2] = 0;
 	btcheck_observe_vsh(PORT, &d);
 	CHECK(btcheck_vsh_samples_seen() == 3);
 	/* ... and PS flipping alone is a change too (it is part of the sample) */
-	d.button[DS45_BTN_DIGITAL1] = DS45_CTRL_PS;
+	d.button[NPP_BTN_DIGITAL1] = NPP_CTRL_PS;
 	btcheck_observe_vsh(PORT, &d);
 	CHECK(btcheck_vsh_samples_seen() == 4);
 	return 0;
@@ -490,8 +490,8 @@ static int test_no_raw_yet_is_not_a_mismatch(void)
 
 static int test_freeze_after_disconnect(void)
 {
-	ds45_btraw_t a = mk_raw(1, 2, 3, 4, 0, 0);
-	ds45_btraw_t b = mk_raw(9, 2, 3, 4, 0, 0);
+	npp_btraw_t a = mk_raw(1, 2, 3, 4, 0, 0);
+	npp_btraw_t b = mk_raw(9, 2, 3, 4, 0, 0);
 
 	/* change 250 ms after the disconnect: FAILED */
 	btcheck_reset(PORT);
@@ -557,8 +557,8 @@ static int test_disconnect_while_pending_resets(void)
 {
 	int i;
 	CellPadData d;
-	ds45_btraw_t a = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
-	ds45_btraw_t b = mk_raw(0x90, 0x80, 0x80, 0x80, 0, 0);
+	npp_btraw_t a = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
+	npp_btraw_t b = mk_raw(0x90, 0x80, 0x80, 0x80, 0, 0);
 
 	/* 49 matches, disconnect, 49 more: not 50 (counters were reset) */
 	btcheck_reset(PORT);
@@ -601,7 +601,7 @@ static int test_disconnect_while_pending_resets(void)
 	btcheck_feed_raw(&b, 1, 3000);
 	d = mk_vsh(0x80, 0x80, 0x80, 0x80, 0, 0);       /* only `a` would match */
 	for (i = 0; i < 11; i++) {
-		d.button[DS45_BTN_DIGITAL2] = (uint16_t)i;
+		d.button[NPP_BTN_DIGITAL2] = (uint16_t)i;
 		btcheck_observe_vsh(PORT, &d);
 	}
 	CHECK(btcheck_state() == BTCHECK_FAILED);
@@ -611,7 +611,7 @@ static int test_disconnect_while_pending_resets(void)
 static int test_vsh_comparison_gated_while_disconnected(void)
 {
 	int i;
-	ds45_btraw_t a = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
+	npp_btraw_t a = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
 	btcheck_reset(PORT);
 	btcheck_feed_raw(&a, 1, 1000);
 	btcheck_feed_raw(&a, 0, 2000);
@@ -628,7 +628,7 @@ static int test_vsh_counter_survives_failure(void)
 {
 	int i;
 	CellPadData d;
-	ds45_btraw_t r = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
+	npp_btraw_t r = mk_raw(0x80, 0x80, 0x80, 0x80, 0, 0);
 	btcheck_reset(3);
 	btcheck_feed_raw(&r, 1, 1000);
 	for (i = 0; i < 11; i++) {
@@ -670,10 +670,10 @@ static int test_len_boundary(void)
 {
 	CellPadData d = mk_vsh(1, 2, 3, 4, 0, 0);
 	btcheck_reset(PORT);
-	d.len = DS45_BTN_ANALOG_LEFT_Y;              /* 7: index 7 not covered */
+	d.len = NPP_BTN_ANALOG_LEFT_Y;              /* 7: index 7 not covered */
 	btcheck_observe_vsh(PORT, &d);
 	CHECK(btcheck_vsh_samples_seen() == 0);
-	d.len = DS45_BTN_ANALOG_LEFT_Y + 1;          /* 8: counted */
+	d.len = NPP_BTN_ANALOG_LEFT_Y + 1;          /* 8: counted */
 	btcheck_observe_vsh(PORT, &d);
 	CHECK(btcheck_vsh_samples_seen() == 1);
 	return 0;

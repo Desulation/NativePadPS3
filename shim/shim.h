@@ -1,5 +1,5 @@
 /*
- * DS45PAD kernel shim - host-testable decision logic.
+ * NPP kernel shim - host-testable decision logic.
  *
  * The wrappers the plugin points the kernel's DS3 driver at (the start-up
  * driver's event handler, the enable driver's event handler and the Bluetooth
@@ -22,8 +22,8 @@
  *
  * Licensed under GPLv2 - see LICENSE.
  */
-#ifndef DS45_SHIM_H
-#define DS45_SHIM_H
+#ifndef NPP_SHIM_H
+#define NPP_SHIM_H
 
 #include <stdint.h>
 #include "shim_abi.h"
@@ -36,7 +36,7 @@
 #define SHIM_DRV_DONE     9
 #define SHIM_EN_DONE      0x96   /* u8, enable driver: 1 = done */
 #define SHIM_PAD_ID       0x68   /* big-endian VID then PID */
-#define SHIM_PAD_INFO     0x80   /* the pad's DS3 info block (DS45_SHIM_INFO_LEN bytes) */
+#define SHIM_PAD_INFO     0x80   /* the pad's DS3 info block (NPP_SHIM_INFO_LEN bytes) */
 #define SHIM_PAD_XPORT    0x4F0  /* u64 pointer to the transport object */
 #define SHIM_MGR_OBJS     0x60   /* pad manager: u64 object pointers */
 #define SHIM_MGR_NOBJS    16
@@ -64,11 +64,11 @@ int shim_pid_ok(uint32_t vid, uint32_t pid);
 
 /* 1 if pad is a live Sony pad object (u64 at pad+0 == d->pad_vtable) whose
  * pad+0x68 reads 054C/0CE6, else 0. NULL pad -> 0. */
-int shim_pad_is_dualsense(const ds45_shim_data_t *d, const uint8_t *pad);
+int shim_pad_is_dualsense(const npp_shim_data_t *d, const uint8_t *pad);
 
 /* Start-up event decision. For an enabled shim and a DualSense driver whose
  * substate != 9 and whose info pointer (drv+0x58) is exactly its pad + 0x80:
- * copy d->info_tmpl[0..DS45_SHIM_INFO_LEN) to the info block,
+ * copy d->info_tmpl[0..NPP_SHIM_INFO_LEN) to the info block,
  * bump stat_completed and write the identity bytes info+0x08..+0x0F; store
  * status 0 (4 bytes) and substate 9; return 1 (the caller returns 0 to the
  * framework).
@@ -85,12 +85,12 @@ int shim_pad_is_dualsense(const ds45_shim_data_t *d, const uint8_t *pad);
  * back, dbg_last_handle records the handle looked up. Pure loads.
  * Otherwise write nothing and return 0 (the caller tail-calls the original).
  * drv NULL -> 0. */
-int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv);
+int shim_event_complete(npp_shim_data_t *d, uint8_t *drv);
 
 /* Enable event decision. For an enabled shim and a DualSense whose enable
  * driver has drv[0x96] == 0: store status 0 (4 bytes) and drv[0x96] = 1, bump
  * stat_enabled, return 1. Otherwise write nothing and return 0. drv NULL -> 0. */
-int shim_enable_complete(ds45_shim_data_t *d, uint8_t *drv);
+int shim_enable_complete(npp_shim_data_t *d, uint8_t *drv);
 
 /* Debug tracing (design Amendment 3): record what the input hook saw into the
  * data block's diagnostic counters. Always bumps dbg_input_calls; a NULL pad
@@ -98,12 +98,12 @@ int shim_enable_complete(ds45_shim_data_t *d, uint8_t *drv);
  * pad's class qword at pad+0) and dbg_last_pid (the big-endian VID||PID at
  * pad+0x68), and bumps dbg_input_ds when the pad is a DualSense. NULL d is a
  * no-op. Pure loads and lock-free counter bumps, like the stat_* counters. */
-void shim_input_note(ds45_shim_data_t *d, const uint8_t *pad);
+void shim_input_note(npp_shim_data_t *d, const uint8_t *pad);
 
 /* The pad object whose +0x4F0 holds xport: mgr = *(u64 *)d->pad_mgr; scan the
  * SHIM_MGR_NOBJS u64 pointers at mgr+0x60, skipping nulls. NULL when d->pad_mgr
  * or mgr is 0, or no entry matches. Pure loads, at most 16 iterations. */
-const uint8_t *shim_pad_from_xport(const ds45_shim_data_t *d, const void *xport);
+const uint8_t *shim_pad_from_xport(const npp_shim_data_t *d, const void *xport);
 
 /* Input filter, run after the original read has filled buf. For an enabled
  * DualSense whose buffer holds a basic report 0x01 or a full report 0x31 that
@@ -113,7 +113,7 @@ const uint8_t *shim_pad_from_xport(const ds45_shim_data_t *d, const void *xport)
  * resulting count out (the read's length is a half-word, so uint16_t), and the
  * return value is the resulting count (the read's return value). buf must have
  * room for DS3_REPORT_LEN bytes. d->enabled == 0 forces passthrough. */
-int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
+int shim_input_filter(npp_shim_data_t *d, uint16_t vid, uint16_t pid,
                       uint8_t *buf, uint16_t *len);
 
 /* The bounce read is given this length (the raised read limit: the transport
@@ -154,7 +154,7 @@ int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
  * dst is never written past n <= len_in bytes, for any pad, rc and len_in. Pure
  * loads and stores, a plain bounded byte loop (no memcpy), no other call than
  * the helpers above. */
-int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
+int shim_input_bounce(npp_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
                       uint16_t len_in, int rc);
 
 /* Output decision (DS3-route output), run from the stub on the kernel's output
@@ -187,27 +187,27 @@ int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
  *     DualSense), dbg_out_passed++ and 0 is returned.
  * Only loads from the buffer and the pad, stores into the data block, a plain
  * bounded byte loop (no memcpy), no lock, no call. */
-int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
+int shim_output_filter(npp_shim_data_t *d, const uint8_t *buf, uint16_t len,
                        uint8_t *rid, const uint8_t **out_buf, uint16_t *out_len);
 
 /* Power-off hook (DS3-route power-off; the kernel facts are in
  * docs/superpowers/notes/2026-11-04-ds3-route-poweroff-gate.md). The stub on the
  * kernel's Bluetooth close-connection sender (0x102750 on DEX 4.92, called as
  * (handle, type, report id, payload, length, cookie, obj)) hands the registers
- * r3..r9 to shim_poweroff_filter in a ds45_po_call_t, plus three replacement
+ * r3..r9 to shim_poweroff_filter in a npp_po_call_t, plus three replacement
  * values the filter may fill; on a return of 1 the stub loads r5, r6 and r7 from
  * o_rid, o_buf and o_len and tail-calls the original, on 0 it leaves the
  * registers alone. */
 typedef struct {
 	uint64_t handle, type, rid, payload, len, cookie, obj;
 	uint64_t o_rid, o_buf, o_len;
-} ds45_po_call_t;
+} npp_po_call_t;
 
 /* Stack frame layout of the shim_poweroff and shim_teardown stubs (shim/entry.c),
  * fixed here so the host test can pin them against the call record. Both frames are
  * 16-byte aligned, keep the back chain (stdu) and a 0x30..0x6F parameter save area
  * (eight doublewords) for the C body they call; nothing above the frame is touched.
- *   power-off, frame SHIM_PO_FRAME: the ds45_po_call_t at SHIM_PO_CALL (the stub
+ *   power-off, frame SHIM_PO_FRAME: the npp_po_call_t at SHIM_PO_CALL (the stub
  *     stores r3..r9 into its first seven fields, the body writes o_*), then the
  *     saved LR and the saved kernel r2.
  *   teardown, frame SHIM_TD_FRAME: saved LR, saved kernel r2, then r3..r10. */
@@ -244,7 +244,7 @@ typedef struct {
  * shapes (type 2, rid 1, ...): those pass. Only loads from the call's objects,
  * stores into the data block, plain bounded byte loops, no lock, no call but
  * the pure helpers. */
-int shim_poweroff_filter(ds45_shim_data_t *d, ds45_po_call_t *c);
+int shim_poweroff_filter(npp_shim_data_t *d, npp_po_call_t *c);
 
 /* Teardown observation (the pad teardown routine 0x1174FC(address, flag), called
  * with link register lr). d NULL or disabled: nothing. Otherwise dbg_td_calls++
@@ -252,6 +252,6 @@ int shim_poweroff_filter(ds45_shim_data_t *d, ds45_po_call_t *c);
  * 8-11 the low 32 bits of lr, bytes 12-15 the low 32 bits of addr, big-endian).
  * It returns nothing and changes no argument: the stub tail-calls the original
  * with its registers untouched. */
-void shim_teardown_note(ds45_shim_data_t *d, uint64_t addr, uint64_t flag, uint64_t lr);
+void shim_teardown_note(npp_shim_data_t *d, uint64_t addr, uint64_t flag, uint64_t lr);
 
-#endif /* DS45_SHIM_H */
+#endif /* NPP_SHIM_H */

@@ -1,5 +1,5 @@
 #!/bin/bash
-# DS45PAD - build script (Git Bash / MSYS2 on Windows)
+# NPP - build script (Git Bash / MSYS2 on Windows)
 #
 # Reproduces the build exactly, without GNU make. The make.exe that ships in
 # the webMAN MOD repo is linked as a GUI subsystem binary, so under Git Bash it
@@ -8,17 +8,17 @@
 #
 # Usage:  ./build.sh [game] [debug]
 #   (no argument) -> nativepadps3_vsh.sprx   (boot plugin, runs in the VSH)
-#   game          -> nativepadps3_game.sprx  (-DDS45_GAME; injected into a running
+#   game          -> nativepadps3_game.sprx  (-DNPP_GAME; injected into a running
 #                                        game to correct the stick curve)
-#   debug         -> the same with -DDS45_DEBUG, named nativepadps3_<variant>_debug.sprx
+#   debug         -> the same with -DNPP_DEBUG, named nativepadps3_<variant>_debug.sprx
 #                    (boot trace; the VSH build also gets the LV2 dumper)
 
 set -e
 
 SDK="${CELL_SDK:-C:/ps3sdk/cell}"
-# DS45_TOOLS set: sign with scetool and retail keys (CEX CFW and HEN).
+# NPP_TOOLS set: sign with scetool and retail keys (CEX CFW and HEN).
 # Unset: the SDK's make_fself, a fake-signed SELF for DEX/debug firmware only.
-TOOLS="${DS45_TOOLS:-}"
+TOOLS="${NPP_TOOLS:-}"
 
 PPU_BIN="$SDK/host-win32/ppu/bin"
 HOST_BIN="$SDK/host-win32/bin"
@@ -42,7 +42,7 @@ for a in "$@"; do
 done
 
 if [ "$VARIANT" = "game" ]; then
-	EXTRA="-DDS45_GAME"
+	EXTRA="-DNPP_GAME"
 	OUT="nativepadps3_game.sprx"
 	AUTH="$AUTH_GAME"
 	# A game process loads libio and libfs but *not* libusbd, so the in-game
@@ -60,10 +60,10 @@ else
 	LDLIBS="-lusbd_stub -lio_stub -lfs_stub -llv2_stub"
 fi
 
-# debug: -DDS45_DEBUG (boot trace, and for the VSH build the LV2 dumper),
+# debug: -DNPP_DEBUG (boot trace, and for the VSH build the LV2 dumper),
 # output tagged _debug. Same switch as `make DEBUG=1` / `build.ps1 -Debug`.
 if [ "$DEBUG" = "1" ]; then
-	EXTRA="$EXTRA -DDS45_DEBUG"
+	EXTRA="$EXTRA -DNPP_DEBUG"
 	OUT="${OUT%.sprx}_debug.sprx"
 	if [ "$VARIANT" = "vsh" ]; then
 		SRCS="$SRCS lv2dump.c lv2capture.c"

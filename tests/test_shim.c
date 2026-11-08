@@ -17,7 +17,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "fakes.h"
-#include "ds45_state.h"
+#include "npp_state.h"
 #include "../shim/shim_abi.h"
 #include "../shim/ds3_report.h"
 #include "../shim/ds3_output.h"
@@ -25,13 +25,13 @@
 
 /* shim/entry.c: the one data object the plugin and the blob share, and the
  * three wrappers the kernel's redirects point at. */
-extern ds45_shim_data_t ds45_shim_data;
+extern npp_shim_data_t npp_shim_data;
 int shim_event(void *drv, long status, long len);
 int shim_enable(void *drv, long status, long len);
 int shim_input(void *xport, uint8_t *dst, uint16_t len_in, int flag);
 int shim_output(const uint8_t *buf, uint16_t len, uint8_t *rid,
                 const uint8_t **obuf, uint16_t *olen);
-int shim_poweroff(ds45_po_call_t *c);
+int shim_poweroff(npp_po_call_t *c);
 void shim_teardown(uint64_t addr, uint64_t flag, uint64_t lr);
 
 /* Sony USB identity. */
@@ -90,9 +90,9 @@ static void ds3_neutral(uint8_t e[DS3_REPORT_LEN])
 		e[41 + 2 * i] = 0x02;      /* 512 = 0x0200, big-endian */
 }
 
-static ds45_shim_cfg_t cfg_plain(void)
+static npp_shim_cfg_t cfg_plain(void)
 {
-	ds45_shim_cfg_t c;
+	npp_shim_cfg_t c;
 
 	memset(&c, 0, sizeof(c));
 	c.sixaxis = 1;
@@ -108,7 +108,7 @@ static void tmpl_fill(uint8_t t[0x58])
 	int i;
 
 	memset(t, 0, 0x58);
-	for (i = 0; i < DS45_SHIM_INFO_LEN; i++)
+	for (i = 0; i < NPP_SHIM_INFO_LEN; i++)
 		t[i] = (uint8_t)(i * 5 + 3);
 	for (i = SHIM_ID_OFF; i < SHIM_ID_OFF + 8; i++)
 		t[i] = 0;
@@ -116,13 +116,13 @@ static void tmpl_fill(uint8_t t[0x58])
 
 /* A zeroed, enabled data block with a plain config, the pad vtable and the
  * template (magic/version pre-filled, as the blob ships them). */
-static ds45_shim_data_t data_enabled(void)
+static npp_shim_data_t data_enabled(void)
 {
-	ds45_shim_data_t d;
+	npp_shim_data_t d;
 
 	memset(&d, 0, sizeof(d));
-	d.magic = DS45_SHIM_MAGIC;
-	d.version = DS45_SHIM_VERSION;
+	d.magic = NPP_SHIM_MAGIC;
+	d.version = NPP_SHIM_VERSION;
 	d.enabled = 1;
 	d.pad_vtable = PAD_VTABLE;
 	d.cfg = cfg_plain();
@@ -221,7 +221,7 @@ static int test_pid_ok_table(void)
 
 static int test_pad_identity(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 
 	CHECK(shim_pad_is_dualsense(&d, NULL) == 0);
@@ -248,7 +248,7 @@ static int test_pad_identity(void)
 
 static int test_event_dualsense_completes(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad, pad_before;
 	fake_drv_t drv, drv_before;
 	static const uint8_t id1[8] = { 0x00, 0x00, 0x00, 0x01, 0xD5, 0x00, 0x44, 0x53 };
@@ -263,12 +263,12 @@ static int test_event_dualsense_completes(void)
 
 	/* the template outside the identity, the identity from the counter */
 	CHECK(memcmp(pad.b + 0x80, d.info_tmpl, 8) == 0);
-	CHECK(memcmp(pad.b + 0x90, d.info_tmpl + 0x10, DS45_SHIM_INFO_LEN - 0x10) == 0);
+	CHECK(memcmp(pad.b + 0x90, d.info_tmpl + 0x10, NPP_SHIM_INFO_LEN - 0x10) == 0);
 	CHECK(memcmp(pad.b + 0x88, id1, 8) == 0);
 	/* nothing of the pad outside +0x80..+0xD5 */
 	CHECK(memcmp(pad.b, pad_before.b, 0x80) == 0);
-	CHECK(memcmp(pad.b + 0x80 + DS45_SHIM_INFO_LEN, pad_before.b + 0x80 + DS45_SHIM_INFO_LEN,
-	             PAD_LEN - 0x80 - DS45_SHIM_INFO_LEN) == 0);
+	CHECK(memcmp(pad.b + 0x80 + NPP_SHIM_INFO_LEN, pad_before.b + 0x80 + NPP_SHIM_INFO_LEN,
+	             PAD_LEN - 0x80 - NPP_SHIM_INFO_LEN) == 0);
 
 	/* status 0 (4 bytes), substate 9 - and no other driver byte */
 	for (i = 0; i < 4; i++)
@@ -286,7 +286,7 @@ static int test_event_dualsense_completes(void)
 
 static int test_event_identities_differ(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pa, pb;
 	fake_drv_t da, db;
 
@@ -315,11 +315,11 @@ static int test_event_identities_differ(void)
 
 /* Run shim_event_complete on a driver/pad pair that must pass to the original:
  * it returns 0 and changes neither object nor the data block. */
-static int event_passes(ds45_shim_data_t *d, fake_drv_t *drv, fake_pad_t *pad)
+static int event_passes(npp_shim_data_t *d, fake_drv_t *drv, fake_pad_t *pad)
 {
 	fake_drv_t drv_before = *drv;
 	fake_pad_t pad_before = *pad;
-	ds45_shim_data_t d_before;
+	npp_shim_data_t d_before;
 
 	memcpy(&d_before, d, sizeof(d_before));
 	CHECK(shim_event_complete(d, drv->b) == 0);
@@ -336,7 +336,7 @@ static int event_passes(ds45_shim_data_t *d, fake_drv_t *drv, fake_pad_t *pad)
 
 static int test_event_after_done_passes(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 	fake_drv_t drv;
 
@@ -349,7 +349,7 @@ static int test_event_after_done_passes(void)
 
 static int test_event_ds3_untouched(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 	fake_drv_t drv;
 
@@ -361,7 +361,7 @@ static int test_event_ds3_untouched(void)
 
 static int test_event_bad_pad_untouched(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 	fake_drv_t drv;
 
@@ -383,7 +383,7 @@ static int test_event_bad_pad_untouched(void)
 
 static int test_event_disabled(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 	fake_drv_t drv;
 
@@ -400,7 +400,7 @@ static int test_event_disabled(void)
  * the other buffer or the data block changes. */
 static int test_event_info_not_pad_untouched(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad, other, other_before;
 	fake_drv_t drv;
 	static const int pad_offs[] = { 0, 0x78, 0x88 };
@@ -439,7 +439,7 @@ static int test_event_info_not_pad_untouched(void)
 
 static int test_enable_dualsense_completes(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad, pad_before;
 	fake_en_t en, en_before;
 	int i;
@@ -463,11 +463,11 @@ static int test_enable_dualsense_completes(void)
 	return 0;
 }
 
-static int enable_passes(ds45_shim_data_t *d, fake_en_t *en, fake_pad_t *pad)
+static int enable_passes(npp_shim_data_t *d, fake_en_t *en, fake_pad_t *pad)
 {
 	fake_en_t en_before = *en;
 	fake_pad_t pad_before = *pad;
-	ds45_shim_data_t d_before;
+	npp_shim_data_t d_before;
 
 	memcpy(&d_before, d, sizeof(d_before));
 	CHECK(shim_enable_complete(d, en->b) == 0);
@@ -483,7 +483,7 @@ static int enable_passes(ds45_shim_data_t *d, fake_en_t *en, fake_pad_t *pad)
 
 static int test_enable_passes(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 	fake_en_t en;
 
@@ -528,7 +528,7 @@ static uint64_t     g_mgr_ptr;          /* the global holding the manager pointe
 static fake_pad_t   g_pad_ds, g_pad_ds3;
 static fake_xport_t g_x_ds, g_x_ds3, g_x_other;
 
-static void mgr_make(ds45_shim_data_t *d)
+static void mgr_make(npp_shim_data_t *d)
 {
 	memset(g_mgr.b, 0, sizeof(g_mgr.b));
 	memset(g_mgr.b, 0x77, SHIM_MGR_OBJS);           /* the manager's other fields */
@@ -547,7 +547,7 @@ static void mgr_make(ds45_shim_data_t *d)
 
 static int test_pad_from_xport(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 
 	mgr_make(&d);
 	CHECK(shim_pad_from_xport(&d, &g_x_ds) == g_pad_ds.b);
@@ -578,7 +578,7 @@ static int test_pad_from_xport(void)
 /* A DualShock 3's own report passes straight through: not a DualSense. */
 static int test_input_ds3_untouched(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	uint8_t buf[64], orig[64];
 	uint16_t n = DS3_REPORT_LEN;
 	int i, rc;
@@ -600,7 +600,7 @@ static int test_input_ds3_untouched(void)
 /* A DualSense 0x31 report is rewritten in place to a 49-byte DS3 report. */
 static int test_input_dualsense_translated(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	uint8_t report[RPT_LEN], buf[RPT_LEN], want[DS3_REPORT_LEN];
 	uint16_t n = 64;               /* the driver buffer delivers at most 64 bytes */
 	int rc;
@@ -623,7 +623,7 @@ static int test_input_dualsense_translated(void)
 /* A report too short for the translator passes through untouched. */
 static int test_input_short_passthrough(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	uint8_t report[RPT_LEN], buf[RPT_LEN];
 	uint16_t n = DS_BT_BODY_MIN - 1;       /* one byte too short to translate */
 	int rc;
@@ -644,7 +644,7 @@ static int test_input_short_passthrough(void)
 /* enabled == 0 makes the filter behave exactly like the original. */
 static int test_input_disabled_passthrough(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	uint8_t report[RPT_LEN], buf[RPT_LEN];
 	uint16_t n = 64;
 	int rc;
@@ -667,7 +667,7 @@ static int test_input_disabled_passthrough(void)
  * leaves the buffer untouched and returns the original result. */
 static int test_input_identity_unknown_passthrough(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	uint8_t report[RPT_LEN], buf[RPT_LEN];
 	uint16_t n = 64;
 	int rc;
@@ -737,11 +737,11 @@ static int fake_orig_input(void *xport, uint8_t *dst, uint16_t len_in, int flag)
  * fakes above as the originals and the fake pad manager. */
 static void glue_reset(void)
 {
-	ds45_shim_data = data_enabled();
-	ds45_shim_data.orig_event  = (uint64_t)(uintptr_t)fake_orig_event;
-	ds45_shim_data.orig_enable = (uint64_t)(uintptr_t)fake_orig_enable;
-	ds45_shim_data.orig_input  = (uint64_t)(uintptr_t)fake_orig_input;
-	mgr_make(&ds45_shim_data);
+	npp_shim_data = data_enabled();
+	npp_shim_data.orig_event  = (uint64_t)(uintptr_t)fake_orig_event;
+	npp_shim_data.orig_enable = (uint64_t)(uintptr_t)fake_orig_enable;
+	npp_shim_data.orig_input  = (uint64_t)(uintptr_t)fake_orig_input;
+	mgr_make(&npp_shim_data);
 	g_oe_calls = g_on_calls = g_oi_calls = 0;
 	g_oe_drv = g_on_drv = NULL;
 	g_oe_status = g_oe_len = g_on_status = g_on_len = -1;
@@ -765,7 +765,7 @@ static int test_glue_event(void)
 	CHECK(shim_event(drv.b, (long)0x8001000CL, 4) == 0);
 	CHECK(g_oe_calls == 0);
 	CHECK(drv.b[SHIM_DRV_SUBSTATE] == SHIM_DRV_DONE);
-	CHECK(ds45_shim_data.stat_completed == 1);
+	CHECK(npp_shim_data.stat_completed == 1);
 
 	CHECK(shim_event(drv.b, 0, 4) == ORIG_EVENT_RC);       /* already done */
 	CHECK(g_oe_calls == 1 && g_oe_drv == (void *)drv.b);
@@ -774,7 +774,7 @@ static int test_glue_event(void)
 	drv_make(&drv, &g_pad_ds3);
 	CHECK(shim_event(drv.b, 7, 9) == ORIG_EVENT_RC);
 	CHECK(g_oe_calls == 2 && g_oe_status == 7 && g_oe_len == 9);
-	CHECK(ds45_shim_data.stat_completed == 1);
+	CHECK(npp_shim_data.stat_completed == 1);
 
 	CHECK(shim_event(NULL, 1, 2) == ORIG_EVENT_RC);
 	CHECK(g_oe_calls == 3 && g_oe_drv == NULL);
@@ -791,7 +791,7 @@ static int test_glue_enable(void)
 	CHECK(shim_enable(en.b, (long)0x8001000CL, 4) == 0);
 	CHECK(g_on_calls == 0);
 	CHECK(en.b[SHIM_EN_DONE] == 1);
-	CHECK(ds45_shim_data.stat_enabled == 1);
+	CHECK(npp_shim_data.stat_enabled == 1);
 
 	CHECK(shim_enable(en.b, 0, 4) == ORIG_ENABLE_RC);      /* already done */
 	CHECK(g_on_calls == 1 && g_on_drv == (void *)en.b);
@@ -801,7 +801,7 @@ static int test_glue_enable(void)
 	CHECK(shim_enable(en.b, 5, 6) == ORIG_ENABLE_RC);
 	CHECK(g_on_calls == 2 && g_on_status == 5 && g_on_len == 6);
 
-	ds45_shim_data.enabled = 0;
+	npp_shim_data.enabled = 0;
 	en_make(&en, &g_pad_ds);
 	CHECK(shim_enable(en.b, 5, 6) == ORIG_ENABLE_RC);
 	CHECK(g_on_calls == 3 && en.b[SHIM_EN_DONE] == 0);
@@ -814,10 +814,10 @@ static int test_glue_enable(void)
 static int test_input_basic_translated(void)
 {
 	uint8_t dst[64], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t cfg;
+	npp_shim_cfg_t cfg;
 
 	glue_reset();
-	cfg = ds45_shim_data.cfg;
+	cfg = npp_shim_data.cfg;
 	report_basic(g_oi_report);
 	g_oi_len = DS_BASIC_LEN;
 	CHECK(ds3_report_from_dualsense_basic(g_oi_report, DS_BASIC_LEN, &cfg, want) == 0);
@@ -827,8 +827,8 @@ static int test_input_basic_translated(void)
 	CHECK(g_oi_calls == 1);
 	CHECK(dst[0] == 0x01);
 	CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);
-	CHECK(ds45_shim_data.stat_translated == 1);
-	CHECK(ds45_shim_data.stat_passed == 0);
+	CHECK(npp_shim_data.stat_translated == 1);
+	CHECK(npp_shim_data.stat_passed == 0);
 
 	/* the 0x31 path is still there for stage 2 */
 	report_neutral(g_oi_report);
@@ -836,7 +836,7 @@ static int test_input_basic_translated(void)
 	ds3_neutral(want);
 	CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 0) == DS3_REPORT_LEN);
 	CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);
-	CHECK(ds45_shim_data.stat_translated == 2);
+	CHECK(npp_shim_data.stat_translated == 2);
 	return 0;
 }
 
@@ -859,7 +859,7 @@ static int test_input_passthrough(void)
 	memcpy(want, g_oi_report, (size_t)g_oi_len);
 	CHECK(shim_input(&g_x_ds3, dst, sizeof(dst), 0) == DS3_REPORT_LEN);
 	CHECK(memcmp(dst, want, sizeof(dst)) == 0);
-	CHECK(ds45_shim_data.stat_passed == 1);
+	CHECK(npp_shim_data.stat_passed == 1);
 
 	/* 2. a transport no pad in the manager owns, with a basic report */
 	report_basic(g_oi_report);
@@ -869,7 +869,7 @@ static int test_input_passthrough(void)
 	memcpy(want, g_oi_report, (size_t)g_oi_len);
 	CHECK(shim_input(&g_x_other, dst, sizeof(dst), 0) == DS_BASIC_LEN);
 	CHECK(memcmp(dst, want, sizeof(dst)) == 0);
-	CHECK(ds45_shim_data.stat_passed == 2);
+	CHECK(npp_shim_data.stat_passed == 2);
 
 	/* 3. the DualSense, but a basic report cut short */
 	g_oi_len = 5;
@@ -878,7 +878,7 @@ static int test_input_passthrough(void)
 	memcpy(want, g_oi_report, (size_t)g_oi_len);
 	CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 0) == 5);
 	CHECK(memcmp(dst, want, sizeof(dst)) == 0);
-	CHECK(ds45_shim_data.stat_passed == 3);
+	CHECK(npp_shim_data.stat_passed == 3);
 
 	/* 4. the DualSense, another report id */
 	report_basic(g_oi_report);
@@ -889,9 +889,9 @@ static int test_input_passthrough(void)
 	memcpy(want, g_oi_report, (size_t)g_oi_len);
 	CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 0) == DS_BASIC_LEN);
 	CHECK(memcmp(dst, want, sizeof(dst)) == 0);
-	CHECK(ds45_shim_data.stat_passed == 4);
+	CHECK(npp_shim_data.stat_passed == 4);
 
-	CHECK(ds45_shim_data.stat_translated == 0);
+	CHECK(npp_shim_data.stat_translated == 0);
 	CHECK(g_oi_calls == 4);
 
 	/* a buffer smaller than a DS3 report is never rewritten */
@@ -900,14 +900,14 @@ static int test_input_passthrough(void)
 	memset(dst, 0xCC, sizeof(dst));
 	CHECK(shim_input(&g_x_ds, dst, DS3_REPORT_LEN - 1, 0) == DS_BASIC_LEN);
 	CHECK(dst[DS_BASIC_LEN] == 0xCC);
-	CHECK(ds45_shim_data.stat_translated == 0);
+	CHECK(npp_shim_data.stat_translated == 0);
 
 	/* disabled: the original's result, untouched */
-	ds45_shim_data.enabled = 0;
+	npp_shim_data.enabled = 0;
 	memset(dst, 0xCC, sizeof(dst));
 	CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 0) == DS_BASIC_LEN);
 	CHECK(dst[DS_BASIC_LEN] == 0xCC);
-	CHECK(ds45_shim_data.stat_translated == 0);
+	CHECK(npp_shim_data.stat_translated == 0);
 	return 0;
 }
 
@@ -928,15 +928,15 @@ static void record_make(uint8_t *r, int n)
 /* The shim's own bounce buffer is untouched (all zero as installed). */
 static int inbuf_clean(void)
 {
-	static const uint8_t zero[sizeof(ds45_shim_data.inbuf)];
+	static const uint8_t zero[sizeof(npp_shim_data.inbuf)];
 
-	return memcmp(ds45_shim_data.inbuf, zero, sizeof(zero)) == 0;
+	return memcmp(npp_shim_data.inbuf, zero, sizeof(zero)) == 0;
 }
 
 static int bounce_counters_zero(void)
 {
-	return ds45_shim_data.dbg_in_bounce == 0 && ds45_shim_data.dbg_in_big == 0 &&
-	       ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0;
+	return npp_shim_data.dbg_in_bounce == 0 && npp_shim_data.dbg_in_big == 0 &&
+	       npp_shim_data.dbg_in_drop == 0 && npp_shim_data.dbg_in_err == 0;
 }
 
 /* Mode 0, any other mode value, and a disabled shim never bounce: the original
@@ -945,14 +945,14 @@ static int test_input_mode0_unchanged(void)
 {
 	static const uint32_t modes[] = { 0, 3, 99, 0xFFFFFFFFu };
 	uint8_t dst[64], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t cfg;
+	npp_shim_cfg_t cfg;
 	unsigned i;
 	int mode;
 
 	for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
 		glue_reset();
-		ds45_shim_data.out_mode = modes[i];
-		cfg = ds45_shim_data.cfg;
+		npp_shim_data.out_mode = modes[i];
+		cfg = npp_shim_data.cfg;
 		report_basic(g_oi_report);
 		g_oi_len = DS_BASIC_LEN;
 		CHECK(ds3_report_from_dualsense_basic(g_oi_report, DS_BASIC_LEN, &cfg, want) == 0);
@@ -964,16 +964,16 @@ static int test_input_mode0_unchanged(void)
 		CHECK(g_oi_len_in == sizeof(dst) && g_oi_flag == 7);
 		CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);
 		CHECK(dst[DS3_REPORT_LEN] == 0xCC);
-		CHECK(ds45_shim_data.stat_translated == 1 && ds45_shim_data.stat_passed == 0);
-		CHECK(ds45_shim_data.dbg_input_calls == 1 && ds45_shim_data.dbg_input_ds == 1);
+		CHECK(npp_shim_data.stat_translated == 1 && npp_shim_data.stat_passed == 0);
+		CHECK(npp_shim_data.dbg_input_calls == 1 && npp_shim_data.dbg_input_ds == 1);
 		CHECK(bounce_counters_zero() && inbuf_clean());
 	}
 
 	/* a disabled shim in the bounce modes: the original's result, untouched */
 	for (mode = 0; mode <= 2; mode++) {
 		glue_reset();
-		ds45_shim_data.enabled = 0;
-		ds45_shim_data.out_mode = (uint32_t)mode;
+		npp_shim_data.enabled = 0;
+		npp_shim_data.out_mode = (uint32_t)mode;
 		report_basic(g_oi_report);
 		g_oi_len = DS_BASIC_LEN;
 		memset(dst, 0xCC, sizeof(dst));
@@ -983,8 +983,8 @@ static int test_input_mode0_unchanged(void)
 		CHECK(g_oi_flag == 7);
 		CHECK(memcmp(dst, g_oi_report, DS_BASIC_LEN) == 0);
 		CHECK(dst[DS_BASIC_LEN] == 0xCC);
-		CHECK(ds45_shim_data.stat_translated == 0 && ds45_shim_data.stat_passed == 0);
-		CHECK(ds45_shim_data.dbg_input_calls == 0);
+		CHECK(npp_shim_data.stat_translated == 0 && npp_shim_data.stat_passed == 0);
+		CHECK(npp_shim_data.dbg_input_calls == 0);
 		CHECK(bounce_counters_zero() && inbuf_clean());
 	}
 	return 0;
@@ -1001,7 +1001,7 @@ static int test_input_ds3_bounced_unchanged(void)
 
 	for (mode = 1; mode <= 2; mode++) {
 		glue_reset();
-		ds45_shim_data.out_mode = (uint32_t)mode;
+		npp_shim_data.out_mode = (uint32_t)mode;
 		for (i = 0; i < RPT_LEN; i++)
 			g_oi_report[i] = (uint8_t)(i * 3 + 1);
 		g_oi_report[0] = 0x01;
@@ -1013,14 +1013,14 @@ static int test_input_ds3_bounced_unchanged(void)
 		CHECK(shim_input(&g_x_ds3, dst, 64, 5) == DS3_REPORT_LEN);
 		CHECK(g_oi_calls == 1);
 		CHECK(g_oi_xport == (void *)&g_x_ds3);
-		CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);   /* bounced */
+		CHECK(g_oi_dst == npp_shim_data.inbuf && g_oi_len_in == 0x50);   /* bounced */
 		CHECK(g_oi_flag == 5);
 		CHECK(memcmp(dst, want, sizeof(dst)) == 0);       /* byte-identical, no extra */
-		CHECK(ds45_shim_data.stat_passed == 1 && ds45_shim_data.stat_translated == 0);
-		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 0);
-		CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
-		CHECK(ds45_shim_data.dbg_input_calls == 1 && ds45_shim_data.dbg_input_ds == 0);
-		CHECK(ds45_shim_data.dbg_input_padmiss == 0);
+		CHECK(npp_shim_data.stat_passed == 1 && npp_shim_data.stat_translated == 0);
+		CHECK(npp_shim_data.dbg_in_bounce == 1 && npp_shim_data.dbg_in_big == 0);
+		CHECK(npp_shim_data.dbg_in_drop == 0 && npp_shim_data.dbg_in_err == 0);
+		CHECK(npp_shim_data.dbg_input_calls == 1 && npp_shim_data.dbg_input_ds == 0);
+		CHECK(npp_shim_data.dbg_input_padmiss == 0);
 
 		/* a 0x41-byte read fits a 65-byte caller, byte for byte, but is dropped
 		 * for a 64-byte one (and counted); more than 0x41 is "big" */
@@ -1030,12 +1030,12 @@ static int test_input_ds3_bounced_unchanged(void)
 		memcpy(want, g_oi_report, 0x41);
 		CHECK(shim_input(&g_x_ds3, dst, 0x41, 5) == 0x41);
 		CHECK(memcmp(dst, want, sizeof(dst)) == 0);
-		CHECK(ds45_shim_data.dbg_in_big == 0 && ds45_shim_data.dbg_in_drop == 0);
+		CHECK(npp_shim_data.dbg_in_big == 0 && npp_shim_data.dbg_in_drop == 0);
 		memset(dst, 0xCC, sizeof(dst));
 		CHECK(shim_input(&g_x_ds3, dst, 64, 5) == 0);
 		CHECK(dst[0] == 0xCC && dst[63] == 0xCC);
-		CHECK(ds45_shim_data.dbg_in_bounce == 3 && ds45_shim_data.dbg_in_drop == 1);
-		CHECK(ds45_shim_data.stat_translated == 0);
+		CHECK(npp_shim_data.dbg_in_bounce == 3 && npp_shim_data.dbg_in_drop == 1);
+		CHECK(npp_shim_data.stat_translated == 0);
 	}
 	return 0;
 }
@@ -1050,7 +1050,7 @@ static int test_input_bounce_translates_full_report(void)
 	ds3_neutral(want);
 	for (mode = 1; mode <= 2; mode++) {
 		glue_reset();
-		ds45_shim_data.out_mode = (uint32_t)mode;
+		npp_shim_data.out_mode = (uint32_t)mode;
 		report_neutral(g_oi_report);
 		g_oi_len = RPT_LEN;
 		memset(buf, 0xCC, sizeof(buf));
@@ -1058,20 +1058,20 @@ static int test_input_bounce_translates_full_report(void)
 		CHECK(shim_input(&g_x_ds, buf, 64, 3) == DS3_REPORT_LEN);
 		CHECK(g_oi_calls == 1);
 		CHECK(g_oi_xport == (void *)&g_x_ds);
-		CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
+		CHECK(g_oi_dst == npp_shim_data.inbuf && g_oi_len_in == 0x50);
 		CHECK(g_oi_flag == 3);
 		CHECK(memcmp(buf, want, DS3_REPORT_LEN) == 0);
 		for (i = DS3_REPORT_LEN; i < 96; i++)
 			CHECK(buf[i] == 0xCC);               /* guard bytes, never written */
-		CHECK(ds45_shim_data.stat_translated == 1 && ds45_shim_data.stat_passed == 0);
-		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 1);
-		CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
-		CHECK(ds45_shim_data.dbg_input_calls == 1 && ds45_shim_data.dbg_input_ds == 1);
+		CHECK(npp_shim_data.stat_translated == 1 && npp_shim_data.stat_passed == 0);
+		CHECK(npp_shim_data.dbg_in_bounce == 1 && npp_shim_data.dbg_in_big == 1);
+		CHECK(npp_shim_data.dbg_in_drop == 0 && npp_shim_data.dbg_in_err == 0);
+		CHECK(npp_shim_data.dbg_input_calls == 1 && npp_shim_data.dbg_input_ds == 1);
 	}
 
 	/* a caller that holds exactly a DS3 report */
 	glue_reset();
-	ds45_shim_data.out_mode = 2;
+	npp_shim_data.out_mode = 2;
 	report_neutral(g_oi_report);
 	g_oi_len = RPT_LEN;
 	memset(buf, 0xCC, sizeof(buf));
@@ -1084,36 +1084,36 @@ static int test_input_bounce_translates_full_report(void)
 static int test_input_bounce_basic_report(void)
 {
 	uint8_t buf[96], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t cfg;
+	npp_shim_cfg_t cfg;
 	int mode;
 
 	for (mode = 1; mode <= 2; mode++) {
 		glue_reset();
-		ds45_shim_data.out_mode = (uint32_t)mode;
-		cfg = ds45_shim_data.cfg;
+		npp_shim_data.out_mode = (uint32_t)mode;
+		cfg = npp_shim_data.cfg;
 		report_basic(g_oi_report);
 		g_oi_len = DS_BASIC_LEN;
 		CHECK(ds3_report_from_dualsense_basic(g_oi_report, DS_BASIC_LEN, &cfg, want) == 0);
 		memset(buf, 0xCC, sizeof(buf));
 
 		CHECK(shim_input(&g_x_ds, buf, 64, 0) == DS3_REPORT_LEN);
-		CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
+		CHECK(g_oi_dst == npp_shim_data.inbuf && g_oi_len_in == 0x50);
 		CHECK(memcmp(buf, want, DS3_REPORT_LEN) == 0);
 		CHECK(buf[DS3_REPORT_LEN] == 0xCC);
-		CHECK(ds45_shim_data.stat_translated == 1);
-		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 0);
-		CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
+		CHECK(npp_shim_data.stat_translated == 1);
+		CHECK(npp_shim_data.dbg_in_bounce == 1 && npp_shim_data.dbg_in_big == 0);
+		CHECK(npp_shim_data.dbg_in_drop == 0 && npp_shim_data.dbg_in_err == 0);
 	}
 
 	/* too small a caller buffer for the DS3 report: dropped, dst untouched */
 	glue_reset();
-	ds45_shim_data.out_mode = 2;
+	npp_shim_data.out_mode = 2;
 	report_basic(g_oi_report);
 	g_oi_len = DS_BASIC_LEN;
 	memset(buf, 0xCC, sizeof(buf));
 	CHECK(shim_input(&g_x_ds, buf, DS3_REPORT_LEN - 1, 0) == 0);
 	CHECK(buf[0] == 0xCC && buf[DS3_REPORT_LEN - 1] == 0xCC);
-	CHECK(ds45_shim_data.dbg_in_drop == 1 && ds45_shim_data.dbg_in_big == 0);
+	CHECK(npp_shim_data.dbg_in_drop == 1 && npp_shim_data.dbg_in_big == 0);
 	return 0;
 }
 
@@ -1133,7 +1133,7 @@ static int test_input_bounce_never_overruns_dst(void)
 			for (rc = 1; rc <= 0x4F; rc++) {
 				for (len_in = 0; len_in <= 64; len_in++) {
 					glue_reset();
-					ds45_shim_data.out_mode = (uint32_t)(1 + (rc & 1));
+					npp_shim_data.out_mode = (uint32_t)(1 + (rc & 1));
 					xport = &g_x_ds;
 					ds = who == 0;
 					if (who == 1)
@@ -1141,9 +1141,9 @@ static int test_input_bounce_never_overruns_dst(void)
 					else if (who == 2)
 						xport = &g_x_other;           /* no pad owns it */
 					else if (who == 3)
-						ds45_shim_data.pad_mgr = 0;
+						npp_shim_data.pad_mgr = 0;
 					else if (who == 4)
-						ds45_shim_data.pad_vtable = 0;
+						npp_shim_data.pad_vtable = 0;
 					record_make(g_oi_report, 96);
 					if (kind == 1)
 						report_basic(g_oi_report);
@@ -1154,7 +1154,7 @@ static int test_input_bounce_never_overruns_dst(void)
 
 					ret = shim_input(xport, buf + 16, (uint16_t)len_in, 0);
 
-					CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
+					CHECK(g_oi_dst == npp_shim_data.inbuf && g_oi_len_in == 0x50);
 					CHECK(ret >= 0 && ret <= len_in);
 					for (i = 0; i < 160; i++) {
 						if (i < 16 || i >= 16 + ret)
@@ -1170,11 +1170,11 @@ static int test_input_bounce_never_overruns_dst(void)
 						/* no translation, ever: the original's bytes and count, or a drop */
 						CHECK(ret == (rc <= len_in ? rc : 0));
 						CHECK(memcmp(buf + 16, g_oi_report, (size_t)ret) == 0);
-						CHECK(ds45_shim_data.stat_translated == 0);
-						CHECK(ds45_shim_data.dbg_in_drop == (uint32_t)(rc > len_in));
+						CHECK(npp_shim_data.stat_translated == 0);
+						CHECK(npp_shim_data.dbg_in_drop == (uint32_t)(rc > len_in));
 					}
-					CHECK(ds45_shim_data.dbg_in_bounce == 1);
-					CHECK(ds45_shim_data.dbg_in_big == (uint32_t)(rc > 0x41));
+					CHECK(npp_shim_data.dbg_in_bounce == 1);
+					CHECK(npp_shim_data.dbg_in_big == (uint32_t)(rc > 0x41));
 				}
 			}
 		}
@@ -1189,29 +1189,29 @@ static int test_input_bounce_error_and_zero(void)
 	uint8_t dst[64];
 
 	glue_reset();
-	ds45_shim_data.out_mode = 2;
+	npp_shim_data.out_mode = 2;
 	g_oi_len = -5;
 	memset(dst, 0xCC, sizeof(dst));
 	CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 0) == -5);
-	CHECK(g_oi_calls == 1 && g_oi_dst == ds45_shim_data.inbuf);
-	CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_err == 1);
-	CHECK(ds45_shim_data.dbg_in_big == 0 && ds45_shim_data.dbg_in_drop == 0);
-	CHECK(ds45_shim_data.dbg_input_calls == 0);       /* no valid read to note */
-	CHECK(ds45_shim_data.stat_passed == 0 && ds45_shim_data.stat_translated == 0);
+	CHECK(g_oi_calls == 1 && g_oi_dst == npp_shim_data.inbuf);
+	CHECK(npp_shim_data.dbg_in_bounce == 1 && npp_shim_data.dbg_in_err == 1);
+	CHECK(npp_shim_data.dbg_in_big == 0 && npp_shim_data.dbg_in_drop == 0);
+	CHECK(npp_shim_data.dbg_input_calls == 0);       /* no valid read to note */
+	CHECK(npp_shim_data.stat_passed == 0 && npp_shim_data.stat_translated == 0);
 	CHECK(dst[0] == 0xCC && dst[63] == 0xCC);
 
 	g_oi_len = 0;
 	CHECK(shim_input(&g_x_ds, dst, sizeof(dst), 0) == 0);
-	CHECK(ds45_shim_data.dbg_in_bounce == 2 && ds45_shim_data.dbg_in_err == 1);
-	CHECK(ds45_shim_data.dbg_in_big == 0 && ds45_shim_data.dbg_in_drop == 0);
+	CHECK(npp_shim_data.dbg_in_bounce == 2 && npp_shim_data.dbg_in_err == 1);
+	CHECK(npp_shim_data.dbg_in_big == 0 && npp_shim_data.dbg_in_drop == 0);
 	CHECK(dst[0] == 0xCC && dst[63] == 0xCC);
 
 	/* the pure function directly */
-	ds45_shim_data = data_enabled();
-	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, -1) == -1);
-	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0) == 0);
+	npp_shim_data = data_enabled();
+	CHECK(shim_input_bounce(&npp_shim_data, g_pad_ds.b, dst, 64, -1) == -1);
+	CHECK(shim_input_bounce(&npp_shim_data, g_pad_ds.b, dst, 64, 0) == 0);
 	CHECK(shim_input_bounce(NULL, g_pad_ds.b, dst, 64, 10) == 0);
-	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, NULL, 64, 10) == 0);
+	CHECK(shim_input_bounce(&npp_shim_data, g_pad_ds.b, NULL, 64, 10) == 0);
 	CHECK(shim_input_bounce(NULL, g_pad_ds.b, dst, 64, -7) == -7);
 	CHECK(dst[0] == 0xCC);
 	return 0;
@@ -1227,18 +1227,18 @@ static int test_input_bounce_drop_oversize(void)
 
 	for (w = 0; w < 3; w++) {
 		glue_reset();
-		ds45_shim_data.out_mode = 1;
+		npp_shim_data.out_mode = 1;
 		record_make(g_oi_report, 70);
 		g_oi_len = 70;
 		memset(buf, 0xCC, sizeof(buf));
 
 		CHECK(shim_input(xp[w], buf, 64, 0) == 0);
-		CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);
+		CHECK(g_oi_dst == npp_shim_data.inbuf && g_oi_len_in == 0x50);
 		for (i = 0; i < 96; i++)
 			CHECK(buf[i] == 0xCC);
-		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 1);
-		CHECK(ds45_shim_data.dbg_in_drop == 1 && ds45_shim_data.dbg_in_err == 0);
-		CHECK(ds45_shim_data.stat_passed == 1 && ds45_shim_data.stat_translated == 0);
+		CHECK(npp_shim_data.dbg_in_bounce == 1 && npp_shim_data.dbg_in_big == 1);
+		CHECK(npp_shim_data.dbg_in_drop == 1 && npp_shim_data.dbg_in_err == 0);
+		CHECK(npp_shim_data.stat_passed == 1 && npp_shim_data.stat_translated == 0);
 	}
 	return 0;
 }
@@ -1247,10 +1247,10 @@ static int test_input_bounce_drop_oversize(void)
 static int test_input_bounce_counters_other_pad(void)
 {
 	static uint8_t dst[128];
-	const ds45_shim_data_t *d = &ds45_shim_data;
+	const npp_shim_data_t *d = &npp_shim_data;
 
 	glue_reset();
-	ds45_shim_data.out_mode = 1;
+	npp_shim_data.out_mode = 1;
 
 #define DS3_READ(len_in) shim_input(&g_x_ds3, dst, (uint16_t)(len_in), 0)
 
@@ -1290,10 +1290,10 @@ static int test_input_bounce_counters_other_pad(void)
 static int test_input_bounce_counters(void)
 {
 	static uint8_t dst[128];
-	const ds45_shim_data_t *d = &ds45_shim_data;
+	const npp_shim_data_t *d = &npp_shim_data;
 
 	glue_reset();
-	ds45_shim_data.out_mode = 2;
+	npp_shim_data.out_mode = 2;
 
 #define BOUNCE_READ(len_in) shim_input(&g_x_ds, dst, (uint16_t)(len_in), 0)
 
@@ -1338,7 +1338,7 @@ static int test_input_bounce_counters(void)
 	CHECK(d->dbg_in_bounce == 9 && d->dbg_in_big == 5 && d->dbg_in_drop == 4 && d->dbg_in_err == 1);
 
 	/* 10: more than the read can ever return (defensive): dropped, not "big" */
-	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0x50) == 0);
+	CHECK(shim_input_bounce(&npp_shim_data, g_pad_ds.b, dst, 64, 0x50) == 0);
 	CHECK(d->dbg_in_bounce == 10 && d->dbg_in_big == 5 && d->dbg_in_drop == 5 && d->dbg_in_err == 1);
 
 	CHECK(d->stat_translated == 2 && d->stat_passed == 5);
@@ -1360,7 +1360,7 @@ static int test_input_bounce_pad_lookup(void)
 
 	for (what = 0; what < 6; what++) {
 		glue_reset();
-		ds45_shim_data.out_mode = 2;
+		npp_shim_data.out_mode = 2;
 		pad_make(&pad4, PAD_VTABLE, VID_SONY, PID_DS4);
 		put_native(pad4.b + SHIM_PAD_XPORT, &g_x_other);
 		put_native(g_mgr.b + SHIM_MGR_OBJS + 7 * 8, pad4.b);
@@ -1376,25 +1376,25 @@ static int test_input_bounce_pad_lookup(void)
 			if (what == 0)                       /* no pad owns this transport */
 				put_native(g_mgr.b + SHIM_MGR_OBJS + 7 * 8, NULL);
 			else if (what == 2) {                /* no pad manager */
-				ds45_shim_data.pad_mgr = 0;
+				npp_shim_data.pad_mgr = 0;
 				xport = &g_x_ds;
 			} else if (what == 3) {              /* the pad class is not set */
-				ds45_shim_data.pad_vtable = 0;
+				npp_shim_data.pad_vtable = 0;
 				xport = &g_x_ds;
 			}                                    /* what == 1: a pad that is a DS4 */
 
 			CHECK(shim_input(xport, dst, sizeof(dst), 9) == DS_BASIC_LEN);
 			CHECK(g_oi_calls == 1 && g_oi_xport == xport);
-			CHECK(g_oi_dst == ds45_shim_data.inbuf && g_oi_len_in == 0x50);   /* bounced */
+			CHECK(g_oi_dst == npp_shim_data.inbuf && g_oi_len_in == 0x50);   /* bounced */
 			CHECK(g_oi_flag == 9);
 			CHECK(memcmp(dst, want, sizeof(dst)) == 0);   /* untranslated, as read */
-			CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 0);
-			CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
-			CHECK(ds45_shim_data.stat_translated == 0 && ds45_shim_data.stat_passed == 1);
-			CHECK(ds45_shim_data.dbg_input_calls == 1 && ds45_shim_data.dbg_input_ds == 0);
-			CHECK(ds45_shim_data.dbg_input_padmiss == (what == 1 ? 0u : (what == 3 ? 0u : 1u)));
+			CHECK(npp_shim_data.dbg_in_bounce == 1 && npp_shim_data.dbg_in_big == 0);
+			CHECK(npp_shim_data.dbg_in_drop == 0 && npp_shim_data.dbg_in_err == 0);
+			CHECK(npp_shim_data.stat_translated == 0 && npp_shim_data.stat_passed == 1);
+			CHECK(npp_shim_data.dbg_input_calls == 1 && npp_shim_data.dbg_input_ds == 0);
+			CHECK(npp_shim_data.dbg_input_padmiss == (what == 1 ? 0u : (what == 3 ? 0u : 1u)));
 			if (what == 1)
-				CHECK(ds45_shim_data.dbg_last_pid == 0x054C05C4u);
+				CHECK(npp_shim_data.dbg_last_pid == 0x054C05C4u);
 
 			/* a long record from the same pad cannot fit 64 bytes: dropped, counted */
 			g_oi_len = 0x4F;
@@ -1402,14 +1402,14 @@ static int test_input_bounce_pad_lookup(void)
 			memset(dst, 0xCC, sizeof(dst));
 			CHECK(shim_input(xport, dst, sizeof(dst), 9) == 0);
 			CHECK(dst[0] == 0xCC && dst[63] == 0xCC);
-			CHECK(ds45_shim_data.dbg_in_bounce == 2 && ds45_shim_data.dbg_in_big == 1);
-			CHECK(ds45_shim_data.dbg_in_drop == 1 && ds45_shim_data.dbg_in_err == 0);
+			CHECK(npp_shim_data.dbg_in_bounce == 2 && npp_shim_data.dbg_in_big == 1);
+			CHECK(npp_shim_data.dbg_in_drop == 1 && npp_shim_data.dbg_in_err == 0);
 		} else if (what == 4) {                  /* NULL transport: the normal path */
 			CHECK(shim_input(NULL, dst, sizeof(dst), 9) == DS_BASIC_LEN);
 			CHECK(g_oi_xport == NULL && g_oi_dst == dst);
 			CHECK(g_oi_calls == 1 && g_oi_len_in == sizeof(dst) && g_oi_flag == 9);
 			CHECK(memcmp(dst, want, sizeof(dst)) == 0);
-			CHECK(ds45_shim_data.stat_translated == 0);
+			CHECK(npp_shim_data.stat_translated == 0);
 			CHECK(bounce_counters_zero() && inbuf_clean());
 		} else {                                 /* NULL destination: the normal path */
 			CHECK(shim_input(&g_x_ds, NULL, sizeof(dst), 9) == DS_BASIC_LEN);
@@ -1428,10 +1428,10 @@ static int test_input_bounce_pad_lookup(void)
 /* The raw capture is not part of the bounce counters: it must not disturb them. */
 static int raw_capture_clean(void)
 {
-	static const uint8_t zero[sizeof(ds45_shim_data.dbg_in_raw)];
+	static const uint8_t zero[sizeof(npp_shim_data.dbg_in_raw)];
 
-	return ds45_shim_data.dbg_in_raw_len == 0 && ds45_shim_data.dbg_in_raw_seq == 0 &&
-	       memcmp(ds45_shim_data.dbg_in_raw, zero, sizeof(zero)) == 0;
+	return npp_shim_data.dbg_in_raw_len == 0 && npp_shim_data.dbg_in_raw_seq == 0 &&
+	       memcmp(npp_shim_data.dbg_in_raw, zero, sizeof(zero)) == 0;
 }
 
 /* A neutral 0x31 report with recognisable bytes in the common block, so a copy
@@ -1452,13 +1452,13 @@ static void report_marked(uint8_t r[RPT_LEN])
 static int test_input_raw_capture_full_report(void)
 {
 	uint8_t dst[96], want[DS3_REPORT_LEN], raw[RPT_LEN];
-	ds45_shim_cfg_t cfg;
+	npp_shim_cfg_t cfg;
 	int mode, i;
 
 	for (mode = 1; mode <= 2; mode++) {
 		glue_reset();
-		ds45_shim_data.out_mode = (uint32_t)mode;
-		cfg = ds45_shim_data.cfg;
+		npp_shim_data.out_mode = (uint32_t)mode;
+		cfg = npp_shim_data.cfg;
 		report_marked(g_oi_report);
 		memcpy(raw, g_oi_report, RPT_LEN);
 		g_oi_len = RPT_LEN;
@@ -1469,28 +1469,28 @@ static int test_input_raw_capture_full_report(void)
 		CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
 		CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);       /* translation unchanged */
 		CHECK(dst[DS3_REPORT_LEN] == 0xCC);
-		CHECK(ds45_shim_data.dbg_in_raw_len == 64);
-		CHECK(ds45_shim_data.dbg_in_raw_seq == 1);
-		CHECK(memcmp(ds45_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
-		CHECK(ds45_shim_data.dbg_in_raw[BT(DS_C_STATUS)] == 0x2A);   /* byte 54, raw */
-		CHECK(ds45_shim_data.inbuf[0] == 0x01);              /* inbuf holds the translated report */
+		CHECK(npp_shim_data.dbg_in_raw_len == 64);
+		CHECK(npp_shim_data.dbg_in_raw_seq == 1);
+		CHECK(memcmp(npp_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
+		CHECK(npp_shim_data.dbg_in_raw[BT(DS_C_STATUS)] == 0x2A);   /* byte 54, raw */
+		CHECK(npp_shim_data.inbuf[0] == 0x01);              /* inbuf holds the translated report */
 		for (i = 0; i < 64; i++)
-			CHECK(ds45_shim_data.dbg_in_raw[i] == raw[i]);
+			CHECK(npp_shim_data.dbg_in_raw[i] == raw[i]);
 		/* the existing counters are exactly as before */
-		CHECK(ds45_shim_data.stat_translated == 1 && ds45_shim_data.stat_passed == 0);
-		CHECK(ds45_shim_data.dbg_in_bounce == 1 && ds45_shim_data.dbg_in_big == 1);
-		CHECK(ds45_shim_data.dbg_in_drop == 0 && ds45_shim_data.dbg_in_err == 0);
+		CHECK(npp_shim_data.stat_translated == 1 && npp_shim_data.stat_passed == 0);
+		CHECK(npp_shim_data.dbg_in_bounce == 1 && npp_shim_data.dbg_in_big == 1);
+		CHECK(npp_shim_data.dbg_in_drop == 0 && npp_shim_data.dbg_in_err == 0);
 	}
 
 	/* a 79-byte read (the longest) is clamped to the same 64 bytes */
 	glue_reset();
-	ds45_shim_data.out_mode = 2;
+	npp_shim_data.out_mode = 2;
 	report_marked(g_oi_report);
 	g_oi_report[78] = 0x77;
 	g_oi_len = 0x4F;
 	CHECK(shim_input(&g_x_ds, dst, 100, 0) > 0);
-	CHECK(ds45_shim_data.dbg_in_raw_len == 64 && ds45_shim_data.dbg_in_raw_seq == 1);
-	CHECK(memcmp(ds45_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
+	CHECK(npp_shim_data.dbg_in_raw_len == 64 && npp_shim_data.dbg_in_raw_seq == 1);
+	CHECK(memcmp(npp_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
 	return 0;
 }
 
@@ -1499,12 +1499,12 @@ static int test_input_raw_capture_full_report(void)
 static int test_input_raw_capture_basic_report(void)
 {
 	uint8_t dst[96], want[DS3_REPORT_LEN], raw[DS_BASIC_LEN];
-	ds45_shim_cfg_t cfg;
+	npp_shim_cfg_t cfg;
 	int i;
 
 	glue_reset();
-	ds45_shim_data.out_mode = 2;
-	cfg = ds45_shim_data.cfg;
+	npp_shim_data.out_mode = 2;
+	cfg = npp_shim_data.cfg;
 	report_basic(g_oi_report);
 	memcpy(raw, g_oi_report, DS_BASIC_LEN);
 	g_oi_len = DS_BASIC_LEN;
@@ -1513,23 +1513,23 @@ static int test_input_raw_capture_basic_report(void)
 
 	CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
 	CHECK(memcmp(dst, want, DS3_REPORT_LEN) == 0);
-	CHECK(ds45_shim_data.dbg_in_raw_len == DS_BASIC_LEN);
-	CHECK(ds45_shim_data.dbg_in_raw_seq == 1);
-	CHECK(memcmp(ds45_shim_data.dbg_in_raw, raw, DS_BASIC_LEN) == 0);
+	CHECK(npp_shim_data.dbg_in_raw_len == DS_BASIC_LEN);
+	CHECK(npp_shim_data.dbg_in_raw_seq == 1);
+	CHECK(memcmp(npp_shim_data.dbg_in_raw, raw, DS_BASIC_LEN) == 0);
 	for (i = DS_BASIC_LEN; i < 64; i++)
-		CHECK(ds45_shim_data.dbg_in_raw[i] == 0);
+		CHECK(npp_shim_data.dbg_in_raw[i] == 0);
 
 	/* a shorter report after a longer one: the length shrinks, the stale tail
 	 * is allowed to stay (the length says what is valid) */
 	report_marked(g_oi_report);
 	g_oi_len = RPT_LEN;
 	CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
-	CHECK(ds45_shim_data.dbg_in_raw_len == 64 && ds45_shim_data.dbg_in_raw_seq == 2);
+	CHECK(npp_shim_data.dbg_in_raw_len == 64 && npp_shim_data.dbg_in_raw_seq == 2);
 	report_basic(g_oi_report);
 	g_oi_len = DS_BASIC_LEN;
 	CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
-	CHECK(ds45_shim_data.dbg_in_raw_len == DS_BASIC_LEN && ds45_shim_data.dbg_in_raw_seq == 3);
-	CHECK(memcmp(ds45_shim_data.dbg_in_raw, raw, DS_BASIC_LEN) == 0);
+	CHECK(npp_shim_data.dbg_in_raw_len == DS_BASIC_LEN && npp_shim_data.dbg_in_raw_seq == 3);
+	CHECK(memcmp(npp_shim_data.dbg_in_raw, raw, DS_BASIC_LEN) == 0);
 	return 0;
 }
 
@@ -1543,7 +1543,7 @@ static int test_input_raw_capture_only_dualsense(void)
 
 	for (w = 0; w < 2; w++) {
 		glue_reset();
-		ds45_shim_data.out_mode = 1;
+		npp_shim_data.out_mode = 1;
 		record_make(g_oi_report, 70);
 		g_oi_len = 70;
 		CHECK(shim_input(xp[w], dst, 100, 0) == 70);
@@ -1552,13 +1552,13 @@ static int test_input_raw_capture_only_dualsense(void)
 		CHECK(shim_input(xp[w], dst, 100, 0) == DS_BASIC_LEN);
 		g_oi_len = DS3_REPORT_LEN;
 		CHECK(shim_input(xp[w], dst, 100, 0) == DS3_REPORT_LEN);
-		CHECK(ds45_shim_data.dbg_in_bounce == 3);
+		CHECK(npp_shim_data.dbg_in_bounce == 3);
 		CHECK(raw_capture_clean());
 	}
 
 	/* a DualSense, but an error, nothing, or more than the read can return */
 	glue_reset();
-	ds45_shim_data.out_mode = 2;
+	npp_shim_data.out_mode = 2;
 	record_make(g_oi_report, 96);
 	g_oi_len = -4;
 	CHECK(shim_input(&g_x_ds, dst, 64, 0) == -4);
@@ -1566,24 +1566,24 @@ static int test_input_raw_capture_only_dualsense(void)
 	g_oi_len = 0;
 	CHECK(shim_input(&g_x_ds, dst, 64, 0) == 0);
 	CHECK(raw_capture_clean());
-	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, -1) == -1);
-	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0) == 0);
-	memcpy(ds45_shim_data.inbuf, g_oi_report, 96);
-	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0x50) == 0);
-	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, dst, 64, 0x7FFFFFFF) == 0);
+	CHECK(shim_input_bounce(&npp_shim_data, g_pad_ds.b, dst, 64, -1) == -1);
+	CHECK(shim_input_bounce(&npp_shim_data, g_pad_ds.b, dst, 64, 0) == 0);
+	memcpy(npp_shim_data.inbuf, g_oi_report, 96);
+	CHECK(shim_input_bounce(&npp_shim_data, g_pad_ds.b, dst, 64, 0x50) == 0);
+	CHECK(shim_input_bounce(&npp_shim_data, g_pad_ds.b, dst, 64, 0x7FFFFFFF) == 0);
 	CHECK(raw_capture_clean());
-	CHECK(ds45_shim_data.dbg_in_drop == 2);
+	CHECK(npp_shim_data.dbg_in_drop == 2);
 
 	/* NULL arguments change nothing either */
 	CHECK(shim_input_bounce(NULL, g_pad_ds.b, dst, 64, 10) == 0);
-	CHECK(shim_input_bounce(&ds45_shim_data, g_pad_ds.b, NULL, 64, 10) == 0);
+	CHECK(shim_input_bounce(&npp_shim_data, g_pad_ds.b, NULL, 64, 10) == 0);
 	CHECK(raw_capture_clean());
 
 	/* one DualSense read of 1 byte is captured (the lower edge) */
 	g_oi_len = 1;
 	CHECK(shim_input(&g_x_ds, dst, 64, 0) == 1);
-	CHECK(ds45_shim_data.dbg_in_raw_len == 1 && ds45_shim_data.dbg_in_raw_seq == 1);
-	CHECK(ds45_shim_data.dbg_in_raw[0] == g_oi_report[0]);
+	CHECK(npp_shim_data.dbg_in_raw_len == 1 && npp_shim_data.dbg_in_raw_seq == 1);
+	CHECK(npp_shim_data.dbg_in_raw[0] == g_oi_report[0]);
 	return 0;
 }
 
@@ -1594,18 +1594,18 @@ static int test_input_raw_capture_seq_counts(void)
 	int k;
 
 	glue_reset();
-	ds45_shim_data.out_mode = 2;
+	npp_shim_data.out_mode = 2;
 	for (k = 1; k <= 3; k++) {
 		report_marked(g_oi_report);
 		g_oi_report[BT(DS_C_STATUS)] = (uint8_t)(0x10 * k + k);
 		g_oi_len = RPT_LEN;
 		CHECK(shim_input(&g_x_ds, dst, 64, 0) == DS3_REPORT_LEN);
-		CHECK(ds45_shim_data.dbg_in_raw_seq == (uint32_t)k);
-		CHECK(ds45_shim_data.dbg_in_raw_len == 64);
-		CHECK(ds45_shim_data.dbg_in_raw[BT(DS_C_STATUS)] == (uint8_t)(0x10 * k + k));
-		CHECK(memcmp(ds45_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
+		CHECK(npp_shim_data.dbg_in_raw_seq == (uint32_t)k);
+		CHECK(npp_shim_data.dbg_in_raw_len == 64);
+		CHECK(npp_shim_data.dbg_in_raw[BT(DS_C_STATUS)] == (uint8_t)(0x10 * k + k));
+		CHECK(memcmp(npp_shim_data.dbg_in_raw, g_oi_report, 64) == 0);
 	}
-	CHECK(ds45_shim_data.dbg_in_bounce == 3 && ds45_shim_data.stat_translated == 3);
+	CHECK(npp_shim_data.dbg_in_bounce == 3 && npp_shim_data.stat_translated == 3);
 	return 0;
 }
 
@@ -1618,7 +1618,7 @@ static int test_input_raw_capture_seq_counts(void)
  * dbg_event_calls only, and a disabled shim counts nothing. */
 static int test_dbg_counts_event(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 	fake_drv_t drv;
 
@@ -1650,7 +1650,7 @@ static int test_dbg_counts_event(void)
  * dbg_enable_ds on a DualSense, a DS3 only calls, a disabled shim nothing. */
 static int test_dbg_counts_enable(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 	fake_en_t en;
 
@@ -1682,7 +1682,7 @@ static int test_dbg_counts_enable(void)
  * dbg_input_ds. A NULL data block is a no-op. */
 static int test_input_note(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 
 	shim_input_note(NULL, NULL);                /* never crashes, counts nothing */
@@ -1734,9 +1734,9 @@ static void conn_make(fake_conn_t *c, uint8_t handle, const uint8_t id[8])
  * stable identity switched on. */
 static uint64_t g_ctbl[CONN_HANDLES];
 
-static ds45_shim_data_t data_stable(void)
+static npp_shim_data_t data_stable(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 
 	memset(g_ctbl, 0, sizeof(g_ctbl));
 	d.conn_tbl = (uint64_t)(uintptr_t)g_ctbl;
@@ -1754,7 +1754,7 @@ static void drv_handle(fake_drv_t *drv, uint8_t h)
  * other, and the fixed-tag counter form is not used. */
 static int test_stable_identity_from_connection(void)
 {
-	ds45_shim_data_t d = data_stable();
+	npp_shim_data_t d = data_stable();
 	fake_conn_t ca, cb;
 	fake_pad_t pa, pb;
 	fake_drv_t da, db;
@@ -1782,7 +1782,7 @@ static int test_stable_identity_from_connection(void)
 	CHECK(memcmp(pa.b + 0x88, pb.b + 0x88, 8) != 0);
 
 	/* the template outside the identity is still copied, and the driver is done */
-	CHECK(memcmp(pa.b + 0x90, d.info_tmpl + 0x10, DS45_SHIM_INFO_LEN - 0x10) == 0);
+	CHECK(memcmp(pa.b + 0x90, d.info_tmpl + 0x10, NPP_SHIM_INFO_LEN - 0x10) == 0);
 	CHECK(da.b[SHIM_DRV_SUBSTATE] == SHIM_DRV_DONE);
 
 	CHECK(d.dbg_id_bd == 2 && d.dbg_id_fallback == 0);
@@ -1797,7 +1797,7 @@ static int test_stable_identity_from_connection(void)
  * and a different completion count) gets the identical identity. */
 static int test_stable_identity_survives_reconnect(void)
 {
-	ds45_shim_data_t d = data_stable();
+	npp_shim_data_t d = data_stable();
 	fake_conn_t c1, c2;
 	fake_pad_t p1, p2;
 	fake_drv_t d1, d2;
@@ -1828,7 +1828,7 @@ static int test_stable_identity_survives_reconnect(void)
 /* One completion with the stable identity requested, whose connection lookup is
  * set up by `setup`, must fall back to the counter form
  * (stat_completed, 0xD5, 0x00, 0x44, 0x53) and count the fallback. */
-static int expect_fallback(ds45_shim_data_t *d, fake_drv_t *drv, fake_pad_t *pad)
+static int expect_fallback(npp_shim_data_t *d, fake_drv_t *drv, fake_pad_t *pad)
 {
 	static const uint8_t id1[8] = { 0x00, 0x00, 0x00, 0x01, 0xD5, 0x00, 0x44, 0x53 };
 
@@ -1846,7 +1846,7 @@ static int test_stable_identity_fallbacks(void)
 	static const uint8_t zero[8] = { 0 };
 	/* +0x8C == 0x18 with the u16 at +0x8E == 0x000D: the kernel's alternate branch */
 	static const uint8_t alt[8] = { 0x00, 0x13, 0x24, 0xA8, 0x18, 0x00, 0x00, 0x0D };
-	ds45_shim_data_t d;
+	npp_shim_data_t d;
 	fake_conn_t c;
 	fake_pad_t pad;
 	fake_drv_t drv;
@@ -1890,7 +1890,7 @@ static int test_stable_identity_off(void)
 {
 	static const uint8_t bd[8] = { 0x00, 0x13, 0x24, 0xA8, 0x9B, 0x64, 0x4C, 0xB9 };
 	static const uint8_t id1[8] = { 0x00, 0x00, 0x00, 0x01, 0xD5, 0x00, 0x44, 0x53 };
-	ds45_shim_data_t d;
+	npp_shim_data_t d;
 	fake_conn_t c;
 	fake_pad_t pad;
 	fake_drv_t drv;
@@ -1934,7 +1934,7 @@ static void out_payload(fake_pad_t *pad, int n, uint8_t seed)
 
 static int test_output_counts_and_captures(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 	uint8_t rid = RID_SENTINEL;
 	const uint8_t *ob = (const uint8_t *)&pad;
@@ -1972,7 +1972,7 @@ static int test_output_counts_and_captures(void)
  * as a DualSense, and nothing is rewritten. */
 static int test_output_ds3_pad_untouched(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad, before;
 	uint8_t rid = RID_SENTINEL;
 	const uint8_t *ob = (const uint8_t *)&pad;
@@ -2000,7 +2000,7 @@ static int test_output_ds3_pad_untouched(void)
 
 static int test_output_bad_arguments(void)
 {
-	ds45_shim_data_t d = data_enabled(), zero;
+	npp_shim_data_t d = data_enabled(), zero;
 	fake_pad_t pad;
 	uint8_t rid = RID_SENTINEL;
 	const uint8_t *ob = (const uint8_t *)&pad;
@@ -2048,7 +2048,7 @@ static int test_output_bad_arguments(void)
  * (at most 64, the cap the kernel's sender enforces). */
 static int test_output_capture_keeps_last(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t pad;
 	uint8_t rid = 0;
 	const uint8_t *ob = NULL;
@@ -2107,7 +2107,7 @@ static uint64_t pad_key(const fake_pad_t *pad)
 
 static int test_output_motor_on_capture(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t a, b, c;
 	uint8_t rid = RID_SENTINEL;
 	const uint8_t *ob = (const uint8_t *)&a;
@@ -2175,7 +2175,7 @@ static int test_output_motor_on_capture(void)
 
 static int test_output_motor_off_after_on_same_pad(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t a, b;
 	uint8_t rid = 0;
 	const uint8_t *ob = NULL;
@@ -2254,7 +2254,7 @@ static int test_output_motor_off_after_on_same_pad(void)
 
 static int test_output_motor_short_payload(void)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 	fake_pad_t a;
 	uint8_t rid = 0;
 	const uint8_t *ob = NULL;
@@ -2349,9 +2349,9 @@ static int crc_bytes_ok(const uint8_t *r)
 
 /* The data block for a rewriting mode, with the report buffer pre-filled so an
  * untouched buffer is visible. */
-static ds45_shim_data_t data_out_mode(uint32_t mode, uint32_t seq)
+static npp_shim_data_t data_out_mode(uint32_t mode, uint32_t seq)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 
 	d.out_mode = mode;
 	d.out_seq = seq;
@@ -2361,7 +2361,7 @@ static ds45_shim_data_t data_out_mode(uint32_t mode, uint32_t seq)
 
 static int test_output_probe_rewrites(void)
 {
-	ds45_shim_data_t d = data_out_mode(1, 3);
+	npp_shim_data_t d = data_out_mode(1, 3);
 	fake_pad_t pad;
 	uint8_t rid = RID_SENTINEL, exp[DS_OUT_LEN];
 	const uint8_t *ob = (const uint8_t *)&pad;
@@ -2402,7 +2402,7 @@ static int test_output_probe_rewrites(void)
 
 static int test_output_full_rewrites_exact_bytes(void)
 {
-	ds45_shim_data_t d = data_out_mode(2, 5);
+	npp_shim_data_t d = data_out_mode(2, 5);
 	fake_pad_t pad;
 	uint8_t rid = RID_SENTINEL, exp[DS_OUT_LEN];
 	const uint8_t *ob = (const uint8_t *)&pad;
@@ -2465,7 +2465,7 @@ static int test_output_full_rewrites_exact_bytes(void)
 
 static int test_output_two_pads_use_own_leds(void)
 {
-	ds45_shim_data_t d = data_out_mode(2, 0);
+	npp_shim_data_t d = data_out_mode(2, 0);
 	fake_pad_t a, b;
 	uint8_t rid = 0, saved[DS_OUT_LEN];
 	const uint8_t *ob = NULL;
@@ -2510,7 +2510,7 @@ static int test_output_two_pads_use_own_leds(void)
 
 static int test_output_malformed_dualsense_passes(void)
 {
-	ds45_shim_data_t d = data_out_mode(2, 7);
+	npp_shim_data_t d = data_out_mode(2, 7);
 	fake_pad_t pad;
 	uint8_t rid = RID_SENTINEL;
 	const uint8_t *ob = (const uint8_t *)&pad;
@@ -2564,7 +2564,7 @@ static int test_output_ds3_never_rewritten_all_modes(void)
 	 * class; 2: a Sony class pad with another PID; 3: a pad with a wrong vendor */
 	for (kind = 0; kind < 4; kind++) {
 		for (mode = 0; mode <= 3; mode++) {
-			ds45_shim_data_t d = data_out_mode(mode, 9), before;
+			npp_shim_data_t d = data_out_mode(mode, 9), before;
 			fake_pad_t pad, pad_before;
 			uint8_t rid = RID_SENTINEL;
 			const uint8_t *ob = (const uint8_t *)&pad;
@@ -2600,7 +2600,7 @@ static int test_output_mode0_never_rewrites(void)
 	unsigned i;
 
 	for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
-		ds45_shim_data_t d = data_out_mode(modes[i], 2), before;
+		npp_shim_data_t d = data_out_mode(modes[i], 2), before;
 		fake_pad_t pad, pad_before;
 		uint8_t rid = RID_SENTINEL;
 		const uint8_t *ob = (const uint8_t *)&pad;
@@ -2628,7 +2628,7 @@ static int test_output_bad_arguments_in_modes(void)
 	int sel;
 
 	for (mode = 1; mode <= 2; mode++) {
-		ds45_shim_data_t d = data_out_mode(mode, 4), zero;
+		npp_shim_data_t d = data_out_mode(mode, 4), zero;
 		fake_pad_t pad;
 		uint8_t rid = RID_SENTINEL;
 		const uint8_t *ob = (const uint8_t *)&pad;
@@ -2667,7 +2667,7 @@ static int test_output_bad_arguments_in_modes(void)
 		 * written through the other two, out_seq not advanced, out_buf untouched,
 		 * counted as one passed call */
 		for (sel = 0; sel < 3; sel++) {
-			ds45_shim_data_t before;
+			npp_shim_data_t before;
 			uint8_t r2 = RID_SENTINEL;
 			const uint8_t *ob2 = (const uint8_t *)&pad;
 			uint16_t ol2 = OLEN_SENTINEL;
@@ -2700,15 +2700,15 @@ static int test_glue_output(void)
 	const uint8_t *ob = NULL;
 	uint16_t ol = OLEN_SENTINEL;
 
-	ds45_shim_data = data_enabled();
+	npp_shim_data = data_enabled();
 	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
 	out_payload(&pad, 48, 0x20);
 	CHECK(shim_output(pad.b + SHIM_PAD_OUT_BUF_OFF, 48, &rid, &ob, &ol) == 0);
-	CHECK(ds45_shim_data.dbg_out_calls == 1);
-	CHECK(ds45_shim_data.dbg_out_ds == 1);
-	CHECK(ds45_shim_data.dbg_out_passed == 1);
-	CHECK(ds45_shim_data.dbg_out_cap_len == 48);
-	CHECK(memcmp(ds45_shim_data.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
+	CHECK(npp_shim_data.dbg_out_calls == 1);
+	CHECK(npp_shim_data.dbg_out_ds == 1);
+	CHECK(npp_shim_data.dbg_out_passed == 1);
+	CHECK(npp_shim_data.dbg_out_cap_len == 48);
+	CHECK(memcmp(npp_shim_data.dbg_out_cap, pad.b + SHIM_PAD_OUT_BUF_OFF, 48) == 0);
 	CHECK(rid == RID_SENTINEL && ob == NULL && ol == OLEN_SENTINEL);
 	return 0;
 }
@@ -2736,9 +2736,9 @@ static void po_obj(fake_obj_t *o, const fake_pad_t *pad, uint32_t kind)
  * type 3, report 0xF4, 4 bytes F4 payload "42 08 00 00". */
 static const uint8_t po_payload[4] = { 0x42, 0x08, 0x00, 0x00 };
 
-static ds45_po_call_t po_call(const fake_obj_t *obj)
+static npp_po_call_t po_call(const fake_obj_t *obj)
 {
-	ds45_po_call_t c;
+	npp_po_call_t c;
 
 	memset(&c, 0, sizeof(c));
 	c.handle = 5;
@@ -2754,15 +2754,15 @@ static ds45_po_call_t po_call(const fake_obj_t *obj)
 	return c;
 }
 
-static ds45_shim_data_t data_po(uint32_t mode)
+static npp_shim_data_t data_po(uint32_t mode)
 {
-	ds45_shim_data_t d = data_enabled();
+	npp_shim_data_t d = data_enabled();
 
 	d.po_mode = mode;
 	return d;
 }
 
-static int po_untouched(const ds45_po_call_t *c)
+static int po_untouched(const npp_po_call_t *c)
 {
 	return c->o_rid == PO_RID_SENTINEL && c->o_buf == PO_BUF_SENTINEL &&
 	       c->o_len == PO_LEN_SENTINEL;
@@ -2770,10 +2770,10 @@ static int po_untouched(const ds45_po_call_t *c)
 
 static int test_poweroff_rewrites_dualsense(void)
 {
-	ds45_shim_data_t d = data_po(1);
+	npp_shim_data_t d = data_po(1);
 	fake_pad_t pad;
 	fake_obj_t obj;
-	ds45_po_call_t c;
+	npp_po_call_t c;
 	uint8_t want[48];
 
 	pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
@@ -2804,10 +2804,10 @@ static int test_poweroff_rewrites_dualsense(void)
 
 static int test_poweroff_ds3_untouched(void)
 {
-	ds45_shim_data_t d = data_po(1);
+	npp_shim_data_t d = data_po(1);
 	fake_pad_t pad;
 	fake_obj_t obj;
-	ds45_po_call_t c;
+	npp_po_call_t c;
 	static const uint8_t zero[48];
 	int variant;
 
@@ -2839,8 +2839,8 @@ static int test_poweroff_wrong_shape_passes(void)
 	int sel;
 
 	for (sel = 0; sel < 10; sel++) {
-		ds45_shim_data_t d = data_po(1), before;
-		ds45_po_call_t c;
+		npp_shim_data_t d = data_po(1), before;
+		npp_po_call_t c;
 
 		pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
 		po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
@@ -2874,8 +2874,8 @@ static int test_poweroff_wrong_shape_passes(void)
 
 	/* NULL d or NULL c: 0, nothing written */
 	{
-		ds45_shim_data_t d = data_po(1), before = d;
-		ds45_po_call_t c;
+		npp_shim_data_t d = data_po(1), before = d;
+		npp_po_call_t c;
 
 		pad_make(&pad, PAD_VTABLE, VID_SONY, PID_DUALSENSE);
 		po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
@@ -2895,10 +2895,10 @@ static int test_poweroff_observe_mode_never_rewrites(void)
 	unsigned i;
 
 	for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
-		ds45_shim_data_t d = data_po(modes[i]);
+		npp_shim_data_t d = data_po(modes[i]);
 		fake_pad_t pad;
 		fake_obj_t obj;
-		ds45_po_call_t c;
+		npp_po_call_t c;
 		static const uint8_t rec[16] = { 0, 0, 0, 1, 1, 1, 5, 3, 0xF4, 4, 3, 0,
 		                                 0x42, 0x08, 0, 0 };
 
@@ -2919,7 +2919,7 @@ static int test_poweroff_observe_mode_never_rewrites(void)
 
 static int test_poweroff_retry_is_idempotent(void)
 {
-	ds45_shim_data_t d = data_po(1);
+	npp_shim_data_t d = data_po(1);
 	fake_pad_t pad;
 	fake_obj_t obj;
 	uint8_t first[48], want[48];
@@ -2930,7 +2930,7 @@ static int test_poweroff_retry_is_idempotent(void)
 	memset(want, 0, sizeof(want));
 	ds_poweroff_payload(want);
 	for (i = 0; i < 5; i++) {
-		ds45_po_call_t c = po_call(&obj);
+		npp_po_call_t c = po_call(&obj);
 
 		CHECK(shim_poweroff_filter(&d, &c) == 1);
 		CHECK(c.o_rid == 0x08 && c.o_len == 46 && c.o_buf == (uint64_t)(uintptr_t)d.po_buf);
@@ -2953,10 +2953,10 @@ static int test_poweroff_retry_is_idempotent(void)
  * payload) for a buffer that starts as garbage, as final and as final + marker. */
 static int test_poweroff_buffer_never_cleared(void)
 {
-	ds45_shim_data_t d = data_po(1);
+	npp_shim_data_t d = data_po(1);
 	fake_pad_t pad;
 	fake_obj_t obj;
-	ds45_po_call_t c;
+	npp_po_call_t c;
 	uint8_t want[48];
 	int i;
 
@@ -2991,7 +2991,7 @@ static int test_poweroff_buffer_never_cleared(void)
 
 static int test_poweroff_two_pads_same_bytes(void)
 {
-	ds45_shim_data_t d = data_po(1);
+	npp_shim_data_t d = data_po(1);
 	fake_pad_t pad_a, pad_b;
 	fake_obj_t obj_a, obj_b;
 	uint8_t first[48];
@@ -3002,7 +3002,7 @@ static int test_poweroff_two_pads_same_bytes(void)
 	po_obj(&obj_a, &pad_a, SHIM_PO_KIND_CLOSE);
 	po_obj(&obj_b, &pad_b, SHIM_PO_KIND_CLOSE);
 	for (i = 0; i < 6; i++) {
-		ds45_po_call_t c = po_call((i & 1) ? &obj_b : &obj_a);
+		npp_po_call_t c = po_call((i & 1) ? &obj_b : &obj_a);
 
 		c.handle = (i & 1) ? 6 : 5;
 		CHECK(shim_poweroff_filter(&d, &c) == 1);
@@ -3018,10 +3018,10 @@ static int test_poweroff_two_pads_same_bytes(void)
 
 static int test_poweroff_ring_records(void)
 {
-	ds45_shim_data_t d = data_po(1);
+	npp_shim_data_t d = data_po(1);
 	fake_pad_t pad;
 	fake_obj_t obj;
-	ds45_po_call_t c;
+	npp_po_call_t c;
 	int i;
 	static const uint8_t rec_close[16] = { 0, 0, 0, 1, 1, 1, 5, 3, 0xF4, 4, 3, 0,
 	                                       0x42, 0x08, 0, 0 };
@@ -3129,7 +3129,7 @@ static int test_poweroff_ring_records(void)
 
 static int test_teardown_note_counts_and_disabled(void)
 {
-	ds45_shim_data_t d = data_po(1), before;
+	npp_shim_data_t d = data_po(1), before;
 	static const uint8_t zero16[16];
 
 	shim_teardown_note(NULL, 1, 2, 3);        /* no crash */
@@ -3169,24 +3169,24 @@ static int test_glue_poweroff(void)
 {
 	fake_pad_t pad, ds3;
 	fake_obj_t obj, ds3_obj;
-	ds45_po_call_t c;
+	npp_po_call_t c;
 	int i;
 
-	int (*pf)(ds45_shim_data_t *, ds45_po_call_t *) = shim_poweroff_filter;
-	void (*tf)(ds45_shim_data_t *, uint64_t, uint64_t, uint64_t) = shim_teardown_note;
+	int (*pf)(npp_shim_data_t *, npp_po_call_t *) = shim_poweroff_filter;
+	void (*tf)(npp_shim_data_t *, uint64_t, uint64_t, uint64_t) = shim_teardown_note;
 
 	CHECK(pf != NULL && tf != NULL);
-	CHECK(sizeof(ds45_po_call_t) == 80);
-	CHECK(offsetof(ds45_po_call_t, handle) == 0);
-	CHECK(offsetof(ds45_po_call_t, type) == 8);
-	CHECK(offsetof(ds45_po_call_t, rid) == 16);
-	CHECK(offsetof(ds45_po_call_t, payload) == 24);
-	CHECK(offsetof(ds45_po_call_t, len) == 32);
-	CHECK(offsetof(ds45_po_call_t, cookie) == 40);
-	CHECK(offsetof(ds45_po_call_t, obj) == 48);
-	CHECK(offsetof(ds45_po_call_t, o_rid) == 56);
-	CHECK(offsetof(ds45_po_call_t, o_buf) == 64);
-	CHECK(offsetof(ds45_po_call_t, o_len) == 72);
+	CHECK(sizeof(npp_po_call_t) == 80);
+	CHECK(offsetof(npp_po_call_t, handle) == 0);
+	CHECK(offsetof(npp_po_call_t, type) == 8);
+	CHECK(offsetof(npp_po_call_t, rid) == 16);
+	CHECK(offsetof(npp_po_call_t, payload) == 24);
+	CHECK(offsetof(npp_po_call_t, len) == 32);
+	CHECK(offsetof(npp_po_call_t, cookie) == 40);
+	CHECK(offsetof(npp_po_call_t, obj) == 48);
+	CHECK(offsetof(npp_po_call_t, o_rid) == 56);
+	CHECK(offsetof(npp_po_call_t, o_buf) == 64);
+	CHECK(offsetof(npp_po_call_t, o_len) == 72);
 
 	/* stub frame offsets: both frames 16-aligned; the call record fills the frame
 	 * from SHIM_PO_CALL (0x70) to 0xBF, then saved LR 0xC0 and saved r2 0xC8; the
@@ -3197,9 +3197,9 @@ static int test_glue_poweroff(void)
 	CHECK(SHIM_STUB_PARAM_HI - SHIM_STUB_PARAM_LO >= 8 * 8);
 	CHECK(SHIM_PO_FRAME == 0xD0 && SHIM_PO_FRAME % 16 == 0);
 	CHECK(SHIM_PO_CALL == 0x70 && SHIM_PO_CALL >= SHIM_STUB_PARAM_HI);
-	CHECK(SHIM_PO_CALL + sizeof(ds45_po_call_t) == 0xC0);
+	CHECK(SHIM_PO_CALL + sizeof(npp_po_call_t) == 0xC0);
 	CHECK(SHIM_PO_SAVED_LR == 0xC0 && SHIM_PO_SAVED_R2 == 0xC8);
-	CHECK(SHIM_PO_CALL + sizeof(ds45_po_call_t) <= SHIM_PO_SAVED_LR);
+	CHECK(SHIM_PO_CALL + sizeof(npp_po_call_t) <= SHIM_PO_SAVED_LR);
 	CHECK(SHIM_PO_SAVED_R2 + 8 == SHIM_PO_FRAME);
 	CHECK(SHIM_TD_FRAME == 0xC0 && SHIM_TD_FRAME % 16 == 0);
 	CHECK(SHIM_TD_SAVED_LR == 0x70 && SHIM_TD_SAVED_R2 == 0x78 && SHIM_TD_ARGS == 0x80);
@@ -3214,37 +3214,37 @@ static int test_glue_poweroff(void)
 	po_obj(&obj, &pad, SHIM_PO_KIND_CLOSE);
 	po_obj(&ds3_obj, &ds3, SHIM_PO_KIND_CLOSE);
 
-	ds45_shim_data = data_po(1);
+	npp_shim_data = data_po(1);
 	c = po_call(&obj);
 	CHECK(shim_poweroff(&c) == 1);
 	CHECK(c.o_rid == 0x08 && c.o_len == 46);
-	CHECK(c.o_buf == (uint64_t)(uintptr_t)ds45_shim_data.po_buf);
+	CHECK(c.o_buf == (uint64_t)(uintptr_t)npp_shim_data.po_buf);
 	CHECK(c.handle == 5 && c.type == 3 && c.rid == 0xF4 && c.len == 4 && c.cookie == 0x1122);
 	CHECK(c.payload == (uint64_t)(uintptr_t)po_payload && c.obj == (uint64_t)(uintptr_t)&obj);
-	CHECK(ds45_shim_data.dbg_po_calls == 1 && ds45_shim_data.dbg_po_ds == 1 &&
-	      ds45_shim_data.dbg_po_rewritten == 1 && ds45_shim_data.dbg_po_passed == 0);
+	CHECK(npp_shim_data.dbg_po_calls == 1 && npp_shim_data.dbg_po_ds == 1 &&
+	      npp_shim_data.dbg_po_rewritten == 1 && npp_shim_data.dbg_po_passed == 0);
 
 	c = po_call(&ds3_obj);                      /* a DualShock 3 is left alone */
 	CHECK(shim_poweroff(&c) == 0 && po_untouched(&c));
-	CHECK(ds45_shim_data.dbg_po_calls == 2 && ds45_shim_data.dbg_po_passed == 1);
+	CHECK(npp_shim_data.dbg_po_calls == 2 && npp_shim_data.dbg_po_passed == 1);
 
-	ds45_shim_data = data_po(0);                /* observe mode never rewrites */
+	npp_shim_data = data_po(0);                /* observe mode never rewrites */
 	c = po_call(&obj);
 	CHECK(shim_poweroff(&c) == 0 && po_untouched(&c));
-	CHECK(ds45_shim_data.dbg_po_ds == 1 && ds45_shim_data.dbg_po_passed == 1);
+	CHECK(npp_shim_data.dbg_po_ds == 1 && npp_shim_data.dbg_po_passed == 1);
 
 	/* shim_teardown: the body of the stub, noting (addr, flag, lr) and nothing else */
-	ds45_shim_data = data_po(1);
+	npp_shim_data = data_po(1);
 	shim_teardown(0x80000000001234ULL, 1, 0x8000000000ABCDULL);
-	CHECK(ds45_shim_data.dbg_td_calls == 1 && ds45_shim_data.po_seq == 1);
-	CHECK(ds45_shim_data.po_ring[0][3] == 1 && ds45_shim_data.po_ring[0][4] == 2 &&
-	      ds45_shim_data.po_ring[0][6] == 1);
-	CHECK(ds45_shim_data.po_ring[0][10] == 0xAB && ds45_shim_data.po_ring[0][11] == 0xCD);
-	CHECK(ds45_shim_data.po_ring[0][14] == 0x12 && ds45_shim_data.po_ring[0][15] == 0x34);
-	CHECK(ds45_shim_data.dbg_po_calls == 0 && ds45_shim_data.dbg_po_rewritten == 0);
+	CHECK(npp_shim_data.dbg_td_calls == 1 && npp_shim_data.po_seq == 1);
+	CHECK(npp_shim_data.po_ring[0][3] == 1 && npp_shim_data.po_ring[0][4] == 2 &&
+	      npp_shim_data.po_ring[0][6] == 1);
+	CHECK(npp_shim_data.po_ring[0][10] == 0xAB && npp_shim_data.po_ring[0][11] == 0xCD);
+	CHECK(npp_shim_data.po_ring[0][14] == 0x12 && npp_shim_data.po_ring[0][15] == 0x34);
+	CHECK(npp_shim_data.dbg_po_calls == 0 && npp_shim_data.dbg_po_rewritten == 0);
 	for (i = 1; i < 8; i++) {
 		static const uint8_t zero16[16];
-		CHECK(memcmp(ds45_shim_data.po_ring[i], zero16, 16) == 0);
+		CHECK(memcmp(npp_shim_data.po_ring[i], zero16, 16) == 0);
 	}
 	return 0;
 }

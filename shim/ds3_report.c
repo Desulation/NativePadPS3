@@ -1,5 +1,5 @@
 /*
- * DS45PAD kernel shim - DualSense Bluetooth reports 0x31 and 0x01 to a
+ * NPP kernel shim - DualSense Bluetooth reports 0x31 and 0x01 to a
  * DualShock 3 report.
  *
  * Built twice: natively by the host tests, and freestanding into the shim blob
@@ -9,7 +9,7 @@
  */
 
 #include "ds3_report.h"
-#include "../src/ds45_state.h"
+#include "../src/npp_state.h"
 #include "../src/sixaxis.h"
 
 /* Byte offsets in the DS3 report. */
@@ -67,44 +67,44 @@
 #define PRESSED         255
 
 /* Press one DS3 control: its digital bit and, for the twelve that have one, a
- * full-scale pressure byte. A target that is not a ds45_map_t value does
+ * full-scale pressure byte. A target that is not a npp_map_t value does
  * nothing. */
 static void press(uint8_t *out, int target)
 {
 	switch (target) {
-	case DS45_MAP_CROSS:
+	case NPP_MAP_CROSS:
 		out[DS3_DIGITAL2] |= D2_CROSS;    out[PR_CROSS] = PRESSED;    break;
-	case DS45_MAP_CIRCLE:
+	case NPP_MAP_CIRCLE:
 		out[DS3_DIGITAL2] |= D2_CIRCLE;   out[PR_CIRCLE] = PRESSED;   break;
-	case DS45_MAP_SQUARE:
+	case NPP_MAP_SQUARE:
 		out[DS3_DIGITAL2] |= D2_SQUARE;   out[PR_SQUARE] = PRESSED;   break;
-	case DS45_MAP_TRIANGLE:
+	case NPP_MAP_TRIANGLE:
 		out[DS3_DIGITAL2] |= D2_TRIANGLE; out[PR_TRIANGLE] = PRESSED; break;
-	case DS45_MAP_L1:
+	case NPP_MAP_L1:
 		out[DS3_DIGITAL2] |= D2_L1;       out[PR_L1] = PRESSED;       break;
-	case DS45_MAP_R1:
+	case NPP_MAP_R1:
 		out[DS3_DIGITAL2] |= D2_R1;       out[PR_R1] = PRESSED;       break;
-	case DS45_MAP_L2:
+	case NPP_MAP_L2:
 		out[DS3_DIGITAL2] |= D2_L2;       out[PR_L2] = PRESSED;       break;
-	case DS45_MAP_R2:
+	case NPP_MAP_R2:
 		out[DS3_DIGITAL2] |= D2_R2;       out[PR_R2] = PRESSED;       break;
-	case DS45_MAP_L3:
+	case NPP_MAP_L3:
 		out[DS3_DIGITAL1] |= D1_L3;                                   break;
-	case DS45_MAP_R3:
+	case NPP_MAP_R3:
 		out[DS3_DIGITAL1] |= D1_R3;                                   break;
-	case DS45_MAP_START:
+	case NPP_MAP_START:
 		out[DS3_DIGITAL1] |= D1_START;                                break;
-	case DS45_MAP_SELECT:
+	case NPP_MAP_SELECT:
 		out[DS3_DIGITAL1] |= D1_SELECT;                               break;
-	case DS45_MAP_PS:
+	case NPP_MAP_PS:
 		out[DS3_PS] |= PS_BUTTON;                                     break;
-	case DS45_MAP_UP:
+	case NPP_MAP_UP:
 		out[DS3_DIGITAL1] |= D1_UP;       out[PR_UP] = PRESSED;       break;
-	case DS45_MAP_RIGHT:
+	case NPP_MAP_RIGHT:
 		out[DS3_DIGITAL1] |= D1_RIGHT;    out[PR_RIGHT] = PRESSED;    break;
-	case DS45_MAP_DOWN:
+	case NPP_MAP_DOWN:
 		out[DS3_DIGITAL1] |= D1_DOWN;     out[PR_DOWN] = PRESSED;     break;
-	case DS45_MAP_LEFT:
+	case NPP_MAP_LEFT:
 		out[DS3_DIGITAL1] |= D1_LEFT;     out[PR_LEFT] = PRESSED;     break;
 	default:
 		break;
@@ -115,12 +115,12 @@ static void press(uint8_t *out, int target)
  * the half travel (128 steps) and the edge itself counts as inside. */
 static uint8_t stick(uint8_t v, uint8_t deadzone)
 {
-	int d = (int)v - DS45_STICK_CENTER;
+	int d = (int)v - NPP_STICK_CENTER;
 
 	if (d < 0)
 		d = -d;
 
-	return (d * 100 <= (int)deadzone * 128) ? (uint8_t)DS45_STICK_CENTER : v;
+	return (d * 100 <= (int)deadzone * 128) ? (uint8_t)NPP_STICK_CENTER : v;
 }
 
 static void put_be16(uint8_t *p, uint16_t v)
@@ -132,7 +132,7 @@ static void put_be16(uint8_t *p, uint16_t v)
 /* Write the whole DS3 report but the sensor words (left 0) from the decoded
  * buttons, triggers and sticks in *st: the part both DualSense reports share.
  * Reads only lx, ly, rx, ry, l2, r2 and buttons. */
-static void write_ds3(const ds45_state_t *st, const ds45_shim_cfg_t *cfg,
+static void write_ds3(const npp_state_t *st, const npp_shim_cfg_t *cfg,
                       uint8_t *out)
 {
 	uint32_t b;
@@ -144,33 +144,33 @@ static void write_ds3(const ds45_state_t *st, const ds45_shim_cfg_t *cfg,
 
 	/* --- digital buttons ----------------------------------------------- */
 	b = st->buttons;
-	if (b & DS45_B_SHARE)    press(out, DS45_MAP_SELECT);   /* Create  */
-	if (b & DS45_B_OPTIONS)  press(out, DS45_MAP_START);
-	if (b & DS45_B_L3)       press(out, DS45_MAP_L3);
-	if (b & DS45_B_R3)       press(out, DS45_MAP_R3);
-	if (b & DS45_B_PS)       press(out, DS45_MAP_PS);
-	if (b & DS45_B_UP)       press(out, DS45_MAP_UP);
-	if (b & DS45_B_RIGHT)    press(out, DS45_MAP_RIGHT);
-	if (b & DS45_B_DOWN)     press(out, DS45_MAP_DOWN);
-	if (b & DS45_B_LEFT)     press(out, DS45_MAP_LEFT);
-	if (b & DS45_B_SQUARE)   press(out, DS45_MAP_SQUARE);
-	if (b & DS45_B_CROSS)    press(out, DS45_MAP_CROSS);
-	if (b & DS45_B_CIRCLE)   press(out, DS45_MAP_CIRCLE);
-	if (b & DS45_B_TRIANGLE) press(out, DS45_MAP_TRIANGLE);
-	if (b & DS45_B_L1)       press(out, DS45_MAP_L1);
-	if (b & DS45_B_R1)       press(out, DS45_MAP_R1);
+	if (b & NPP_B_SHARE)    press(out, NPP_MAP_SELECT);   /* Create  */
+	if (b & NPP_B_OPTIONS)  press(out, NPP_MAP_START);
+	if (b & NPP_B_L3)       press(out, NPP_MAP_L3);
+	if (b & NPP_B_R3)       press(out, NPP_MAP_R3);
+	if (b & NPP_B_PS)       press(out, NPP_MAP_PS);
+	if (b & NPP_B_UP)       press(out, NPP_MAP_UP);
+	if (b & NPP_B_RIGHT)    press(out, NPP_MAP_RIGHT);
+	if (b & NPP_B_DOWN)     press(out, NPP_MAP_DOWN);
+	if (b & NPP_B_LEFT)     press(out, NPP_MAP_LEFT);
+	if (b & NPP_B_SQUARE)   press(out, NPP_MAP_SQUARE);
+	if (b & NPP_B_CROSS)    press(out, NPP_MAP_CROSS);
+	if (b & NPP_B_CIRCLE)   press(out, NPP_MAP_CIRCLE);
+	if (b & NPP_B_TRIANGLE) press(out, NPP_MAP_TRIANGLE);
+	if (b & NPP_B_L1)       press(out, NPP_MAP_L1);
+	if (b & NPP_B_R1)       press(out, NPP_MAP_R1);
 
 	/* The triggers are analog on both controllers: the pressure bytes are the
 	 * travel itself, and only the digital bit follows the DualSense's flag. */
-	if (b & DS45_B_L2)       out[DS3_DIGITAL2] |= D2_L2;
-	if (b & DS45_B_R2)       out[DS3_DIGITAL2] |= D2_R2;
+	if (b & NPP_B_L2)       out[DS3_DIGITAL2] |= D2_L2;
+	if (b & NPP_B_R2)       out[DS3_DIGITAL2] |= D2_R2;
 	out[PR_L2] = st->l2;
 	out[PR_R2] = st->r2;
 
 	/* The remappable extras go last, so a mapped L2 or R2 reads full pressure
 	 * whatever the real trigger is doing. */
-	if (b & DS45_B_TOUCHPAD) press(out, cfg->map_touchpad);
-	if (b & DS45_B_MUTE)     press(out, cfg->map_mute);
+	if (b & NPP_B_TOUCHPAD) press(out, cfg->map_touchpad);
+	if (b & NPP_B_MUTE)     press(out, cfg->map_mute);
 
 	/* --- sticks -------------------------------------------------------- */
 	out[DS3_STICKS + 0] = stick(st->lx, cfg->deadzone);
@@ -183,7 +183,7 @@ static void write_ds3(const ds45_state_t *st, const ds45_shim_cfg_t *cfg,
  * full, otherwise the level 1..5 (the DualSense's 0..10 halved, rounded up; 0
  * is never sent because on the DS3 scale it means empty, and the DualSense's 0
  * only means under 10%). */
-static uint8_t battery_byte(const ds45_state_t *st)
+static uint8_t battery_byte(const npp_state_t *st)
 {
 	int level;
 
@@ -206,14 +206,14 @@ static void sensors_centre(uint8_t *out)
 	int i;
 
 	for (i = 0; i < 4; i++)
-		put_be16(out + DS3_SENSORS + 2 * i, DS45_SENSOR_CENTER);
+		put_be16(out + DS3_SENSORS + 2 * i, NPP_SENSOR_CENTER);
 }
 
 int ds3_report_from_dualsense(const uint8_t *in, int in_len,
-                              const ds45_shim_cfg_t *cfg,
+                              const npp_shim_cfg_t *cfg,
                               uint8_t out[DS3_REPORT_LEN])
 {
-	ds45_state_t st;
+	npp_state_t st;
 	int ax, ay;
 
 	if (!in || !cfg || !out)
@@ -255,10 +255,10 @@ int ds3_report_from_dualsense(const uint8_t *in, int in_len,
 #define BASIC_B2_MASK   0x03
 
 int ds3_report_from_dualsense_basic(const uint8_t *in, int in_len,
-                                    const ds45_shim_cfg_t *cfg,
+                                    const npp_shim_cfg_t *cfg,
                                     uint8_t out[DS3_REPORT_LEN])
 {
-	ds45_state_t st;
+	npp_state_t st;
 
 	if (!in || !cfg || !out)
 		return -1;

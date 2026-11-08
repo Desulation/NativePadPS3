@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "fakes.h"
-#include "ds45pad.h"
+#include "npp.h"
 
 /* The data-folder resolver: the nativepadps3 folder if its config file exists,
  * else the legacy folder if its config file exists, else the
@@ -26,14 +26,14 @@
 static const char *marks[MAX_MARKS];
 static int mark_count;
 
-void ds45_boot_mark(const char *stage)
+void npp_boot_mark(const char *stage)
 {
 	if (mark_count < MAX_MARKS)
 		marks[mark_count] = stage;
 	mark_count++;
 }
 
-void ds45_boot_mark_hex(const char *stage, uint32_t value)
+void npp_boot_mark_hex(const char *stage, uint32_t value)
 {
 	(void)stage;
 	(void)value;
@@ -48,26 +48,26 @@ static void reset(void)
 
 static int is_new_set(void)
 {
-	return strcmp(ds45_path(DS45_PATH_CONFIG), NEW_CFG) == 0
-	    && strcmp(ds45_path(DS45_PATH_DEVICES), NEW_DEV) == 0
-	    && strcmp(ds45_path(DS45_PATH_CAL), NEW_CAL) == 0
-	    && strcmp(ds45_path(DS45_PATH_KERNEL_CACHE), NEW_KC) == 0;
+	return strcmp(npp_path(NPP_PATH_CONFIG), NEW_CFG) == 0
+	    && strcmp(npp_path(NPP_PATH_DEVICES), NEW_DEV) == 0
+	    && strcmp(npp_path(NPP_PATH_CAL), NEW_CAL) == 0
+	    && strcmp(npp_path(NPP_PATH_KERNEL_CACHE), NEW_KC) == 0;
 }
 
 static int is_old_set(void)
 {
-	return strcmp(ds45_path(DS45_PATH_CONFIG), OLD_CFG) == 0
-	    && strcmp(ds45_path(DS45_PATH_DEVICES), OLD_DEV) == 0
-	    && strcmp(ds45_path(DS45_PATH_CAL), OLD_CAL) == 0
-	    && strcmp(ds45_path(DS45_PATH_KERNEL_CACHE), OLD_KC) == 0;
+	return strcmp(npp_path(NPP_PATH_CONFIG), OLD_CFG) == 0
+	    && strcmp(npp_path(NPP_PATH_DEVICES), OLD_DEV) == 0
+	    && strcmp(npp_path(NPP_PATH_CAL), OLD_CAL) == 0
+	    && strcmp(npp_path(NPP_PATH_KERNEL_CACHE), OLD_KC) == 0;
 }
 
-/* Must run first: nothing has called ds45_paths_init() yet. */
+/* Must run first: nothing has called npp_paths_init() yet. */
 static int test_uninitialised_is_new_set(void)
 {
 	CHECK(is_new_set());
-	CHECK(strcmp(ds45_path(DS45_PATH_COUNT), "") == 0);
-	CHECK(strcmp(ds45_path((ds45_path_kind_t)-1), "") == 0);
+	CHECK(strcmp(npp_path(NPP_PATH_COUNT), "") == 0);
+	CHECK(strcmp(npp_path((npp_path_kind_t)-1), "") == 0);
 	return 0;
 }
 
@@ -75,13 +75,13 @@ static int test_new_config_selects_new_folder(void)
 {
 	reset();
 	fake_file_set(NEW_CFG, "ENABLE = 1\n");
-	ds45_paths_init();
+	npp_paths_init();
 	CHECK(is_new_set());
 
 	reset();
 	fake_file_set(NEW_CFG, "ENABLE = 1\n");
 	fake_file_set(OLD_CFG, "ENABLE = 0\n");
-	ds45_paths_init();
+	npp_paths_init();
 	CHECK(is_new_set());
 	return 0;
 }
@@ -90,14 +90,14 @@ static int test_legacy_config_selects_legacy_folder(void)
 {
 	reset();
 	fake_file_set(OLD_CFG, "ENABLE_SHIM = 1\n");
-	ds45_paths_init();
+	npp_paths_init();
 	CHECK(is_old_set());
 
 	/* a stray file in the new folder is not its config */
 	reset();
 	fake_file_set(OLD_CFG, "ENABLE_SHIM = 1\n");
 	fake_file_set(NEW_DEV, "0x054C 0x0CE6\n");
-	ds45_paths_init();
+	npp_paths_init();
 	CHECK(is_old_set());
 	return 0;
 }
@@ -105,7 +105,7 @@ static int test_legacy_config_selects_legacy_folder(void)
 static int test_no_config_defaults_to_new_folder(void)
 {
 	reset();
-	ds45_paths_init();
+	npp_paths_init();
 	CHECK(is_new_set());
 	return 0;
 }
@@ -114,13 +114,13 @@ static int test_no_config_defaults_to_new_folder(void)
 static int test_resolution_happens_once(void)
 {
 	reset();
-	ds45_paths_init();
+	npp_paths_init();
 	fake_file_set(OLD_CFG, "ENABLE = 1\n");
 	CHECK(is_new_set());
 
 	reset();
 	fake_file_set(OLD_CFG, "ENABLE = 1\n");
-	ds45_paths_init();
+	npp_paths_init();
 	fake_file_set(NEW_CFG, "ENABLE = 1\n");
 	CHECK(is_old_set());
 	return 0;
@@ -131,18 +131,18 @@ static int test_trace_marker(void)
 {
 	reset();
 	fake_file_set(NEW_CFG, "ENABLE = 1\n");
-	ds45_paths_init();
+	npp_paths_init();
 	CHECK(mark_count == 1);
 	CHECK(strcmp(marks[0], "datadir_new") == 0);
 
 	reset();
 	fake_file_set(OLD_CFG, "ENABLE = 1\n");
-	ds45_paths_init();
+	npp_paths_init();
 	CHECK(mark_count == 1);
 	CHECK(strcmp(marks[0], "datadir_legacy") == 0);
 
 	reset();
-	ds45_paths_init();
+	npp_paths_init();
 	CHECK(mark_count == 1);
 	CHECK(strcmp(marks[0], "datadir_new") == 0);
 	return 0;

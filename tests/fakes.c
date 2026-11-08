@@ -7,7 +7,7 @@
 #include <sys/synchronization.h>
 #include <sys/sys_time.h>
 #include <sys/tty.h>
-#include "ds45pad.h"
+#include "npp.h"
 #include "lv2.h"
 #include "fakes.h"
 
@@ -23,7 +23,7 @@ uint64_t fake_now_us;
 
 #define LV2_PAGE_SHIFT 12
 #define LV2_PAGE_SIZE  (1u << LV2_PAGE_SHIFT)
-#define LV2_PAGES      ((unsigned)((DS45_LV2_BOUND - DS45_LV2_BASE) >> LV2_PAGE_SHIFT))
+#define LV2_PAGES      ((unsigned)((NPP_LV2_BOUND - NPP_LV2_BASE) >> LV2_PAGE_SHIFT))
 
 static uint8_t *lv2_pages[LV2_PAGES];
 int fake_lv2_out_of_bounds;
@@ -50,9 +50,9 @@ void fake_lv2_set(uint64_t addr, const uint8_t *bytes, int len)
 	for (i = 0; i < len; i++) {
 		uint64_t a = addr + (uint64_t)i;
 		unsigned page;
-		if (a < DS45_LV2_BASE || a >= DS45_LV2_BOUND)
+		if (a < NPP_LV2_BASE || a >= NPP_LV2_BOUND)
 			continue;
-		page = (unsigned)((a - DS45_LV2_BASE) >> LV2_PAGE_SHIFT);
+		page = (unsigned)((a - NPP_LV2_BASE) >> LV2_PAGE_SHIFT);
 		if (!lv2_pages[page]) {
 			lv2_pages[page] = calloc(1, LV2_PAGE_SIZE);
 			if (!lv2_pages[page]) {
@@ -60,7 +60,7 @@ void fake_lv2_set(uint64_t addr, const uint8_t *bytes, int len)
 				exit(2);
 			}
 		}
-		lv2_pages[page][(a - DS45_LV2_BASE) & (LV2_PAGE_SIZE - 1)] = bytes[i];
+		lv2_pages[page][(a - NPP_LV2_BASE) & (LV2_PAGE_SIZE - 1)] = bytes[i];
 	}
 }
 
@@ -73,11 +73,11 @@ static uint64_t lv2_peek_raw(uint64_t addr)
 	int i;
 
 	fake_lv2_peek_count++;
-	if ((addr & 7) || addr < DS45_LV2_BASE || addr > DS45_LV2_BOUND - 8) {
+	if ((addr & 7) || addr < NPP_LV2_BASE || addr > NPP_LV2_BOUND - 8) {
 		fake_lv2_out_of_bounds++;
 		return 0;
 	}
-	off = addr - DS45_LV2_BASE;
+	off = addr - NPP_LV2_BASE;
 	pg = lv2_pages[off >> LV2_PAGE_SHIFT];
 	if (!pg)
 		return 0;
@@ -102,7 +102,7 @@ static void lv2_poke(uint64_t addr, uint64_t value)
 	                 fake_lv2_poke_count >= fake_lv2_poke_fail_after;
 
 	fake_lv2_poke_count++;
-	if ((addr & 7) || addr < DS45_LV2_BASE || addr > DS45_LV2_BOUND - 8) {
+	if ((addr & 7) || addr < NPP_LV2_BASE || addr > NPP_LV2_BOUND - 8) {
 		fake_lv2_out_of_bounds++;
 		return;
 	}
@@ -218,7 +218,7 @@ system_time_t sys_time_get_system_time(void)
 int fake_toasts;
 char fake_last_toast[128];
 
-FAKE_WEAK void ds45_notify(const char *msg)
+FAKE_WEAK void npp_notify(const char *msg)
 {
 	fake_toasts++;
 	strncpy(fake_last_toast, msg, sizeof(fake_last_toast) - 1);
@@ -245,8 +245,8 @@ FAKE_WEAK int sys_tty_write(unsigned int ch, const void *buf, unsigned int len,
 	return 0;
 }
 
-FAKE_WEAK void ds45_boot_mark(const char *stage) { (void)stage; }
-FAKE_WEAK void ds45_boot_mark_hex(const char *stage, uint32_t value)
+FAKE_WEAK void npp_boot_mark(const char *stage) { (void)stage; }
+FAKE_WEAK void npp_boot_mark_hex(const char *stage, uint32_t value)
 {
 	(void)stage; (void)value;
 }
@@ -346,7 +346,7 @@ int fake_file_deleted(const char *path)
 
 /* Same contract as util.c: returns bytes read (NUL-terminated within cap),
  * or -1 if the file does not exist. */
-FAKE_WEAK int ds45_read_file(const char *path, char *out, int cap)
+FAKE_WEAK int npp_read_file(const char *path, char *out, int cap)
 {
 	int i = file_slot(path, 0), n;
 	if (i < 0 || !files[i].present || cap <= 0)
@@ -362,7 +362,7 @@ FAKE_WEAK int ds45_read_file(const char *path, char *out, int cap)
 const char *fake_write_fail_path;
 int         fake_append_fail_after = -1;
 
-FAKE_WEAK int ds45_write_file(const char *path, const void *data, int len)
+FAKE_WEAK int npp_write_file(const char *path, const void *data, int len)
 {
 	int i;
 	if (fake_write_fail_path && strcmp(path, fake_write_fail_path) == 0)
@@ -375,7 +375,7 @@ FAKE_WEAK int ds45_write_file(const char *path, const void *data, int len)
 
 /* Append (creating if absent). The fake_append_fail_after-th append and every
  * one after it fails without storing anything. */
-FAKE_WEAK int ds45_append_file(const char *path, const void *data, int len)
+FAKE_WEAK int npp_append_file(const char *path, const void *data, int len)
 {
 	int i;
 	char *p;
@@ -406,7 +406,7 @@ FAKE_WEAK int ds45_append_file(const char *path, const void *data, int len)
 	return 0;
 }
 
-FAKE_WEAK int ds45_delete_file(const char *path)
+FAKE_WEAK int npp_delete_file(const char *path)
 {
 	int i = file_slot(path, 1);
 	if (i < 0)
@@ -419,17 +419,17 @@ FAKE_WEAK int ds45_delete_file(const char *path)
 	return 0;
 }
 
-FAKE_WEAK int ds45_file_exists(const char *path)
+FAKE_WEAK int npp_file_exists(const char *path)
 {
 	int i = file_slot(path, 0);
 	return i >= 0 && files[i].present;
 }
 
 /* Only so config.c can be linked without util.c's remap tables. */
-FAKE_WEAK ds45_map_t ds45_parse_map(const char *name)
+FAKE_WEAK npp_map_t npp_parse_map(const char *name)
 {
 	(void)name;
-	return DS45_MAP_NONE;
+	return NPP_MAP_NONE;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -439,7 +439,7 @@ FAKE_WEAK ds45_map_t ds45_parse_map(const char *name)
 int fake_ldd_registers;
 int fake_ldd_unregisters;
 
-FAKE_WEAK int ldd_register(ds45_pad_t *pad)
+FAKE_WEAK int ldd_register(npp_pad_t *pad)
 {
 	fake_ldd_registers++;
 	if (pad) {
@@ -449,14 +449,14 @@ FAKE_WEAK int ldd_register(ds45_pad_t *pad)
 	return 0;
 }
 
-FAKE_WEAK void ldd_unregister(ds45_pad_t *pad)
+FAKE_WEAK void ldd_unregister(npp_pad_t *pad)
 {
 	fake_ldd_unregisters++;
 	if (pad)
 		pad->handle = -1;
 }
 
-FAKE_WEAK int ldd_set_insert_into_game(ds45_pad_t *pad, int on)
+FAKE_WEAK int ldd_set_insert_into_game(npp_pad_t *pad, int on)
 {
 	(void)pad; (void)on;
 	return 0;

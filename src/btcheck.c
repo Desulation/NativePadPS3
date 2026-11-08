@@ -1,5 +1,5 @@
 /*
- * DS45PAD - passive raw-report cross-check. See btcheck.h.
+ * NPP - passive raw-report cross-check. See btcheck.h.
  *
  * Everything is file-static state; callers serialise access (passthru.c).
  */
@@ -19,14 +19,14 @@ static struct {
 	int      vsh_samples;
 	vsh_sample_t prev_vsh[BTCHECK_PORTS];
 
-	ds45_btraw_t hist[BTCHECK_RAW_HISTORY];
+	npp_btraw_t hist[BTCHECK_RAW_HISTORY];
 	uint32_t hist_seq[BTCHECK_RAW_HISTORY]; /* push order of each entry */
 	uint32_t next_seq;                  /* sequence of the next push (wraps; compared by difference) */
 	int      have_match;                /* a match has been counted since the last reset */
 	uint32_t last_match_seq;            /* seq of the entry the last counted match used */
 	int      hist_count, hist_head;     /* ring of connected raw samples */
 
-	ds45_btraw_t last_raw;              /* previous raw sample, any connection */
+	npp_btraw_t last_raw;              /* previous raw sample, any connection */
 	int      have_last_raw;
 	int      connected;                 /* port_connected of the latest raw sample */
 	int      was_connected;             /* 1 until the disconnect is first seen */
@@ -36,9 +36,9 @@ static struct {
 
 /* ---- decode ------------------------------------------------------------ */
 
-int bt_report_decode(uint64_t w0, uint64_t w1, ds45_btraw_t *out)
+int bt_report_decode(uint64_t w0, uint64_t w1, npp_btraw_t *out)
 {
-	/* The one copy of the layout and mapping: ds45_inject_bt_pad in
+	/* The one copy of the layout and mapping: npp_inject_bt_pad in
 	 * passthru.c consumes this output. */
 	uint8_t b0, b1, b2, hat;
 	uint16_t d1 = 0, d2 = 0;
@@ -52,26 +52,26 @@ int bt_report_decode(uint64_t w0, uint64_t w1, ds45_btraw_t *out)
 	if (hat > 8)
 		return -1;
 
-	if (b2 & 0x01) d1 |= DS45_CTRL_PS;
+	if (b2 & 0x01) d1 |= NPP_CTRL_PS;
 
-	if (hat == 0 || hat == 1 || hat == 7) d1 |= DS45_CTRL_UP;
-	if (hat == 1 || hat == 2 || hat == 3) d1 |= DS45_CTRL_RIGHT;
-	if (hat == 3 || hat == 4 || hat == 5) d1 |= DS45_CTRL_DOWN;
-	if (hat == 5 || hat == 6 || hat == 7) d1 |= DS45_CTRL_LEFT;
+	if (hat == 0 || hat == 1 || hat == 7) d1 |= NPP_CTRL_UP;
+	if (hat == 1 || hat == 2 || hat == 3) d1 |= NPP_CTRL_RIGHT;
+	if (hat == 3 || hat == 4 || hat == 5) d1 |= NPP_CTRL_DOWN;
+	if (hat == 5 || hat == 6 || hat == 7) d1 |= NPP_CTRL_LEFT;
 
-	if (b0 & 0x10) d2 |= DS45_CTRL_SQUARE;
-	if (b0 & 0x20) d2 |= DS45_CTRL_CROSS;
-	if (b0 & 0x40) d2 |= DS45_CTRL_CIRCLE;
-	if (b0 & 0x80) d2 |= DS45_CTRL_TRIANGLE;
+	if (b0 & 0x10) d2 |= NPP_CTRL_SQUARE;
+	if (b0 & 0x20) d2 |= NPP_CTRL_CROSS;
+	if (b0 & 0x40) d2 |= NPP_CTRL_CIRCLE;
+	if (b0 & 0x80) d2 |= NPP_CTRL_TRIANGLE;
 
-	if (b1 & 0x01) d2 |= DS45_CTRL_L1;
-	if (b1 & 0x02) d2 |= DS45_CTRL_R1;
-	if (b1 & 0x04) d2 |= DS45_CTRL_L2;
-	if (b1 & 0x08) d2 |= DS45_CTRL_R2;
-	if (b1 & 0x10) d1 |= DS45_CTRL_SELECT;
-	if (b1 & 0x20) d1 |= DS45_CTRL_START;
-	if (b1 & 0x40) d1 |= DS45_CTRL_L3;
-	if (b1 & 0x80) d1 |= DS45_CTRL_R3;
+	if (b1 & 0x01) d2 |= NPP_CTRL_L1;
+	if (b1 & 0x02) d2 |= NPP_CTRL_R1;
+	if (b1 & 0x04) d2 |= NPP_CTRL_L2;
+	if (b1 & 0x08) d2 |= NPP_CTRL_R2;
+	if (b1 & 0x10) d1 |= NPP_CTRL_SELECT;
+	if (b1 & 0x20) d1 |= NPP_CTRL_START;
+	if (b1 & 0x40) d1 |= NPP_CTRL_L3;
+	if (b1 & 0x80) d1 |= NPP_CTRL_R3;
 
 	out->lx  = (uint8_t)(w0 >> 40);
 	out->ly  = (uint8_t)(w0 >> 32);
@@ -95,18 +95,18 @@ static int stick_close(uint16_t vsh, uint8_t raw)
 	return diff <= BTCHECK_STICK_TOLERANCE;
 }
 
-static int raw_equal(const ds45_btraw_t *a, const ds45_btraw_t *b)
+static int raw_equal(const npp_btraw_t *a, const npp_btraw_t *b)
 {
 	return a->lx == b->lx && a->ly == b->ly && a->rx == b->rx && a->ry == b->ry &&
 	       a->l2 == b->l2 && a->r2 == b->r2 && a->hat == b->hat &&
 	       a->d1 == b->d1 && a->d2 == b->d2 && a->ps == b->ps;
 }
 
-static int matches_raw(const vsh_sample_t *v, const ds45_btraw_t *r)
+static int matches_raw(const vsh_sample_t *v, const npp_btraw_t *r)
 {
 	return stick_close(v->lx, r->lx) && stick_close(v->ly, r->ly) &&
 	       stick_close(v->rx, r->rx) && stick_close(v->ry, r->ry) &&
-	       (uint16_t)(v->d1 & ~DS45_CTRL_PS) == (uint16_t)(r->d1 & ~DS45_CTRL_PS) &&
+	       (uint16_t)(v->d1 & ~NPP_CTRL_PS) == (uint16_t)(r->d1 & ~NPP_CTRL_PS) &&
 	       v->d2 == r->d2;
 }
 
@@ -128,16 +128,16 @@ void btcheck_observe_vsh(uint32_t port, const CellPadData *d)
 
 	if (!d || (int)port != g_bc.src_port || port >= BTCHECK_PORTS)
 		return;
-	if (d->len <= DS45_BTN_ANALOG_LEFT_Y)    /* no data this poll */
+	if (d->len <= NPP_BTN_ANALOG_LEFT_Y)    /* no data this poll */
 		return;
 
 	cur.valid = 1;
-	cur.lx = d->button[DS45_BTN_ANALOG_LEFT_X];
-	cur.ly = d->button[DS45_BTN_ANALOG_LEFT_Y];
-	cur.rx = d->button[DS45_BTN_ANALOG_RIGHT_X];
-	cur.ry = d->button[DS45_BTN_ANALOG_RIGHT_Y];
-	cur.d1 = d->button[DS45_BTN_DIGITAL1];
-	cur.d2 = d->button[DS45_BTN_DIGITAL2];
+	cur.lx = d->button[NPP_BTN_ANALOG_LEFT_X];
+	cur.ly = d->button[NPP_BTN_ANALOG_LEFT_Y];
+	cur.rx = d->button[NPP_BTN_ANALOG_RIGHT_X];
+	cur.ry = d->button[NPP_BTN_ANALOG_RIGHT_Y];
+	cur.d1 = d->button[NPP_BTN_DIGITAL1];
+	cur.d2 = d->button[NPP_BTN_DIGITAL2];
 
 	prev = &g_bc.prev_vsh[port];
 	if (prev->valid && prev->lx == cur.lx && prev->ly == cur.ly &&
@@ -175,7 +175,7 @@ void btcheck_observe_vsh(uint32_t port, const CellPadData *d)
 	}
 }
 
-btcheck_state_t btcheck_feed_raw(const ds45_btraw_t *r, int port_connected, uint64_t now_us)
+btcheck_state_t btcheck_feed_raw(const npp_btraw_t *r, int port_connected, uint64_t now_us)
 {
 	if (!r || g_bc.state == BTCHECK_FAILED)
 		return g_bc.state;

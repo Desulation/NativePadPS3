@@ -1,5 +1,5 @@
 /*
- * Compatibility layer for building DS45PAD with the Cell SDK 192.001.
+ * Compatibility layer for building NPP with the Cell SDK 192.001.
  *
  * That SDK predates cellPadGetInfo2() and cellPadSetPortSetting(): neither the
  * headers nor libio_stub.a know them. The plugin only needs a handful of
@@ -13,22 +13,22 @@
  *
  * Force-included with -include, so no original source file is edited for it.
  */
-#ifndef DS45_COMPAT_PAD_H
-#define DS45_COMPAT_PAD_H
+#ifndef NPP_COMPAT_PAD_H
+#define NPP_COMPAT_PAD_H
 
 #include <string.h>
 #include <cell/pad.h>
 
-#define DS45_COMPAT_PORTS 7
+#define NPP_COMPAT_PORTS 7
 
 typedef struct CellPadInfo2 {
 	uint32_t max_connect;
 	uint32_t now_connect;
 	uint32_t system_info;
-	uint32_t port_status[DS45_COMPAT_PORTS];
-	uint32_t port_setting[DS45_COMPAT_PORTS];
-	uint32_t device_capability[DS45_COMPAT_PORTS];
-	uint32_t device_type[DS45_COMPAT_PORTS];
+	uint32_t port_status[NPP_COMPAT_PORTS];
+	uint32_t port_setting[NPP_COMPAT_PORTS];
+	uint32_t device_capability[NPP_COMPAT_PORTS];
+	uint32_t device_type[NPP_COMPAT_PORTS];
 } CellPadInfo2;
 
 static inline int32_t cellPadGetInfo2(CellPadInfo2 *info2)
@@ -49,7 +49,7 @@ static inline int32_t cellPadGetInfo2(CellPadInfo2 *info2)
 	info2->now_connect = info.now_connect;
 	info2->system_info = info.info;
 
-	for (i = 0; i < DS45_COMPAT_PORTS; i++) {
+	for (i = 0; i < NPP_COMPAT_PORTS; i++) {
 		uint32_t st = info.status[i];
 
 		info2->port_status[i] = st;
@@ -69,4 +69,4 @@ static inline int32_t cellPadSetPortSetting(uint32_t port_no, uint32_t setting)
 	return 0;
 }
 
-#endif /* DS45_COMPAT_PAD_H */
+#endif /* NPP_COMPAT_PAD_H */

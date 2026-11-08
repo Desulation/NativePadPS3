@@ -1,5 +1,5 @@
 /*
- * DS45PAD - passive cross-check of the Bluetooth HID report location.
+ * NPP - passive cross-check of the Bluetooth HID report location.
  *
  * The kernel table / cache / scan decide where the raw BT report lives on the
  * running firmware. This module confirms that decision without touching the
@@ -20,7 +20,7 @@
  *    trylock and drop the sample; the plugin thread locks).
  *  - btcheck_observe_vsh needs CellPadData.len to be set (as cellPadGetData
  *    does; len == 0 means "no data this poll"). len >= 8 is required, since
- *    button[7] (DS45_BTN_ANALOG_LEFT_Y) is the highest word read; a shorter
+ *    button[7] (NPP_BTN_ANALOG_LEFT_Y) is the highest word read; a shorter
  *    len is ignored, so a caller that leaves len unset is never counted.
  *  - src_port must be 0..7. Any other value (negative, or 8 and up) means
  *    nothing is ever observed: every VSH read is ignored.
@@ -41,25 +41,25 @@
  *    in PASSED alike (a trusted location that keeps changing with the pad
  *    gone is revoked). FAILED is terminal until btcheck_reset.
  */
-#ifndef DS45_BTCHECK_H
-#define DS45_BTCHECK_H
+#ifndef NPP_BTCHECK_H
+#define NPP_BTCHECK_H
 
 #include <stdint.h>
-#include <cell/pad.h>   /* CellPadData, needed by ds45pad.h */
-#include "ds45pad.h"
+#include <cell/pad.h>   /* CellPadData, needed by npp.h */
+#include "npp.h"
 
 /* One decoded raw BT report (hat is the raw 0..8 value; d1/d2 are the
- * DS45_CTRL_* words, d1 includes DS45_CTRL_PS when ps is set). */
+ * NPP_CTRL_* words, d1 includes NPP_CTRL_PS when ps is set). */
 typedef struct {
 	uint8_t  lx, ly, rx, ry, l2, r2, hat;
 	uint16_t d1, d2;
 	int      ps;
-} ds45_btraw_t;
+} npp_btraw_t;
 
 /* Decode the first 16 bytes of the kernel's report from two big-endian
  * doublewords. Returns -1 (and leaves *out alone) unless bytes 0-1 are A1 01,
  * the hat is <= 8 and out is non-NULL. */
-int bt_report_decode(uint64_t w0, uint64_t w1, ds45_btraw_t *out);
+int bt_report_decode(uint64_t w0, uint64_t w1, npp_btraw_t *out);
 
 typedef enum { BTCHECK_PENDING = 0, BTCHECK_PASSED, BTCHECK_FAILED } btcheck_state_t;
 
@@ -79,7 +79,7 @@ void btcheck_observe_vsh(uint32_t port, const CellPadData *d);
 
 /* One raw sample per poll, with whether the pad is currently connected and a
  * monotonic microsecond timestamp. Returns the state after this sample. */
-btcheck_state_t btcheck_feed_raw(const ds45_btraw_t *r, int port_connected, uint64_t now_us);
+btcheck_state_t btcheck_feed_raw(const npp_btraw_t *r, int port_connected, uint64_t now_us);
 
 btcheck_state_t btcheck_state(void);
 
@@ -87,4 +87,4 @@ btcheck_state_t btcheck_state(void);
  * state, FAILED included. */
 int btcheck_vsh_samples_seen(void);
 
-#endif /* DS45_BTCHECK_H */
+#endif /* NPP_BTCHECK_H */

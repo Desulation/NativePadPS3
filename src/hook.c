@@ -1,5 +1,5 @@
 /*
- * DS45PAD - import table lookup and detours.
+ * NPP - import table lookup and detours.
  *
  * A PRX that imports a system library gets an import stub structure holding
  * the library name, a table of NIDs and a matching table of resolved function
@@ -21,7 +21,7 @@
 
 #include <string.h>
 
-#include "ds45pad.h"
+#include "npp.h"
 #include "hook.h"
 
 /* Offsets inside an import stub structure (0x2C bytes). */
@@ -44,7 +44,7 @@ static int plausible(uint32_t addr)
 	return addr >= ADDR_MIN && addr < ADDR_MAX;
 }
 
-uint32_t *ds45_find_slot(const char *module, uint32_t fnid)
+uint32_t *npp_find_slot(const char *module, uint32_t fnid)
 {
 	uint32_t table;
 	int guard;
@@ -93,17 +93,17 @@ uint32_t *ds45_find_slot(const char *module, uint32_t fnid)
 	return NULL;
 }
 
-void *ds45_resolve(const char *module, uint32_t fnid)
+void *npp_resolve(const char *module, uint32_t fnid)
 {
-	uint32_t *slot = ds45_find_slot(module, fnid);
+	uint32_t *slot = npp_find_slot(module, fnid);
 
 	return slot ? (void *)(uintptr_t)*slot : NULL;
 }
 
-int ds45_detour(const char *module, uint32_t fnid, void *replacement,
-                ds45_detour_t *d)
+int npp_detour(const char *module, uint32_t fnid, void *replacement,
+                npp_detour_t *d)
 {
-	uint32_t *slot = ds45_find_slot(module, fnid);
+	uint32_t *slot = npp_find_slot(module, fnid);
 
 	if (!slot || !replacement)
 		return -1;
@@ -119,7 +119,7 @@ int ds45_detour(const char *module, uint32_t fnid, void *replacement,
 	return 0;
 }
 
-void ds45_detour_remove(ds45_detour_t *d)
+void npp_detour_remove(npp_detour_t *d)
 {
 	if (d->slot) {
 		*d->slot = d->saved;
@@ -137,7 +137,7 @@ void ds45_detour_remove(ds45_detour_t *d)
 /* all from an injected module.                                              */
 /* ------------------------------------------------------------------------ */
 
-int ds45_detour_opd(void *target, void *replacement, ds45_opd_detour_t *d)
+int npp_detour_opd(void *target, void *replacement, npp_opd_detour_t *d)
 {
 	uint32_t *opd, *rep;
 
@@ -178,7 +178,7 @@ int ds45_detour_opd(void *target, void *replacement, ds45_opd_detour_t *d)
 	return 0;
 }
 
-void ds45_detour_opd_remove(ds45_opd_detour_t *d)
+void npp_detour_opd_remove(npp_opd_detour_t *d)
 {
 	if (d->opd) {
 		/* Restored as one store too, for the same reason. */

@@ -1,4 +1,4 @@
-# DS45PAD - PS3 VSH plugin build
+# NPP - PS3 VSH plugin build
 #
 # Requires the Cell SDK PPU toolchain (ppu-lv2-gcc) and scetool on PATH, the
 # same combination webMAN MOD and PS3xPAD are built with. See ../docs/BUILD.md.
@@ -7,7 +7,7 @@
 #   make game       -> nativepadps3_game.sprx (optional in-game build)
 #   make all-builds -> both
 #   make clean
-#   make DEBUG=1 ... -> same targets with -DDS45_DEBUG (boot trace, LV2 dumper),
+#   make DEBUG=1 ... -> same targets with -DNPP_DEBUG (boot trace, LV2 dumper),
 #                       output named nativepadps3_<variant>_debug.sprx
 
 CELL_MK_DIR = $(CELL_SDK)/samples/mk
@@ -43,10 +43,10 @@ PPU_PRX_LDFLAGS += -mprx -ffunction-sections -fdata-sections -Wl,--strip-unused-
 
 PPU_PRX_STRIPFLAGS += --strip-debug --strip-section-header
 
-# DEBUG=1 defines DS45_DEBUG for either variant and tags the output name.
+# DEBUG=1 defines NPP_DEBUG for either variant and tags the output name.
 # DEBUG is a make command-line variable, so it reaches the recursive makes.
 ifeq ($(DEBUG),1)
-PPU_PRX_FLAGS += -DDS45_DEBUG
+PPU_PRX_FLAGS += -DNPP_DEBUG
 DEBUG_SUFFIX = _debug
 SRCS_VSH_DEBUG = lv2dump.c lv2capture.c
 else
@@ -108,7 +108,7 @@ all: vsh
 
 # Both targets clean first. Without that, objects left over from the other
 # variant get linked in silently - a "VSH" build made after a `make game` would
-# contain -DDS45_GAME code.
+# contain -DNPP_GAME code.
 vsh: shim-blob
 	$(MAKE) clean-obj
 	$(MAKE) sign-one PPU_SRCS="$(SRCS_VSH)" PPU_PRX_LDLIBS="$(LIBS_VSH)" \
@@ -117,7 +117,7 @@ vsh: shim-blob
 game:
 	$(MAKE) clean-obj
 	$(MAKE) sign-one PPU_SRCS="$(SRCS_GAME)" PPU_PRX_LDLIBS="$(LIBS_GAME)" \
-	                 EXTRA_CFLAGS="-DDS45_GAME $(COMPAT_INC)" \
+	                 EXTRA_CFLAGS="-DNPP_GAME $(COMPAT_INC)" \
 	                 AUTH=$(AUTH_GAME) SPRX=$(SPRX_GAME)
 
 sign-one:

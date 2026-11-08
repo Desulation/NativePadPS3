@@ -13,7 +13,7 @@ if (-not $Ip) { throw 'set $Ip (the console address) before dot-sourcing ps3_con
 $ftp = "ftp://$Ip"
 
 # Console file names (the plugin is NativePadPS3). The boot trace name must match
-# DS45_BOOT_FILE in the plugin header and the plugin name the output of src/build.ps1;
+# NPP_BOOT_FILE in the plugin header and the plugin name the output of src/build.ps1;
 # tools/test_console_lib.ps1 checks both offline.
 $TraceFile          = '/dev_hdd0/tmp/nativepadps3_boot.txt'
 $RemoteDebugSprx    = '/dev_hdd0/plugins/nativepadps3_vsh_debug.sprx'
@@ -96,7 +96,7 @@ $blobHdr = Join-Path $PSScriptRoot '../src/shim_blob.h'
 if (Test-Path -LiteralPath $blobHdr) {
     $hdr = Get-Content -LiteralPath $blobHdr
     foreach ($kv in @(@('Poweroff', 'POWEROFF'), @('Teardown', 'TEARDOWN'))) {
-        $m = $hdr | Select-String -Pattern ("DS45_SHIM_OFF_{0}\s+0x([0-9A-Fa-f]+)" -f $kv[1]) | Select-Object -First 1
+        $m = $hdr | Select-String -Pattern ("NPP_SHIM_OFF_{0}\s+0x([0-9A-Fa-f]+)" -f $kv[1]) | Select-Object -First 1
         if ($m) { $PoOffs[$kv[0]] = [Convert]::ToInt32($m.Matches[0].Groups[1].Value, 16) }
     }
 }

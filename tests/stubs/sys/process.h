@@ -3,8 +3,8 @@
  * The real system_call_N macros declare locals (p1) holding the syscall
  * result inside the calling function, and return_to_user_prog(t) returns it.
  * These do the same, routed through fake_syscall() in tests/fakes.c. */
-#ifndef DS45_TEST_PROCESS_H
-#define DS45_TEST_PROCESS_H
+#ifndef NPP_TEST_PROCESS_H
+#define NPP_TEST_PROCESS_H
 #include <stdint.h>
 
 uint64_t fake_syscall(int n, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4);

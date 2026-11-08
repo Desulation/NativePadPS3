@@ -3,7 +3,7 @@
 #include <string.h>
 #include <cell/pad.h>
 #include "fakes.h"
-#include "ds45pad.h"
+#include "npp.h"
 #include "lv2.h"
 #include "kernel.h"
 #include "btcheck.h"
@@ -12,10 +12,10 @@
  * The built-in table resolves to its legacy entry (no cache, empty scan
  * pattern), whose slot is LEG_SLOT and report offset 0xE8. */
 
-ds45_config_t g_cfg;
-ds45_pad_t    g_pads[DS45_MAX_PADS];
+npp_config_t g_cfg;
+npp_pad_t    g_pads[NPP_MAX_PADS];
 
-#define B         DS45_LV2_BASE
+#define B         NPP_LV2_BASE
 #define LEG_SLOT  0x800000000034C530ULL
 #define OFF       0xE8
 #define BT_WORK   (B + 0x500000)
@@ -52,16 +52,16 @@ static CellPadData mk_vsh(uint8_t lx)
 	CellPadData d;
 	memset(&d, 0, sizeof(d));
 	d.len = 24;
-	d.button[DS45_BTN_ANALOG_LEFT_X]  = lx;
-	d.button[DS45_BTN_ANALOG_LEFT_Y]  = 0x80;
-	d.button[DS45_BTN_ANALOG_RIGHT_X] = 0x80;
-	d.button[DS45_BTN_ANALOG_RIGHT_Y] = 0x80;
+	d.button[NPP_BTN_ANALOG_LEFT_X]  = lx;
+	d.button[NPP_BTN_ANALOG_LEFT_Y]  = 0x80;
+	d.button[NPP_BTN_ANALOG_RIGHT_X] = 0x80;
+	d.button[NPP_BTN_ANALOG_RIGHT_Y] = 0x80;
 	return d;
 }
 
 static void set_connected(int on)
 {
-	fake_pad_info.port_status[SRC_PORT] = on ? DS45_STATUS_CONNECTED : 0;
+	fake_pad_info.port_status[SRC_PORT] = on ? NPP_STATUS_CONNECTED : 0;
 }
 
 /* Fresh fakes, fresh plugin state, a generic pad on SRC_PORT. */
@@ -71,14 +71,14 @@ static void setup(void)
 
 	fake_reset_all();
 	memset(g_pads, 0, sizeof(g_pads));
-	for (i = 0; i < DS45_MAX_PADS; i++) {
+	for (i = 0; i < NPP_MAX_PADS; i++) {
 		g_pads[i].handle = g_pads[i].port = g_pads[i].src_port = -1;
 		g_pads[i].dev_id = -1;
 		g_pads[i].c_pipe = g_pads[i].i_pipe = g_pads[i].o_pipe = -1;
 	}
 	memset(&g_cfg, 0, sizeof(g_cfg));
 	g_cfg.enable = 1;
-	g_cfg.mode = DS45_MODE_BT;
+	g_cfg.mode = NPP_MODE_BT;
 	g_cfg.bt_source_port = -1;
 	g_cfg.max_pads = 1;
 	g_cfg.poll_ms = 10;
@@ -92,11 +92,11 @@ static void setup(void)
 static int setup_bound(void)
 {
 	setup();
-	CHECK(kernel_resolve(NULL) == DS45_KMATCH_LEGACY);
+	CHECK(kernel_resolve(NULL) == NPP_KMATCH_LEGACY);
 	put64(LEG_SLOT, BT_WORK);
 	put_report(0x80);
 	CHECK(passthru_scan() == 0);                /* binds, does not register */
-	CHECK(g_pads[0].in_use && g_pads[0].link == DS45_LINK_BT);
+	CHECK(g_pads[0].in_use && g_pads[0].link == NPP_LINK_BT);
 	CHECK(g_pads[0].src_port == SRC_PORT && g_pads[0].handle < 0);
 	CHECK(fake_ldd_registers == 0);
 	return 0;
@@ -130,8 +130,8 @@ static void round_mismatch(int i)
 static int any_bt_pad(void)
 {
 	int i;
-	for (i = 0; i < DS45_MAX_PADS; i++)
-		if (g_pads[i].in_use && g_pads[i].link == DS45_LINK_BT)
+	for (i = 0; i < NPP_MAX_PADS; i++)
+		if (g_pads[i].in_use && g_pads[i].link == NPP_LINK_BT)
 			return 1;
 	return 0;
 }
@@ -177,12 +177,12 @@ static int test_no_virtual_pad_before_pass(void)
 
 static int test_none_registers_nothing(void)
 {
-	static const ds45_kernel_t only_fp[1] = {
+	static const npp_kernel_t only_fp[1] = {
 		{ "fp", B + 0x123400, 0x1234, B + 0x345670, 0xE8 }
 	};
 
 	setup();
-	CHECK(kernel_resolve_from(only_fp, 1, NULL, NULL) == DS45_KMATCH_NONE);
+	CHECK(kernel_resolve_from(only_fp, 1, NULL, NULL) == NPP_KMATCH_NONE);
 	CHECK(kernel_active() == NULL);
 	fake_lv2_reset();                           /* count from here */
 
@@ -204,8 +204,8 @@ static int test_fail_steps_aside(void)
 
 	/* a cache file is present (unparseable, so legacy resolves) */
 	setup();
-	fake_file_set(ds45_path(DS45_PATH_KERNEL_CACHE), "junk\n");
-	CHECK(kernel_resolve(NULL) == DS45_KMATCH_LEGACY);
+	fake_file_set(npp_path(NPP_PATH_KERNEL_CACHE), "junk\n");
+	CHECK(kernel_resolve(NULL) == NPP_KMATCH_LEGACY);
 	put64(LEG_SLOT, BT_WORK);
 	put_report(0x80);
 	CHECK(passthru_scan() == 0);
@@ -216,7 +216,7 @@ static int test_fail_steps_aside(void)
 	CHECK(passthru_btcheck_state() == BTCHECK_FAILED);
 
 	CHECK(passthru_scan() == 0);
-	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 1);
+	CHECK(fake_file_deleted(npp_path(NPP_PATH_KERNEL_CACHE)) == 1);
 	CHECK(kernel_active() == NULL);
 	CHECK(!any_bt_pad());                       /* released */
 
@@ -258,7 +258,7 @@ static int test_fail_after_pass_unregisters(void)
 	set_connected(1);
 	CHECK(passthru_scan() == 0);
 	CHECK(kernel_active() == NULL);
-	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 1);
+	CHECK(fake_file_deleted(npp_path(NPP_PATH_KERNEL_CACHE)) == 1);
 	CHECK(!any_bt_pad());
 	CHECK(passthru_scan() == 0);
 	CHECK(fake_ldd_registers == 1);
@@ -301,7 +301,7 @@ static int test_null_slot_retried(void)
 	int i;
 
 	setup();
-	CHECK(kernel_resolve(NULL) == DS45_KMATCH_LEGACY);
+	CHECK(kernel_resolve(NULL) == NPP_KMATCH_LEGACY);
 	put_report(0x80);                           /* slot itself still 0 */
 	CHECK(passthru_scan() == 0);
 	CHECK(any_bt_pad());
@@ -312,7 +312,7 @@ static int test_null_slot_retried(void)
 	CHECK(passthru_raw_samples() == 0);
 
 	/* out-of-window and unaligned pointers are not used either */
-	put64(LEG_SLOT, DS45_LV2_BOUND);
+	put64(LEG_SLOT, NPP_LV2_BOUND);
 	CHECK(passthru_scan() == 0);
 	passthru_poll();
 	put64(LEG_SLOT, BT_WORK + 4);
@@ -331,8 +331,8 @@ static int test_null_slot_retried(void)
 	CHECK(passthru_raw_samples() == 1);
 
 	/* nothing about the failure was cached */
-	CHECK(fake_file_size(ds45_path(DS45_PATH_KERNEL_CACHE)) == -1);
-	CHECK(fake_file_deleted(ds45_path(DS45_PATH_KERNEL_CACHE)) == 0);
+	CHECK(fake_file_size(npp_path(NPP_PATH_KERNEL_CACHE)) == -1);
+	CHECK(fake_file_deleted(npp_path(NPP_PATH_KERNEL_CACHE)) == 0);
 	CHECK(kernel_active() != NULL);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	EXPECT(locks_clean());
@@ -345,13 +345,13 @@ static int test_passthru_scan_waits_for_resolution(void)
 
 	setup();
 	/* no record yet (the load-time scan is still running) */
-	CHECK(kernel_resolve_from(NULL, 0, NULL, NULL) == DS45_KMATCH_NONE);
+	CHECK(kernel_resolve_from(NULL, 0, NULL, NULL) == NPP_KMATCH_NONE);
 	put64(LEG_SLOT, BT_WORK);
 	put_report(0x80);
 	CHECK(passthru_scan() == 0);
 	CHECK(!any_bt_pad());
 
-	CHECK(kernel_resolve(NULL) == DS45_KMATCH_LEGACY);
+	CHECK(kernel_resolve(NULL) == NPP_KMATCH_LEGACY);
 	CHECK(passthru_scan() == 0);                /* first scan after it */
 	CHECK(any_bt_pad());
 	CHECK(g_pads[0].src_port == SRC_PORT);

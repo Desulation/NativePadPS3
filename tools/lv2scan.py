@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""lv2scan - offline candidate and pattern finder for DS45Pad.
+"""lv2scan - offline candidate and pattern finder for NativePadPS3.
 
 Input: raw big-endian LV2 window dumps (8 MiB, address 0x8000000000000000
 upward) that you took from your own consoles with the debug-build dumper
-(DUMP_LV2 = 1). Output: paste-ready C for `ds45_kernel_table` (src/kernel.c)
-and `ds45_scan_pattern`.
+(DUMP_LV2 = 1). Output: paste-ready C for `npp_kernel_table` (src/kernel.c)
+and `npp_scan_pattern`.
 
 Dumps are never committed (`*.bin` and `tools/dumps/` are git-ignored).
 
@@ -38,14 +38,14 @@ except Exception:                       # not installed, or no PPC support
 # ---- constants shared with src/kernel.h and src/lv2.h --------------------
 
 DEFAULT_BASE = 0x8000000000000000
-WINDOW_SIZE = 8 * 1024 * 1024           # DS45_LV2_BOUND - DS45_LV2_BASE
-DS45_FP_LEN = 32
-DS45_SCAN_MAX_INSNS = 16
-DS45_SCAN_MAX_HITS = 8
-DS45_SCAN_PROLOGUE_RANGE = 0x800
-DS45_REPORT_OFF_MAX = 0x7FF0     # kernel.h: largest usable report offset
-DS45_INSN_LD_FROM_R2 = (0xFC1F0003, 0xE8020000)   # ld any, ds(r2)
-DS45_INSN_STDU_R1 = (0xFFFF0003, 0xF8210001)      # stdu r1, ds(r1)
+WINDOW_SIZE = 8 * 1024 * 1024           # NPP_LV2_BOUND - NPP_LV2_BASE
+NPP_FP_LEN = 32
+NPP_SCAN_MAX_INSNS = 16
+NPP_SCAN_MAX_HITS = 8
+NPP_SCAN_PROLOGUE_RANGE = 0x800
+NPP_REPORT_OFF_MAX = 0x7FF0     # kernel.h: largest usable report offset
+NPP_INSN_LD_FROM_R2 = (0xFC1F0003, 0xE8020000)   # ld any, ds(r2)
+NPP_INSN_STDU_R1 = (0xFFFF0003, 0xF8210001)      # stdu r1, ds(r1)
 
 FNV64_OFFSET = 0xCBF29CE484222325
 FNV64_PRIME = 0x100000001B3
@@ -53,12 +53,12 @@ M64 = 0xFFFFFFFFFFFFFFFF
 
 def record_usable(slot_addr: int, report_off: int, base: int = DEFAULT_BASE) -> bool:
     """kernel_record_usable in src/kernel.c: slot 8-aligned inside
-    [base, base + 8 MiB - 8], report_off 8-aligned and <= DS45_REPORT_OFF_MAX.
+    [base, base + 8 MiB - 8], report_off 8-aligned and <= NPP_REPORT_OFF_MAX.
     A record failing this is refused by the plugin whatever its source."""
     return ((slot_addr & 7) == 0
             and base <= slot_addr <= base + WINDOW_SIZE - 8
             and (report_off & 7) == 0
-            and 0 <= report_off <= DS45_REPORT_OFF_MAX)
+            and 0 <= report_off <= NPP_REPORT_OFF_MAX)
 
 
 # ---- search rules (host side only) ---------------------------------------
@@ -90,11 +90,11 @@ def _words(img: bytes) -> Tuple[int, ...]:
 
 
 def _is_stdu(w: int) -> bool:
-    return (w & DS45_INSN_STDU_R1[0]) == DS45_INSN_STDU_R1[1]
+    return (w & NPP_INSN_STDU_R1[0]) == NPP_INSN_STDU_R1[1]
 
 
 def _is_ld_r2(w: int) -> bool:
-    return (w & DS45_INSN_LD_FROM_R2[0]) == DS45_INSN_LD_FROM_R2[1]
+    return (w & NPP_INSN_LD_FROM_R2[0]) == NPP_INSN_LD_FROM_R2[1]
 
 
 def _in_window(addr: int, base: int) -> bool:
@@ -126,14 +126,14 @@ def _d_form_imm(w: int, ra: int) -> Optional[int]:
 def _first_report_use(words, j: int, end: int) -> Optional[Tuple[int, int]]:
     """For the ld at word index j: (index, offset) of the first later D-form
     instruction with rA == rT and an immediate in [0x10, 0x400] that the
-    plugin can use (8-aligned, <= DS45_REPORT_OFF_MAX), looking at most
+    plugin can use (8-aligned, <= NPP_REPORT_OFF_MAX), looking at most
     REPORT_LOOKAHEAD_WORDS ahead and not past `end`. Uses that fail are
     skipped and the search goes on."""
     rt = (words[j] >> 21) & 31
     for k in range(j + 1, min(end, j + 1 + REPORT_LOOKAHEAD_WORDS)):
         imm = _d_form_imm(words[k], rt)
         if (imm is not None and REPORT_OFF_MIN <= imm <= REPORT_OFF_MAX
-                and imm & 7 == 0 and imm <= DS45_REPORT_OFF_MAX):
+                and imm & 7 == 0 and imm <= NPP_REPORT_OFF_MAX):
             return k, imm
     return None
 
@@ -215,7 +215,7 @@ def find_candidates(img: bytes, base: int = DEFAULT_BASE) -> List[Candidate]:
         func_start = base + 4 * s
         toc = None
         for j in lds:
-            if (j - s) * 4 > DS45_SCAN_PROLOGUE_RANGE:
+            if (j - s) * 4 > NPP_SCAN_PROLOGUE_RANGE:
                 continue
             use = _first_report_use(words, j, end)
             if use is None:
@@ -230,12 +230,12 @@ def find_candidates(img: bytes, base: int = DEFAULT_BASE) -> List[Candidate]:
             ld_addr = base + 4 * j
             fp = ld_addr & ~7
             fo = fp - base
-            if fo < 0 or fo + DS45_FP_LEN > len(img):
+            if fo < 0 or fo + NPP_FP_LEN > len(img):
                 continue
             k, off = use
             out.append(Candidate(
                 fp_addr=fp,
-                fp_hash=fnv1a64(img[fo:fo + DS45_FP_LEN]),
+                fp_hash=fnv1a64(img[fo:fo + NPP_FP_LEN]),
                 slot_addr=slot,
                 report_off=off,
                 func_start=func_start,
@@ -251,7 +251,7 @@ def find_candidates(img: bytes, base: int = DEFAULT_BASE) -> List[Candidate]:
 
 class Pattern(list):
     """list of (mask, value) that maps one to one onto the C
-    ds45_insn_match_t array, plus the two indices of ds45_scan_pattern_t."""
+    npp_insn_match_t array, plus the two indices of npp_scan_pattern_t."""
 
     def __init__(self, insns=(), toc_ld_index: int = 0, report_off_index: int = 0):
         super().__init__(insns)
@@ -306,7 +306,7 @@ def common_pattern(per_dump, base: int = DEFAULT_BASE) -> Pattern:
     The window is aligned on the `ld` instruction itself, not on fp_addr, so
     a kernel that puts the ld in the other half of a qword still lines up.
 
-    The result is at most DS45_SCAN_MAX_INSNS long: words with an empty mask
+    The result is at most NPP_SCAN_MAX_INSNS long: words with an empty mask
     are dropped from both ends first; if it is still too long, the end word
     carrying fewer fixed bits goes (a tie drops the earlier word) until it
     fits. Neither index word is ever dropped. Words before any dump's
@@ -362,15 +362,15 @@ def common_pattern(per_dump, base: int = DEFAULT_BASE) -> Pattern:
         values.append(ws[0] & m)
 
     keep_lo, keep_hi = min(toc_i, rep_i), max(toc_i, rep_i)
-    if keep_hi - keep_lo + 1 > DS45_SCAN_MAX_INSNS:
+    if keep_hi - keep_lo + 1 > NPP_SCAN_MAX_INSNS:
         raise ValueError("TOC ld and report use are %d words apart; the C scan "
-                         "allows %d" % (keep_hi - keep_lo + 1, DS45_SCAN_MAX_INSNS))
+                         "allows %d" % (keep_hi - keep_lo + 1, NPP_SCAN_MAX_INSNS))
     lo, hi = 0, span - 1
     while lo < keep_lo and masks[lo] == 0:
         lo += 1
     while hi > keep_hi and masks[hi] == 0:
         hi -= 1
-    while hi - lo + 1 > DS45_SCAN_MAX_INSNS:
+    while hi - lo + 1 > NPP_SCAN_MAX_INSNS:
         if lo >= keep_lo:
             hi -= 1
         elif hi <= keep_hi:
@@ -415,7 +415,7 @@ class ScanResult:
 
 def _pattern_valid(pat) -> bool:
     n = len(pat)
-    return (0 < n <= DS45_SCAN_MAX_INSNS
+    return (0 < n <= NPP_SCAN_MAX_INSNS
             and 0 <= pat.toc_ld_index < n and 0 <= pat.report_off_index < n)
 
 
@@ -449,8 +449,8 @@ def simulate_scan(img: bytes, base: int, pat: Pattern) -> ScanResult:
     if not hits:
         res.error = "no hits"
         return res
-    if len(hits) > DS45_SCAN_MAX_HITS:
-        res.error = "ambiguous: %d hits, limit %d" % (len(hits), DS45_SCAN_MAX_HITS)
+    if len(hits) > NPP_SCAN_MAX_HITS:
+        res.error = "ambiguous: %d hits, limit %d" % (len(hits), NPP_SCAN_MAX_HITS)
         return res
 
     found = None
@@ -465,24 +465,24 @@ def simulate_scan(img: bytes, base: int, pat: Pattern) -> ScanResult:
         if slot & 7 or not (base <= slot <= base + WINDOW_SIZE - 8):
             continue
         fp = (base + 4 * (p + pat.toc_ld_index)) & ~7
-        if fp > base + WINDOW_SIZE - DS45_FP_LEN:
+        if fp > base + WINDOW_SIZE - NPP_FP_LEN:
             continue
         fo = fp - base
-        if fo + DS45_FP_LEN > len(img):
+        if fo + NPP_FP_LEN > len(img):
             continue
         if found is not None:
             if (slot, off) != (found[2], found[3]):
                 res.error = "hits disagree on (slot, report_off)"
                 return res
             continue
-        found = (fp, fnv1a64(img[fo:fo + DS45_FP_LEN]), slot, off)
+        found = (fp, fnv1a64(img[fo:fo + NPP_FP_LEN]), slot, off)
     if found is None:
         res.error = "no hit resolves (prologue, descriptor, slot or fingerprint)"
         return res
     if not record_usable(found[2], found[3], base):
         # kernel_resolve_from refuses a scan result kernel_record_usable rejects
         res.error = ("record unusable: slot 0x%X report_off 0x%X (needs 8-aligned, "
-                     "report_off <= 0x%X)" % (found[2], found[3], DS45_REPORT_OFF_MAX))
+                     "report_off <= 0x%X)" % (found[2], found[3], NPP_REPORT_OFF_MAX))
         return res
     res.fp_addr, res.fp_hash, res.slot_addr, res.report_off = found
     return res
@@ -490,8 +490,8 @@ def simulate_scan(img: bytes, base: int, pat: Pattern) -> ScanResult:
 
 def _find_prologue(words, p: int) -> Optional[int]:
     """Word index of the nearest stdu r1 at or before word p, at most
-    DS45_SCAN_PROLOGUE_RANGE bytes back and never before the image."""
-    lo = p - DS45_SCAN_PROLOGUE_RANGE // 4
+    NPP_SCAN_PROLOGUE_RANGE bytes back and never before the image."""
+    lo = p - NPP_SCAN_PROLOGUE_RANGE // 4
     if lo < 0:
         lo = 0
     a = p
@@ -518,31 +518,31 @@ def _c_string(s: str) -> str:
 
 
 def emit_c_entry(name: str, c: Candidate) -> str:
-    """One ds45_kernel_t initializer, in the style of the entries in the
-    ds45_kernel_table in src/kernel.c."""
+    """One npp_kernel_t initializer, in the style of the entries in the
+    npp_kernel_table in src/kernel.c."""
     return "\t{ %s, 0x%016XULL, 0x%016XULL, 0x%016XULL, 0x%X }," % (
         _c_string(name), c.fp_addr, c.fp_hash, c.slot_addr, c.report_off)
 
 
 def emit_c_pattern(pattern, toc_ld_index: Optional[int] = None,
                    report_off_index: Optional[int] = None,
-                   insns_name: str = "ds45_scan_insns") -> str:
-    """C for the scan pattern: an array of ds45_insn_match_t and the
-    ds45_scan_pattern definition that replaces the empty one in kernel.c."""
+                   insns_name: str = "npp_scan_insns") -> str:
+    """C for the scan pattern: an array of npp_insn_match_t and the
+    npp_scan_pattern definition that replaces the empty one in kernel.c."""
     if toc_ld_index is None:
         toc_ld_index = pattern.toc_ld_index
     if report_off_index is None:
         report_off_index = pattern.report_off_index
     n = len(pattern)
-    if not 0 < n <= DS45_SCAN_MAX_INSNS:
+    if not 0 < n <= NPP_SCAN_MAX_INSNS:
         raise ValueError("pattern length %d, the C scan needs 1..%d"
-                         % (n, DS45_SCAN_MAX_INSNS))
+                         % (n, NPP_SCAN_MAX_INSNS))
     if not 0 <= toc_ld_index < n:
         raise ValueError("toc_ld_index %d outside the pattern" % toc_ld_index)
     if not 0 <= report_off_index < n:
         raise ValueError("report_off_index %d outside the pattern" % report_off_index)
 
-    lines = ["static const ds45_insn_match_t %s[] = {" % insns_name]
+    lines = ["static const npp_insn_match_t %s[] = {" % insns_name]
     for i, (m, v) in enumerate(pattern):
         note = ""
         if i == toc_ld_index:
@@ -551,7 +551,7 @@ def emit_c_pattern(pattern, toc_ld_index: Optional[int] = None,
             note = "   /* report offset */"
         lines.append("\t{ 0x%08Xu, 0x%08Xu },%s" % (m, v, note))
     lines.append("};")
-    lines.append("const ds45_scan_pattern_t ds45_scan_pattern = "
+    lines.append("const npp_scan_pattern_t npp_scan_pattern = "
                  "{ %s, %d, %d, %d };" % (insns_name, n, toc_ld_index, report_off_index))
     return "\n".join(lines)
 
@@ -564,7 +564,7 @@ def _hex(x):
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
-        description="Find DS45Pad kernel records and a common scan pattern in "
+        description="Find NativePadPS3 kernel records and a common scan pattern in "
                     "LV2 dumps. Output is C, with diagnostics as // comments.")
     ap.add_argument("dumps", nargs="+", metavar="DUMP")
     ap.add_argument("--name", action="append", default=[],
@@ -588,7 +588,7 @@ def main(argv=None) -> int:
 
     images, chosen = [], []
     status = 0
-    base = DEFAULT_BASE            # the plugin always scans from DS45_LV2_BASE
+    base = DEFAULT_BASE            # the plugin always scans from NPP_LV2_BASE
     for k, path in enumerate(args.dumps):
         try:
             with open(path, "rb") as f:
@@ -630,7 +630,7 @@ def main(argv=None) -> int:
     if status:
         return status
 
-    print("\n// ds45_kernel_table entries")
+    print("\n// npp_kernel_table entries")
     for name, c in zip(names, chosen):
         print(emit_c_entry(name, c))
 
@@ -644,7 +644,7 @@ def main(argv=None) -> int:
     # the verdict comes before the pattern, and a pattern that does not
     # resolve every dump to its table entry is not printed at all
     print("\n// the pattern against each dump (the C scan gives up above "
-          "%d raw hits)" % DS45_SCAN_MAX_HITS)
+          "%d raw hits)" % NPP_SCAN_MAX_HITS)
     for name, img, c in zip(names, images, chosen):
         r = simulate_scan(img, base, pat)
         line = "// %s: raw hits: %d" % (name, r.raw_hits)

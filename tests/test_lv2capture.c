@@ -1,17 +1,17 @@
 /* SOURCES: lv2.c kernel.c lv2dump.c lv2capture.c config.c paths.c */
-/* CFLAGS: -DDS45_DEBUG */
+/* CFLAGS: -DNPP_DEBUG */
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include "fakes.h"
-#include "ds45pad.h"
+#include "npp.h"
 #include "lv2.h"
 
 /* Debug LV2 capture: watch a configured kernel range and trace every change.
  * Synthetic image only. */
 
 #define OFF   0x4326C8u
-#define ADDR  (DS45_LV2_BASE + OFF)
+#define ADDR  (NPP_LV2_BASE + OFF)
 
 /* lv2dump.c also holds the dumper, which needs these; this test never runs it. */
 int passthru_bt_pad_present(void) { return 0; }
@@ -21,7 +21,7 @@ int passthru_source_buttons(uint16_t *d1, uint16_t *d2) { (void)d1; (void)d2; re
 static char lines[64][64];
 static int  nlines;
 
-void ds45_boot_mark(const char *stage)
+void npp_boot_mark(const char *stage)
 {
 	if (nlines < 64) {
 		strncpy(lines[nlines], stage, 63);
@@ -30,12 +30,12 @@ void ds45_boot_mark(const char *stage)
 	nlines++;
 }
 
-void ds45_boot_mark_hex(const char *stage, uint32_t value)
+void npp_boot_mark_hex(const char *stage, uint32_t value)
 {
 	char l[64];
 
 	snprintf(l, sizeof(l), "%s=0x%08X", stage, (unsigned)value);
-	ds45_boot_mark(l);
+	npp_boot_mark(l);
 }
 
 static lv2capture_t cap;
@@ -58,9 +58,9 @@ static void setup(uint32_t off, uint32_t len)
 
 static int test_off_by_default(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	if (c.capture_len != 0) return __LINE__;
 	setup(OFF, 0);
 	lv2capture_poll(&cap, 10);
@@ -133,54 +133,54 @@ static int test_log_limit(void)
 	int i, peeks;
 
 	setup(OFF, 8);
-	for (i = 0; i < DS45_CAPTURE_MAX_LOGS + 5; i++) {
+	for (i = 0; i < NPP_CAPTURE_MAX_LOGS + 5; i++) {
 		b = (uint8_t)i;
 		fake_lv2_set(ADDR, &b, 1);
 		lv2capture_poll(&cap, (uint32_t)i);
 	}
-	CHECK(nlines == 2 * DS45_CAPTURE_MAX_LOGS + 1);
-	CHECK(cap.logs == DS45_CAPTURE_MAX_LOGS);
+	CHECK(nlines == 2 * NPP_CAPTURE_MAX_LOGS + 1);
+	CHECK(cap.logs == NPP_CAPTURE_MAX_LOGS);
 	CHECK(cap.stopped);
 	peeks = fake_lv2_peek_count;
 	lv2capture_poll(&cap, 99999);
 	CHECK(fake_lv2_peek_count == peeks);
-	CHECK(nlines == 2 * DS45_CAPTURE_MAX_LOGS + 1);
+	CHECK(nlines == 2 * NPP_CAPTURE_MAX_LOGS + 1);
 	return 0;
 }
 
 /* CAPTURE_LV2 / CAPTURE_LEN: debug-only keys, validated. */
 static int test_config_keys(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
 	fake_reset_all();
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	fake_file_set("/c.txt", "CAPTURE_LV2 = 0x4326C8\nCAPTURE_LEN = 72\n");
-	ds45_config_load(&c, "/c.txt");
+	npp_config_load(&c, "/c.txt");
 	CHECK(c.capture_off == 0x4326C8u);
 	CHECK(c.capture_len == 72);
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	fake_file_set("/c.txt", "CAPTURE_LV2 = 0x4326C9\nCAPTURE_LEN = 70\n");
-	ds45_config_load(&c, "/c.txt");
+	npp_config_load(&c, "/c.txt");
 	CHECK(c.capture_off == 0);                  /* not 8-aligned */
 	CHECK(c.capture_len == 0);                  /* not a multiple of 8 */
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	fake_file_set("/c.txt", "CAPTURE_LEN = 136\nCAPTURE_LV2 = 0x900000\n");
-	ds45_config_load(&c, "/c.txt");
+	npp_config_load(&c, "/c.txt");
 	CHECK(c.capture_len == 0);                  /* above the 128-byte maximum */
 	CHECK(c.capture_off == 0);                  /* outside the 8 MiB window */
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	fake_file_set("/c.txt", "CAPTURE_LV2 = 0x7FFFF8\nCAPTURE_LEN = 128\n");
-	ds45_config_load(&c, "/c.txt");
+	npp_config_load(&c, "/c.txt");
 	CHECK(c.capture_off == 0x7FFFF8u);          /* last doubleword */
 	CHECK(c.capture_len == 128);                /* the maximum */
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	fake_file_set("/c.txt", "CAPTURE_LV2 = -8\nCAPTURE_LEN = -8\n");
-	ds45_config_load(&c, "/c.txt");
+	npp_config_load(&c, "/c.txt");
 	CHECK(c.capture_off == 0);
 	CHECK(c.capture_len == 0);
 	return 0;
@@ -190,7 +190,7 @@ static int test_config_keys(void)
  * object address; CAPTURE_LV2 is then the offset into that object. */
 
 #define PTR_OFF  0x51B268u
-#define PTR_ADDR (DS45_LV2_BASE + PTR_OFF)
+#define PTR_ADDR (NPP_LV2_BASE + PTR_OFF)
 #define OBJ_OFF  0x5C7800u
 #define OBJ2_OFF 0x5D0000u
 
@@ -214,10 +214,10 @@ static void setup_ptr(uint32_t field_off, uint32_t len)
 	memset(&cap, 0, sizeof(cap));
 	for (i = 0; i < 0x100; i++)
 		img[i] = (uint8_t)i;
-	fake_lv2_set(DS45_LV2_BASE + OBJ_OFF, img, 0x100);
+	fake_lv2_set(NPP_LV2_BASE + OBJ_OFF, img, 0x100);
 	for (i = 0; i < 0x100; i++)
 		img[i] = (uint8_t)(0xFF - i);
-	fake_lv2_set(DS45_LV2_BASE + OBJ2_OFF, img, 0x100);
+	fake_lv2_set(NPP_LV2_BASE + OBJ2_OFF, img, 0x100);
 	g_cfg.capture_ptr = PTR_OFF;
 	g_cfg.capture_off = field_off;
 	g_cfg.capture_len = len;
@@ -242,7 +242,7 @@ static int test_ptr_null_logged_once(void)
 static int test_ptr_follows_target(void)
 {
 	setup_ptr(0x80, 8);
-	set_ptr(DS45_LV2_BASE + OBJ_OFF);
+	set_ptr(NPP_LV2_BASE + OBJ_OFF);
 	lv2capture_poll(&cap, 10);
 	CHECK(nlines == 3);
 	CHECK(strcmp(lines[1], "cap_p=0x005C7800") == 0);
@@ -257,9 +257,9 @@ static int test_ptr_transitions_logged(void)
 	setup_ptr(0x80, 8);
 	set_ptr(0);
 	lv2capture_poll(&cap, 1);
-	set_ptr(DS45_LV2_BASE + OBJ_OFF);
+	set_ptr(NPP_LV2_BASE + OBJ_OFF);
 	lv2capture_poll(&cap, 2);
-	set_ptr(DS45_LV2_BASE + OBJ2_OFF);
+	set_ptr(NPP_LV2_BASE + OBJ2_OFF);
 	lv2capture_poll(&cap, 3);
 	set_ptr(0);
 	lv2capture_poll(&cap, 4);
@@ -277,11 +277,11 @@ static int test_ptr_field_change_logged(void)
 	uint8_t b = 0x00;
 
 	setup_ptr(0x80, 8);
-	set_ptr(DS45_LV2_BASE + OBJ_OFF);
+	set_ptr(NPP_LV2_BASE + OBJ_OFF);
 	lv2capture_poll(&cap, 1);
 	lv2capture_poll(&cap, 2);
 	CHECK(nlines == 3);
-	fake_lv2_set(DS45_LV2_BASE + OBJ_OFF + 0x80, &b, 1);
+	fake_lv2_set(NPP_LV2_BASE + OBJ_OFF + 0x80, &b, 1);
 	lv2capture_poll(&cap, 3);
 	CHECK(nlines == 6);
 	CHECK(strcmp(lines[5], "c00 0081828384858687") == 0);
@@ -299,11 +299,11 @@ static int test_ptr_bad_target_not_read(void)
 	CHECK(strcmp(lines[1], "cap_p=0x12345678") == 0);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	CHECK(!cap.stopped);
-	set_ptr(DS45_LV2_BASE + OBJ_OFF + 4);           /* misaligned */
+	set_ptr(NPP_LV2_BASE + OBJ_OFF + 4);           /* misaligned */
 	lv2capture_poll(&cap, 2);
 	CHECK(nlines == 4);
 	CHECK(fake_lv2_out_of_bounds == 0);
-	set_ptr(DS45_LV2_BASE + OBJ_OFF);
+	set_ptr(NPP_LV2_BASE + OBJ_OFF);
 	lv2capture_poll(&cap, 3);
 	CHECK(nlines == 7);
 	CHECK(!cap.stopped);
@@ -313,24 +313,24 @@ static int test_ptr_bad_target_not_read(void)
 /* CAPTURE_PTR: debug-only key, 8-aligned and inside the window; off by default. */
 static int test_config_ptr_key(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
 	fake_reset_all();
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	CHECK(c.capture_ptr == 0);
 	fake_file_set("/c.txt", "CAPTURE_PTR = 0x51B268\nCAPTURE_LV2 = 0x60\n");
-	ds45_config_load(&c, "/c.txt");
+	npp_config_load(&c, "/c.txt");
 	CHECK(c.capture_ptr == 0x51B268u);
 	CHECK(c.capture_off == 0x60u);
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	fake_file_set("/c.txt", "CAPTURE_PTR = 0x51B26C\n");
-	ds45_config_load(&c, "/c.txt");
+	npp_config_load(&c, "/c.txt");
 	CHECK(c.capture_ptr == 0);                  /* not 8-aligned */
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	fake_file_set("/c.txt", "CAPTURE_PTR = 0x800000\n");
-	ds45_config_load(&c, "/c.txt");
+	npp_config_load(&c, "/c.txt");
 	CHECK(c.capture_ptr == 0);                  /* outside the window */
 	return 0;
 }

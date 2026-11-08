@@ -1,6 +1,6 @@
 #!/bin/bash
-# Uso: ds45_build.sh <cartella_sorgenti> <vsh|game> <file_output.sprx>
-# Replica build.sh di DS45Pad su Linux: compilatore Cell SDK sotto Wine + scetool nativo.
+# Uso: npp_build.sh <cartella_sorgenti> <vsh|game> <file_output.sprx>
+# Replica build.sh di NativePadPS3 su Linux: compilatore Cell SDK sotto Wine + scetool nativo.
 set -e
 SRCDIR="$1"; MODE="$2"; OUT="$3"
 SDK=/tmp/ps3sdk
@@ -14,7 +14,7 @@ INCLUDE="$SDK/target/ppu/include"; LIBDIR="$SDK/target/ppu/lib"
 
 AUTH_VSH=1070000052000001; AUTH_GAME=1010000001000003
 if [ "$MODE" = "game" ]; then
-  EXTRA="-DDS45_GAME"; AUTH=$AUTH_GAME
+  EXTRA="-DNPP_GAME"; AUTH=$AUTH_GAME
   SRCS="libc.c util.c hook.c config.c sticks.c diag.c main.c"; LDLIBS="-lio_stub -lfs_stub"
 else
   EXTRA=""; AUTH=$AUTH_VSH
