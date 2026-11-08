@@ -19,3 +19,19 @@ Before: the console was stock (the previous power-off stage had been restored), 
 **Restore** (`tools/ps3_console_restore.ps1`): the plugin was removed from `boot_plugins.txt` (the other two entries stayed), the console rebooted, all four power-off sites read stock (`bl 0x102750`, `bl 0x1174FC`, `b 0x1174FC`, `bl 0x1174FC`), event slot and helper word stock: `CLEAN`. The old plugin file, both config folders and all traces stay on the disk.
 
 Not verified in stage A: nothing outstanding for step 1. The mechanical rename comes next, followed by stage B (deploy of the final build).
+
+## Stage B: final build (2026-11-08 00:33 local)
+
+Build under test: the final branch head 68984c4, debug VSH build `nativepadps3_vsh_debug.sprx`, 114608 bytes, on the same DEX 4.92 console.
+
+Before: the console was stock (the previous stage had been restored), `boot_plugins.txt` listed no plugin, the new data folder was present with the config from stage A, and the old folder was present too.
+
+**Deploy:** "backed up the new-folder config", the plugin and the config were uploaded, `boot_plugins.txt` then listed exactly one plugin line (the new path), the old trace was stamped `nativepadps3_boot_<stamp>.txt`, the console rebooted and the plugin reached its loop. The power-off read-back used the offsets parsed from `src/shim_blob.h` (entries 0x57C130 and 0x57C1D0): the close-send site was hooked and the three teardown sites stock (act mode, by design).
+
+**Trace:** `start`, version, `datadir_new`, `config_bytes=0x000000F3`, `kshim_install`, `kshim_installed`, `loop`; no `config_NOT_FOUND`.
+
+**Pads:** both DualSenses were armed up front (the lesson from stage A). The person at the console confirmed the DualSense worked: input through the DS3 route (the `inds` and `xl` counters rising; PS button, input), then turned it off from the XMB. `podbg` read `calls=2 ds=1 rew=1 pass=1 td=0`: one DualSense request rewritten once, one DS3 request passed through, no retries, no teardown.
+
+**Restore:** the plugin was removed from `boot_plugins.txt` (the other entries stayed), the console rebooted, all four power-off sites read stock, event slot and helper word stock: `CLEAN`.
+
+**Conclusion:** both console stages passed. The renamed final build loads, finds its config in the new folder, falls back to the old folder (stage A), and behaves as before.

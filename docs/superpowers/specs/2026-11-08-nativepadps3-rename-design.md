@@ -1,7 +1,9 @@
 # NativePadPS3 rename: plugin files, config folder, boot trace, and the code prefix
 
 Status: designed 2026-11-07, amended the same day (scope widened to the whole
-code prefix, see "Amendment 1"), not implemented. Branch
+code prefix, see "Amendment 1"), implemented and verified on the console (both
+stages) on 2026-11-08, see
+`docs/superpowers/notes/2026-11-08-nativepadps3-rename-console.md`. Branch
 `feat/nativepad-rename` (from main 4478969). Inventory and decision record:
 `.superpowers/rename-brainstorm-1.md` (git-ignored scratch; the inventory is
 summarised in "Scope" below).
