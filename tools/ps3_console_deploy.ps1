@@ -8,8 +8,10 @@
     the debug build (size-checked) and the config, adds the plugin to
     /dev_hdd0/boot_plugins.txt if it is not listed, renames the old boot trace,
     reboots through webMAN and waits for the plugin's loop. Then prints the kshim
-    trace lines, the last shimdbg counters line and the four hook slots (four
-    throttled peeks). Nothing on the console is deleted. -Dest is console data:
+    trace lines, the last shimdbg counters line, the four hook slots and the
+    four power-off code sites with their branch destinations (eight throttled peeks;
+    expected: the first site -> exec_base + the poweroff entry, the other three ->
+    the teardown entry in observe mode, still original in act mode). Nothing on the console is deleted. -Dest is console data:
     keep it under tools/dumps/ (git-ignored).
 
     Follow with ps3_console_linkkeys.ps1 (flip the DualSense link-key types, pads
@@ -93,3 +95,6 @@ if ($dbg) { "   LAST $dbg" } else { '   (no shimdbg line yet)' }
 '   enable 0x37CFB0  = ' + (Hex (Peek-Row '37CFB0') 0 8) + '  (stock 800000000033A310)'
 '   input  0x37CE38  = ' + (Hex (Peek-Row '37CE30') 8 8) + '  (stock 800000000033A010)'
 '   startup 0x37CFE8 = ' + (Hex (Peek-Row '37CFE0') 8 8) + '  (always 800000000033A208)'
+# the four power-off code sites: read back with four more throttled peeks
+Say ('Power-off code sites (shim on; entries 0x{0:X} / 0x{1:X})' -f ($ExecBase + $PoOffs.Poweroff), ($ExecBase + $PoOffs.Teardown))
+[void](Show-PoSites 'shim')

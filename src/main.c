@@ -444,11 +444,12 @@ static void shim_dbg_outcap(uint64_t base)
 
 /* Power-off hook counters ("podbg"): close-send hook entries, calls for a
  * DualSense, calls rewritten, calls passed through, teardown hook entries, and
- * the power-off stage the plugin set. Written only when one of them changed since
- * the last line, so an idle console adds nothing. */
+ * the power-off stage the plugin set. Written once on the first call, then only
+ * when one of them changed since the last line, so an idle console adds nothing. */
 static void shim_dbg_podbg(uint64_t base)
 {
 	static uint32_t last[6];
+	static int primed;
 	uint32_t v[6];
 	char line[112];   /* "podbg" + 6 tags (" calls=", " ds=", " rew=", " pass=", " td=", " mode=" = 32) + 6 * 10 + '\n' = 98 */
 	char *p = line;
@@ -459,8 +460,12 @@ static void shim_dbg_podbg(uint64_t base)
 	v[3] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_po_passed));
 	v[4] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, dbg_td_calls));
 	v[5] = shim_dbg_u32(base, offsetof(ds45_shim_data_t, po_mode));
-	if (memcmp(v, last, sizeof v) == 0)
+	/* The first call always writes: in observe mode every value is still zero at
+	 * install, so a compare against the zeroed static would print nothing until
+	 * the first hook event, and "the line appeared" is the install check. */
+	if (primed && memcmp(v, last, sizeof v) == 0)
 		return;
+	primed = 1;
 	memcpy(last, v, sizeof v);
 
 	p = shim_dbg_tag(p, "podbg calls=");
