@@ -13,6 +13,8 @@ param(
 # for DEX/debug firmware (a retail console rejects it); it needs no keys and
 # ignores NPP_TOOLS. 'auto' picks scetool when NPP_TOOLS is set, fself otherwise.
 $ErrorActionPreference = 'Stop'
+# legacy variable name, one-cycle migration check; remove after the next release
+if ($env:DS45_TOOLS -and !$env:NPP_TOOLS) { throw 'DS45_TOOLS was renamed NPP_TOOLS: set NPP_TOOLS to the same folder (and unset DS45_TOOLS). No SPRX was built.' }
 if (!$Sdk) { throw 'Set CELL_SDK. No SPRX was built.' }
 if ($Sign -eq 'auto') { $Sign = if ($Tools) { 'scetool' } else { 'fself' } }
 if ($Sign -eq 'scetool' -and !$Tools) { throw 'Set NPP_TOOLS (scetool plus data/keys) to sign with scetool. No SPRX was built.' }

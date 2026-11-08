@@ -15,6 +15,9 @@
 
 set -e
 
+# legacy variable name, one-cycle migration check; remove after the next release
+if [ -n "${DS45_TOOLS:-}" ] && [ -z "${NPP_TOOLS:-}" ]; then echo "ERRO: DS45_TOOLS was renamed NPP_TOOLS: set NPP_TOOLS to the same folder. No SPRX was built." >&2; exit 1; fi
+
 SDK="${CELL_SDK:-C:/ps3sdk/cell}"
 # NPP_TOOLS set: sign with scetool and retail keys (CEX CFW and HEN).
 # Unset: the SDK's make_fself, a fake-signed SELF for DEX/debug firmware only.

@@ -28,7 +28,7 @@ if (!(Test-Port 21)) { throw 'console FTP not reachable' }
 $cur = Join-Path $Dest 'boot_plugins.before.txt'
 Curl-Ok @('-o', $cur, "$ftp/dev_hdd0/boot_plugins.txt")
 Say ('before: ' + ((Get-Content $cur) -join ' | '))
-$keep = @(Remove-BootPluginEntries (Get-Content $cur))
+$keep = @(Remove-BootPluginEntries @(Get-Content $cur))
 $new = Join-Path $Dest 'boot_plugins.after.txt'
 [IO.File]::WriteAllText($new, ($keep -join "`n"))
 Curl-Ok @('-T', $new, "$ftp/dev_hdd0/boot_plugins.txt")

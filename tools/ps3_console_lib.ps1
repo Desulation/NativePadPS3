@@ -37,18 +37,18 @@ function Test-Port([int]$Port) {
 # Blank lines and every plugin line dropped, the other lines kept verbatim in order,
 # $Entry appended once.
 function Set-BootPluginEntry([string[]]$Lines, [string]$Entry) {
-    $keep = @($Lines | Where-Object { $_.Trim() -and $_ -notmatch $PluginEntryPattern })
+    $keep = @($Lines | Where-Object { $null -ne $_ -and $_.Trim() -and $_ -notmatch $PluginEntryPattern })
     $keep + $Entry
 }
 
 # Blank lines and every plugin line dropped.
 function Remove-BootPluginEntries([string[]]$Lines) {
-    @($Lines | Where-Object { $_.Trim() -and $_ -notmatch $PluginEntryPattern })
+    @($Lines | Where-Object { $null -ne $_ -and $_.Trim() -and $_ -notmatch $PluginEntryPattern })
 }
 
 # True when exactly one line is a plugin line and it is $Entry.
 function Test-BootPluginSingle([string[]]$Lines, [string]$Entry) {
-    $hits = @($Lines | Where-Object { $_ -match $PluginEntryPattern })
+    $hits = @($Lines | Where-Object { $null -ne $_ -and $_ -match $PluginEntryPattern })
     ($hits.Count -eq 1) -and ($hits[0].Trim() -ceq $Entry)
 }
 
@@ -87,18 +87,31 @@ function Decode-Branch([string]$word, [int64]$at) {
     @{ Kind = $kind; Target = $(if ($aa) { $li } else { $at + $li }) }
 }
 
-# The kernel shim's entry points for the power-off hooks, as offsets from the blob base.
-# Read from the generated src/shim_blob.h when it is present (so they follow the build);
-# otherwise the DEX 4.92 build's values.
+# The kernel shim's entry points for the power-off hooks, as offsets from the blob base,
+# read from the generated shim header. Throws when the file exists but lacks either
+# define (a stale or foreign header must never silently fall back to guessed offsets).
+function Get-PoOffsets([string]$HeaderPath) {
+    $text = Get-Content -Raw -LiteralPath $HeaderPath
+    $res = @{}
+    foreach ($kv in @(@('Poweroff', 'POWEROFF'), @('Teardown', 'TEARDOWN'))) {
+        $m = [regex]::Match($text, ('(?m)^\s*#define\s+NPP_SHIM_OFF_{0}\s+0x([0-9A-Fa-f]+)' -f $kv[1]))
+        if ($m.Success) { $res[$kv[0]] = [Convert]::ToInt32($m.Groups[1].Value, 16) }
+    }
+    if (-not ($res.ContainsKey('Poweroff') -and $res.ContainsKey('Teardown'))) {
+        throw "$HeaderPath has no NPP_SHIM_OFF_POWEROFF/TEARDOWN defines (stale or foreign shim_blob.h; rebuild with src/build.ps1)"
+    }
+    $res
+}
+
+# From the generated src/shim_blob.h when it is present (so the offsets follow the build);
+# only when the file is absent, the DEX 4.92 build's values, and it says so.
 $ExecBase = 0x57C000
-$PoOffs = @{ Poweroff = 0x130; Teardown = 0x1D0 }
 $blobHdr = Join-Path $PSScriptRoot '../src/shim_blob.h'
 if (Test-Path -LiteralPath $blobHdr) {
-    $hdr = Get-Content -LiteralPath $blobHdr
-    foreach ($kv in @(@('Poweroff', 'POWEROFF'), @('Teardown', 'TEARDOWN'))) {
-        $m = $hdr | Select-String -Pattern ("NPP_SHIM_OFF_{0}\s+0x([0-9A-Fa-f]+)" -f $kv[1]) | Select-Object -First 1
-        if ($m) { $PoOffs[$kv[0]] = [Convert]::ToInt32($m.Matches[0].Groups[1].Value, 16) }
-    }
+    $PoOffs = Get-PoOffsets $blobHdr
+} else {
+    $PoOffs = @{ Poweroff = 0x130; Teardown = 0x1D0 }
+    Write-Host "note: $blobHdr not found; using the DEX 4.92 power-off offsets (Poweroff 0x130, Teardown 0x1D0)"
 }
 
 # The four power-off code sites (DEX 4.92): the instruction at each is a branch; the shim
