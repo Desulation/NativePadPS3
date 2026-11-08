@@ -487,7 +487,7 @@ int passthru_scan(void)
 		return 0;                    /* stays bound; retried next tick */
 
 	if (g_cfg.notify)
-		ds45_notify("DS45Pad Bluetooth Attivo / Active");
+		ds45_notify("NativePadPS3 Bluetooth Attivo / Active");
 
 	return 1;
 }

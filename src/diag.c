@@ -7,7 +7,7 @@
  * answered from documentation, only measured on the console.
  *
  * Turning DIAG on writes every pad code that changes to
- * /dev_hdd0/tmp/ds45pad_diag.txt, so pressing a button and reading the file
+ * /dev_hdd0/tmp/nativepadps3_diag.txt, so pressing a button and reading the file
  * tells you exactly which code and bit to put in BT_PS_CODE / BT_PS_MASK.
  *
  * cellPadGetRawData() would be worth sampling too, since it can carry codes

@@ -3,12 +3,13 @@
  *
  * Build twice from the same sources:
  *
- *   ds45pad_vsh.sprx    loaded by the CFW plugin loader, owns the pad in the
- *                       XMB and keeps owning it while games run
- *   ds45pad_game.sprx   loaded into a running game process (PS3MAPI or Cobra).
- *                       Corrects the stick response curve and answers the
- *                       game's cellPadGetInfo2 - see docs/ARQUITETURA.md.
- *                       Not a rumble build: rumble is out of scope.
+ *   nativepadps3_vsh.sprx    loaded by the CFW plugin loader, owns the pad in
+ *                            the XMB and keeps owning it while games run
+ *   nativepadps3_game.sprx   loaded into a running game process (PS3MAPI or
+ *                            Cobra). Corrects the stick response curve and
+ *                            answers the game's cellPadGetInfo2 - see
+ *                            docs/ARQUITETURA.md.
+ *                            Not a rumble build: rumble is out of scope.
  *
  * Licensed under GPLv2 - see LICENSE.
  */
@@ -36,12 +37,12 @@
 int ds45_start(uint64_t arg);
 int ds45_stop(void);
 
-SYS_MODULE_INFO(DS45PAD, 0, 1, 0);
+SYS_MODULE_INFO(NATIVEPADPS3, 0, 1, 0);
 SYS_MODULE_START(ds45_start);
 SYS_MODULE_STOP(ds45_stop);
 
-#define THREAD_NAME      "ds45pad"
-#define STOP_THREAD_NAME "ds45stop"
+#define THREAD_NAME      "nativepadps3"
+#define STOP_THREAD_NAME "nppstop"
 #define THREAD_PRIO      1000
 #define THREAD_STACK     0x4000
 
@@ -626,7 +627,7 @@ static void shim_dbg_trace(void)
 /* Bluetooth kernel support                                                  */
 /* ------------------------------------------------------------------------ */
 
-#define TOAST_BT_UNSUPPORTED "DS45Pad: Bluetooth not supported on this kernel"
+#define TOAST_BT_UNSUPPORTED "NativePadPS3: Bluetooth not supported on this kernel"
 
 /* No usable kernel record, or the cross-check rejected the one we had. USB
  * mode never reads the Bluetooth report, so it never reports this. */
@@ -786,7 +787,7 @@ static void ds45_thread(uint64_t arg)
 		 * Gated by ENABLE_SHIM, which is off by default: the shim patches live
 		 * kernel code, so a freshly deployed build never does that on its own and
 		 * a bad one cannot hang the console at boot. The shim goes in only when
-		 * ds45pad.txt says ENABLE_SHIM = 1; to recover from a hang, remove that
+		 * nativepadps3.txt says ENABLE_SHIM = 1; to recover from a hang, remove that
 		 * line and reboot. With the gate shut the kernel is not touched at all
 		 * (kshim_install() refuses by itself as well). */
 		/* Executability pre-flight (design Amendment 2, console step 0): with
@@ -836,7 +837,7 @@ static void ds45_thread(uint64_t arg)
 	}
 
 	if (g_cfg.diag) {
-		diag_msg("=== DS45PAD " DS45PAD_VERSION " ===");
+		diag_msg("=== NativePadPS3 " DS45PAD_VERSION " ===");
 		diag_dump_ports();
 	}
 
@@ -863,7 +864,7 @@ static void ds45_thread(uint64_t arg)
 					bt_toast_shown = 1;
 					ds45_notify(TOAST_BT_UNSUPPORTED);
 				} else {
-					ds45_notify("DS45Pad Caricato / Loaded");
+					ds45_notify("NativePadPS3 Caricato / Loaded");
 				}
 				ds45_boot_mark("notify_ok");
 			}
@@ -1016,7 +1017,7 @@ static void ds45_stop_thread(uint64_t arg)
 	 * a plausible address is not necessarily a mapped one, so the walk can
 	 * fault. A notification cannot reach the screen from a game anyway. */
 	if (g_cfg.notify)
-		ds45_notify("DS45Pad Disattivato / Unloaded");
+		ds45_notify("NativePadPS3 Disattivato / Unloaded");
 #endif
 	sys_ppu_thread_exit(0);
 }

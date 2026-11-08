@@ -12,7 +12,7 @@
  * live report is then the buffer whose bytes differ between them in exactly
  * that way. A dump taken before any pad connects holds no report at all.
  *
- * Debug VSH builds only (DUMP_LV2 = 1 in ds45pad.txt); the file is not part
+ * Debug VSH builds only (DUMP_LV2 = 1 in nativepadps3.txt); the file is not part
  * of release or game builds, which contain none of its code or strings.
  */
 
@@ -28,10 +28,10 @@
 #include "lv2.h"
 #include "kernel.h"
 
-#define DUMP_A_BIN "/dev_hdd0/tmp/ds45pad_lv2.bin"
-#define DUMP_A_TXT "/dev_hdd0/tmp/ds45pad_lv2.txt"
-#define DUMP_B_BIN "/dev_hdd0/tmp/ds45pad_lv2_b.bin"
-#define DUMP_B_TXT "/dev_hdd0/tmp/ds45pad_lv2_b.txt"
+#define DUMP_A_BIN "/dev_hdd0/tmp/nativepadps3_lv2.bin"
+#define DUMP_A_TXT "/dev_hdd0/tmp/nativepadps3_lv2.txt"
+#define DUMP_B_BIN "/dev_hdd0/tmp/nativepadps3_lv2_b.bin"
+#define DUMP_B_TXT "/dev_hdd0/tmp/nativepadps3_lv2_b.txt"
 #define DUMP_SIZE  ((int)(DS45_LV2_BOUND - DS45_LV2_BASE))
 #define CHUNK      65536
 
@@ -95,7 +95,7 @@ static void tty(const char *msg)
 	unsigned int written;
 	int n = 0;
 
-	n = put_str(line, sizeof(line), n, "ds45pad: ");
+	n = put_str(line, sizeof(line), n, "nativepadps3: ");
 	n = put_str(line, sizeof(line), n, msg);
 	n = put_str(line, sizeof(line), n, "\n");
 	sys_tty_write(SYS_TTYP_PPU_STDOUT, line, (unsigned int)n, &written);

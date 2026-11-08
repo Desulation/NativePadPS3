@@ -50,8 +50,8 @@ typedef enum {
 void        ds45_paths_init(void);
 const char *ds45_path(ds45_path_kind_t kind);
 
-#define DS45_DIAG_FILE   "/dev_hdd0/tmp/ds45pad_diag.txt"
-#define DS45_BOOT_FILE    "/dev_hdd0/tmp/ds45pad_boot.txt"
+#define DS45_DIAG_FILE   "/dev_hdd0/tmp/nativepadps3_diag.txt"
+#define DS45_BOOT_FILE    "/dev_hdd0/tmp/nativepadps3_boot.txt"
 
 /* ------------------------------------------------------------------------ */
 /* libpad constants                                                          */
@@ -332,7 +332,7 @@ typedef struct {
 	/* ENABLE_SHIM (0/1): install the DS3-route kernel shim (kshim.c) when the
 	 * plugin loads. Off by default. The shim patches live kernel code, and a build
 	 * that gets a patch wrong can hang the console, so a deployed plugin never
-	 * installs it on its own: ds45pad.txt has to say ENABLE_SHIM = 1. That is also
+	 * installs it on its own: nativepadps3.txt has to say ENABLE_SHIM = 1. That is also
 	 * the way out of a hang - remove the line (or set it to 0) and reboot. */
 	int      enable_shim;
 	/* SHIM_INLINE_PID (0/1, VSH builds only): with the shim installed, also

@@ -8,10 +8,10 @@
 
 /* Synthetic image only: made-up qwords and a made-up PS3MAPI answer. */
 
-#define A_BIN   "/dev_hdd0/tmp/ds45pad_lv2.bin"
-#define A_TXT   "/dev_hdd0/tmp/ds45pad_lv2.txt"
-#define B_BIN   "/dev_hdd0/tmp/ds45pad_lv2_b.bin"
-#define B_TXT   "/dev_hdd0/tmp/ds45pad_lv2_b.txt"
+#define A_BIN   "/dev_hdd0/tmp/nativepadps3_lv2.bin"
+#define A_TXT   "/dev_hdd0/tmp/nativepadps3_lv2.txt"
+#define B_BIN   "/dev_hdd0/tmp/nativepadps3_lv2_b.bin"
+#define B_TXT   "/dev_hdd0/tmp/nativepadps3_lv2_b.txt"
 #define WINDOW  ((int)(DS45_LV2_BOUND - DS45_LV2_BASE))
 #define CHUNK   65536
 
@@ -145,7 +145,7 @@ static int test_waits_for_pad(void)
 	CHECK(fake_file_size(A_TXT) == -1);
 	CHECK(fake_toasts == 1);                             /* said once */
 	CHECK(strcmp(fake_last_toast, "LV2 dump: connect the Bluetooth pad") == 0);
-	CHECK(strcmp(fake_tty, "ds45pad: LV2 dump: connect the Bluetooth pad\n") == 0);
+	CHECK(strcmp(fake_tty, "nativepadps3: LV2 dump: connect the Bluetooth pad\n") == 0);
 	return 0;
 }
 
@@ -186,13 +186,13 @@ static int test_two_dumps_with_countdown(void)
 
 	/* Toasts are easy to miss; every step also goes to the TTY. */
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dump A in 20 s: leave the pad untouched\n"
-	             "ds45pad: LV2 dump started: " A_BIN "\n"
-	             "ds45pad: LV2 dump written: " A_BIN " (8388608 bytes) and " A_TXT "\n"
-	             "ds45pad: LV2 dump B in 30 s: hold Cross, left stick fully left\n"
-	             "ds45pad: LV2 dump started: " B_BIN "\n"
-	             "ds45pad: LV2 dump written: " B_BIN " (8388608 bytes) and " B_TXT "\n"
-	             "ds45pad: LV2 dumps written: release the pad\n") == 0);
+	             "nativepadps3: LV2 dump A in 20 s: leave the pad untouched\n"
+	             "nativepadps3: LV2 dump started: " A_BIN "\n"
+	             "nativepadps3: LV2 dump written: " A_BIN " (8388608 bytes) and " A_TXT "\n"
+	             "nativepadps3: LV2 dump B in 30 s: hold Cross, left stick fully left\n"
+	             "nativepadps3: LV2 dump started: " B_BIN "\n"
+	             "nativepadps3: LV2 dump written: " B_BIN " (8388608 bytes) and " B_TXT "\n"
+	             "nativepadps3: LV2 dumps written: release the pad\n") == 0);
 	CHECK(fake_tty_overflow == 0);
 
 	/* Done: nothing more, however long it keeps being polled. */
@@ -217,7 +217,7 @@ static int test_skips_when_both_exist(void)
 	CHECK(fake_lv2_peek_count == 0);
 	CHECK(fake_sc8_calls == 0);
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dumps skipped: " A_BIN " and " B_BIN
+	             "nativepadps3: LV2 dumps skipped: " A_BIN " and " B_BIN
 	             " exist, delete both to dump again\n") == 0);
 	return 0;
 }
@@ -237,7 +237,7 @@ static int test_existing_a_goes_straight_to_b(void)
 
 	CHECK(fake_file_size(A_BIN) == 3);
 	CHECK(bin_ok(B_BIN));
-	CHECK(strstr(fake_tty, "ds45pad: LV2 dump skipped: " A_BIN
+	CHECK(strstr(fake_tty, "nativepadps3: LV2 dump skipped: " A_BIN
 	                       " exists, delete it to dump again\n") != NULL);
 	CHECK(strcmp(fake_last_toast, "LV2 dumps written: release the pad") == 0);
 	return 0;
@@ -317,7 +317,7 @@ static int test_b_failure_says_release(void)
 	CHECK(bin_ok(A_BIN));
 	CHECK(fake_file_size(B_BIN) == -1);
 	CHECK(strcmp(fake_last_toast, "LV2 dump failed: see the TTY, release the pad") == 0);
-	CHECK(strstr(fake_tty, "ds45pad: LV2 dump failed: cannot write " B_TXT "\n") != NULL);
+	CHECK(strstr(fake_tty, "nativepadps3: LV2 dump failed: cannot write " B_TXT "\n") != NULL);
 	lv2dump_poll(&st, T_B + 100000);                     /* done */
 	CHECK(fake_toasts == 3);
 	return 0;
@@ -351,10 +351,10 @@ static int test_dump_failure_deletes_partial(void)
 	CHECK(strcmp(fake_last_toast, "LV2 dump failed: see the TTY, release the pad") == 0);
 	/* 1 write + 5 appends succeeded: the 7th chunk (offset 6 * 64 KiB) failed */
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dump A in 20 s: leave the pad untouched\n"
-	             "ds45pad: LV2 dump started: " A_BIN "\n"
-	             "ds45pad: LV2 dump failed at offset 0x00060000, partial .bin deleted\n"
-	             "ds45pad: LV2 dump failed: see the TTY, release the pad\n") == 0);
+	             "nativepadps3: LV2 dump A in 20 s: leave the pad untouched\n"
+	             "nativepadps3: LV2 dump started: " A_BIN "\n"
+	             "nativepadps3: LV2 dump failed at offset 0x00060000, partial .bin deleted\n"
+	             "nativepadps3: LV2 dump failed: see the TTY, release the pad\n") == 0);
 	/* the run is over: with writes working again, still no dump B */
 	fake_append_fail_after = -1;
 	{
@@ -402,7 +402,7 @@ static int test_dump_needs_text_file(void)
 
 	CHECK(fake_file_size(A_BIN) == -1);
 	CHECK(fake_lv2_peek_count == 0);
-	CHECK(strstr(fake_tty, "ds45pad: LV2 dump failed: cannot write " A_TXT "\n") != NULL);
+	CHECK(strstr(fake_tty, "nativepadps3: LV2 dump failed: cannot write " A_TXT "\n") != NULL);
 	CHECK(fake_toasts == 2);                             /* countdown, failure */
 	return 0;
 }

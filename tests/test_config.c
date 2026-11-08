@@ -9,7 +9,7 @@
  *
  * ENABLE_SHIM is the safety gate in front of the DS3-route kernel shim: the shim
  * patches live kernel code, so a deployed plugin must never install it on its own.
- * It is off unless ds45pad.txt says ENABLE_SHIM = 1, which is also the way out of a
+ * It is off unless nativepadps3.txt says ENABLE_SHIM = 1, which is also the way out of a
  * hang - remove the line and reboot. */
 
 static ds45_config_t cfg_from(const char *text)

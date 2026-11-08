@@ -29,7 +29,7 @@ typedef struct {
 } ds45_device_t;
 
 /* Known controllers. Additional ids can be appended at runtime from
- * ds45pad_devices.txt without rebuilding. */
+ * nativepadps3_devices.txt without rebuilding. */
 static ds45_device_t devices[MAX_DEVICE_ENTRIES] = {
 	{ DS45_VID_SONY, DS45_PID_DS4_V1,         DS45_MODEL_DS4,       "DualShock 4 (CUH-ZCT1)" },
 	{ DS45_VID_SONY, DS45_PID_DS4_V2,         DS45_MODEL_DS4,       "DualShock 4 (CUH-ZCT2)" },
@@ -581,7 +581,7 @@ static void load_extra_devices(void)
 		devices[device_count].pid   = pid;
 		devices[device_count].model = (*p == 'D' && p[1] == 'U')
 		                              ? DS45_MODEL_DUALSENSE : DS45_MODEL_DS4;
-		devices[device_count].name  = "DS45PAD device";
+		devices[device_count].name  = "NativePadPS3 device";
 		device_count++;
 	}
 }

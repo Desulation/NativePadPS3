@@ -74,7 +74,7 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->notify = 0;   /* the boot trace is the safe way to confirm loading */
 
 	/* The kernel shim patches live kernel code, so it is never installed unless
-	 * ds45pad.txt says ENABLE_SHIM = 1 - deploying the plugin cannot hang the
+	 * nativepadps3.txt says ENABLE_SHIM = 1 - deploying the plugin cannot hang the
 	 * console by itself (see ds45pad.h). */
 	c->enable_shim = 0;
 	c->shim_inline_pid = 0;
