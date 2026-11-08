@@ -51,7 +51,7 @@ Assumptions (correct me if any is wrong):
 | Diag log | `/dev_hdd0/tmp/ds45pad_diag.txt` | `/dev_hdd0/tmp/nativepadps3_diag.txt` |
 | LV2 dumps (debug VSH only) | `/dev_hdd0/tmp/ds45pad_lv2.bin/.txt`, `ds45pad_lv2_b.bin/.txt` | `/dev_hdd0/tmp/nativepadps3_lv2.bin/.txt`, `nativepadps3_lv2_b.bin/.txt` |
 | PRX module name | `SYS_MODULE_INFO(DS45PAD, 0, 1, 0)` | `SYS_MODULE_INFO(NATIVEPADPS3, 0, 1, 0)` |
-| Main thread name | `"ds45pad"` | `"nativepadps3"` (stop thread `"ds45stop"` -> `"npp3stop"`) |
+| Main thread name | `"ds45pad"` | `"nativepadps3"` (stop thread `"ds45stop"` -> `"nppstop"`) |
 | Toasts (NOTIFY = 1 only) | `DS45Pad Caricato / Loaded`, `DS45Pad Disattivato / Unloaded`, `DS45Pad Bluetooth Attivo / Active`, `DS45Pad: Bluetooth not supported on this kernel` | the same with `NativePadPS3` in place of `DS45Pad` |
 | Diag header | `=== DS45PAD <version> ===` | `=== NativePadPS3 <version> ===` |
 | TTY prefix (lv2dump) | `ds45pad: ` | `nativepadps3: ` |
