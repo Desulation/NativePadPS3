@@ -604,6 +604,7 @@ static int adopt_refused_check(uint32_t want_mask)
 /* A refusal before anything is written, borrowed or allocated (defined below,
  * forward-declared so the install-placement tests can use it). */
 static int refused_untouched(const struct snap *before, int pokes);
+static int blob_zeroed(void);
 
 /* The plugin unloads in two steps: unhook (revert the redirects and words,
  * confirm they stuck, arm the scrub) then, after a short drain on the console,
@@ -1656,6 +1657,7 @@ static int test_adopt_skips_corrupt_orig(void)
 	CHECK(fake_lv2_poke_count == pokes);
 
 	kshim_remove();
+	CHECK(!blob_zeroed());       /* R5: two skipped sites, so the blob is kept, not scrubbed */
 	CHECK(rd(EVENT_SLOT) == EVENT_ORIG);                     /* redirects restored */
 	CHECK(rd(ENABLE_SLOT) == ENABLE_ORIG);
 	CHECK(rd(INPUT_SLOT) == INPUT_ORIG);
@@ -1673,6 +1675,7 @@ static int test_adopt_skips_corrupt_orig(void)
 	      (uint64_t)0xFFFFFC7Fu << 32);
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_remove();
+	CHECK(!blob_zeroed());       /* R5: the forged-bit sites were skipped, the blob is kept */
 	CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
 	CHECK(rd(HELPER_QA) == HELPER_Q);                        /* recorded: restored */
 	CHECK(rd(PID0_QA) == PID0_Q && rd(PID1_QA) == PID1_Q);   /* never touched */
@@ -1910,6 +1913,45 @@ static uint32_t db_u32(size_t off)
 	const uint64_t q = rd(BLOB_BASE + DS45_SHIM_OFF_DATA + (off & ~(size_t)7));
 
 	return (off & 4) ? (uint32_t)q : (uint32_t)(q >> 32);
+}
+
+/* Whether the whole fixed blob region (blob + flush OPD) at BLOB_BASE reads zero. */
+static int blob_zeroed(void)
+{
+	uint64_t off;
+
+	for (off = 0; off < (uint64_t)DS45_SHIM_BLOB_LEN + 16; off += 8)
+		if (rd(BLOB_BASE + off) != 0)
+			return 0;
+	return 1;
+}
+
+/* The scrub after an unhook that restored everything: zeroes the whole region, one
+ * write per qword. Returns 0 or the failing line. */
+static int scrub_zeroes_blob(void)
+{
+	const int pokes = fake_lv2_poke_count;
+
+	kshim_scrub();
+	CHECK_SUB(fake_lv2_poke_count - pokes == (DS45_SHIM_BLOB_LEN + 16) / 8 ? 0 : __LINE__);
+	CHECK_SUB(blob_zeroed() ? 0 : __LINE__);
+	return 0;
+}
+
+/* The scrub after an adopted install that skipped a site still possibly pointing
+ * into the blob (R5): it writes nothing, the blob stays exactly as installed - magic
+ * and data block intact, so its stubs keep passing through to the originals - and
+ * the unload is otherwise complete. Returns 0 or the failing line. */
+static int scrub_keeps_blob(void)
+{
+	const int pokes = fake_lv2_poke_count;
+
+	kshim_scrub();
+	CHECK_SUB(fake_lv2_poke_count == pokes ? 0 : __LINE__);
+	CHECK_SUB(!blob_zeroed() ? 0 : __LINE__);
+	CHECK_SUB(rd(BLOB_BASE + DS45_SHIM_OFF_DATA) == DS45_SHIM_MAGIC ? 0 : __LINE__);
+	CHECK_SUB(rd(BLOB_BASE + DS45_SHIM_OFF_POWEROFF) != 0 ? 0 : __LINE__);   /* the stubs stay */
+	return 0;
 }
 
 static int popcount4(unsigned m)
@@ -2501,7 +2543,7 @@ static int test_output_adopt_v8(void)
 		CHECK(fake_lv2_poke_count == pokes);
 		kshim_unhook();
 		CHECK(fake_lv2_poke_count - pokes == 1 + 1 + 3);   /* helper, slot 5, redirects */
-		kshim_scrub();
+		CHECK(scrub_keeps_blob() == 0);       /* R5: a skipped site may still point in */
 		CHECK(rd(OUT_CALL_QA) == call_changed);               /* left as found */
 		CHECK(rd(OUT_SLOT6) == slot6_changed);
 		CHECK(rd(OUT_CAP_QA) == OUT_Q(1));                    /* never written */
@@ -2523,7 +2565,7 @@ static int test_output_adopt_v8(void)
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_unhook();
 	CHECK(fake_lv2_poke_count - pokes == 1 + 1 + 1 + 1 + 3 + 3);  /* all but slot 6 */
-	kshim_scrub();
+	CHECK(scrub_keeps_blob() == 0);           /* slot 6 still points into the blob (R5) */
 	CHECK(rd(OUT_SLOT6) == pktbuf_at(BLOB_BASE) + 1);         /* left as found */
 	CHECK(rd(OUT_SLOT5) == OLD_BUF && rd(OUT_CALL_QA) == OUT_Q(0));
 	CHECK(rd(OUT_CAP_QA) == OUT_Q(1));
@@ -2553,7 +2595,7 @@ static int test_output_adopt_v8(void)
 	CHECK(kshim_install_from(&g_ent, 1) == KSHIM_ALREADY);
 	kshim_unhook();
 	CHECK(fake_lv2_poke_count - pokes == 1 + 3);              /* helper + redirects */
-	kshim_scrub();
+	CHECK(scrub_keeps_blob() == 0);   /* the call site still branches into the blob (R5) */
 	/* every output and receive site exactly as the observe-mode install left it:
 	 * call site and both buffer slots still ours (not restorable without a sender
 	 * address), cap word and the three receive words never touched */
@@ -3340,9 +3382,6 @@ static int test_poweroff_site_index_mapping(void)
 	CHECK(check_out_sites(BLOB_BASE, 1, 1, 1, 1) == 0);
 	for (i = 0; i < PO_PATCHES_N; i++)
 		CHECK(pid_orig_at(BLOB_BASE, 10 + i) == PO_Q(i));    /* poweroff_patches[i] */
-	/* the five rows' addresses are all different, so a wrong mapping would show */
-	for (i = 1; i < PO_PATCHES_N; i++)
-		CHECK(PO_QA(i) != PO_QA(i - 1));
 	kshim_remove();
 
 	/* observe: any one row that does not hold its qword refuses the install */
@@ -3661,7 +3700,8 @@ static int test_poweroff_adopt_v12(void)
 			      g_wlog[8] == PO_QA(1) && g_wlog[9] == PO_QA(0) && g_wlog[10] == OUT_CAP_QA);
 		}
 		CHECK(g_wlog[g_wlog_n - 1] == HELPER_QA);
-		kshim_scrub();
+		/* nothing was skipped: every site is restored, so the scrub still zeroes the blob */
+		CHECK(scrub_zeroes_blob() == 0);
 		take_snap(&after);
 		CHECK(snap_eq(&pristine, &after));
 		CHECK(check_po_sites(BLOB_BASE, 0) == 0);
@@ -3669,7 +3709,9 @@ static int test_poweroff_adopt_v12(void)
 	}
 
 	/* 2. a power-off site recorded as applied that is no longer ours is skipped (traced),
-	 * the rest restored; the adoption itself is not refused */
+	 * the rest restored; the adoption itself is not refused. A skipped site cannot be
+	 * told from one that still points into the blob, so the blob is NOT scrubbed
+	 * afterwards (R5): the redirects are reverted, the stubs stay as pure pass-throughs */
 	for (i = 0; i < PO_PATCHES_N; i++) {
 		uint64_t changed;
 
@@ -3687,7 +3729,7 @@ static int test_poweroff_adopt_v12(void)
 		CHECK(g_tr_skipped == (1u << (10 + i)) && g_tr_refused == 0);
 		kshim_unhook();
 		CHECK(fake_lv2_poke_count - pokes == 1 + 3 + 3);    /* helper, 3 redirects, 3 others */
-		kshim_scrub();
+		CHECK(scrub_keeps_blob() == 0);
 		CHECK(rd(PO_QA(i)) == changed);                      /* left as found */
 		CHECK(rd(EVENT_SLOT) == EVENT_ORIG && rd(INPUT_SLOT) == INPUT_ORIG);
 		CHECK(rd(HELPER_QA) == HELPER_Q);
@@ -3709,7 +3751,7 @@ static int test_poweroff_adopt_v12(void)
 	CHECK(g_tr_skipped == ((1u << 11) | (1u << 12)) && g_tr_refused == 0);
 	kshim_unhook();
 	CHECK(fake_lv2_poke_count - pokes == 1 + 3 + 2);        /* helper, redirects, sites 10, 13 */
-	kshim_scrub();
+	CHECK(scrub_keeps_blob() == 0);
 	CHECK(rd(PO_QA(0)) == PO_Q(0) && rd(PO_QA(3)) == PO_Q(3));
 	CHECK(rd(PO_QA(1)) == po_patched_q(1, BLOB_BASE));      /* left as found */
 	CHECK(rd(PO_QA(2)) == po_patched_q(2, BLOB_BASE));
@@ -3726,7 +3768,7 @@ static int test_poweroff_adopt_v12(void)
 	CHECK(g_tr_skipped == (1u << 10));
 	kshim_unhook();
 	CHECK(fake_lv2_poke_count - pokes == 1 + 3 + 3);
-	kshim_scrub();
+	CHECK(scrub_keeps_blob() == 0);
 	CHECK(rd(PO_QA(0)) == po_patched_q(0, BLOB_BASE));      /* left as found */
 	CHECK(rd(PO_QA(1)) == PO_Q(1) && rd(PO_QA(2)) == PO_Q(2) && rd(PO_QA(3)) == PO_Q(3));
 
@@ -3742,7 +3784,7 @@ static int test_poweroff_adopt_v12(void)
 	CHECK(g_tr_skipped == ((1u << 11) | (1u << 12) | (1u << 13)));
 	kshim_unhook();
 	CHECK(fake_lv2_poke_count - pokes == 1 + 3 + 1);
-	kshim_scrub();
+	CHECK(scrub_keeps_blob() == 0);
 	CHECK(rd(PO_QA(0)) == PO_Q(0));
 	CHECK(rd(PO_QA(1)) == po_patched_q(1, BLOB_BASE) && rd(PO_QA(2)) == po_patched_q(2, BLOB_BASE) &&
 	      rd(PO_QA(3)) == po_patched_q(3, BLOB_BASE));

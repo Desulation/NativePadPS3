@@ -97,8 +97,9 @@ typedef char kshim_pid_words_aligned[(offsetof(ds45_shim_data_t, pid_orig) % 8 =
 /* What a successful (or adopted) install left behind, for unload. g_base and
  * g_zero_size are the fixed blob region [g_base, g_base + g_zero_size) that the
  * scrub zeroes; both are set on a fresh install and on a VALID adoption (an
- * adoption whose base is not the row's exec_base, or does not fit, leaves
- * g_zero_size 0 so it is never scrubbed). Recording the size is cleaner than
+ * adoption whose base is not the row's exec_base, or does not fit, or that
+ * skipped an applied site that may still point into the blob, leaves g_zero_size
+ * 0 so it is never scrubbed). Recording the size is cleaner than
  * recomputing it from a journalled slot at unload, when the row - and so
  * exec_base and flush_desc - is no longer in hand. g_scrub_armed is set only by
  * kshim_unhook once it has confirmed the redirects reverted, so a half-reverted
@@ -489,16 +490,22 @@ static uint32_t adopt_recv_unsafe(const ds45_shim_kernel_t *k, uint64_t base,
  * install applied is what gets restored. Any other site is left as found (traced
  * kshim_adopt_pid_skipped, not journalled); the redirects are adopted regardless.
  *
- * Two calls, mirroring an install's transaction: recv == 0 journals sites 0..6 and 10..13
- * (before the redirects), recv == 1 the receive-limit words (after them), so unload
- * undoes the limits first, then the redirects, then the rest. The receive words are
- * never skipped here: adopt_recv_unsafe has already refused the whole adoption if
- * any of them is not ours (see there). Reads only. Appends to j. */
-static void adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
-                            uint32_t applied, int recv, ds45_kjournal_t *j)
+ * Two calls, mirroring an install's transaction: recv == 0 journals sites 0..6 and
+ * 10..13 (before the redirects), recv == 1 the receive-limit words (after them), so
+ * unload undoes the limits first, then the redirects, then the rest. The receive
+ * words are never skipped here: adopt_recv_unsafe has already refused the whole
+ * adoption if any of them is not ours (see there). Reads only. Appends to j.
+ *
+ * Returns how many applied sites were skipped. A skipped site is not told apart
+ * between "someone else changed it" and "still branches or points into the blob",
+ * and the unload reverts only what is journalled, so the caller must never scrub
+ * the blob of an adoption that skipped anything (R5): the blob stays a pure
+ * pass-through (its stubs only tail-call the originals) and its data block intact. */
+static int adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
+                           uint32_t applied, int recv, ds45_kjournal_t *j)
 {
 	uint64_t orig;
-	int i, jj;
+	int i, jj, skipped = 0;
 
 	for (jj = 0; jj < DS45_SHIM_PID_SITES; jj++) {
 		i = PID_ORDER[jj];
@@ -506,12 +513,14 @@ static void adopt_pid_sites(const ds45_shim_kernel_t *k, uint64_t base,
 			continue;
 		if (!adopt_site_ours(k, base, i, &orig)) {   /* not ours to restore: as found */
 			DS45_TRACE_HEX("kshim_adopt_pid_skipped", (uint64_t)i);
+			skipped++;
 			continue;
 		}
 		j->qaddr[j->n] = pid_site(k, i)->addr & ~7ULL;
 		j->orig[j->n] = orig;
 		j->n++;
 	}
+	return skipped;
 }
 
 /* The redirects already point at one of our blobs: the event slot names a base,
@@ -634,7 +643,7 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 	uint64_t pid_orig[DS45_SHIM_PID_SITES];
 	uint32_t off, bw, pid_applied;
 	int pid_site_of[DS45_SHIM_PID_SITES];
-	int i, r, npid, nfront, nfinal, pid_ok, spare_borrowed = 0;
+	int i, r, npid, nfront, nfinal, pid_ok, skipped, spare_borrowed = 0;
 
 	g_state = KSHIM_OFF;
 	g_journal.n = 0;
@@ -705,14 +714,14 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 				return KSHIM_FAILED;
 			}
 			g_journal.n = 0;
-			adopt_pid_sites(k, base, applied, 0, &g_journal);
+			skipped = adopt_pid_sites(k, base, applied, 0, &g_journal);
 			g_journal.qaddr[g_journal.n] = k->event_slot;
 			g_journal.orig[g_journal.n++] = k->event_expect;
 			g_journal.qaddr[g_journal.n] = k->enable_slot;
 			g_journal.orig[g_journal.n++] = k->enable_expect;
 			g_journal.qaddr[g_journal.n] = k->input_slot;
 			g_journal.orig[g_journal.n++] = k->input_expect;
-			adopt_pid_sites(k, base, applied, 1, &g_journal);
+			skipped += adopt_pid_sites(k, base, applied, 1, &g_journal);
 			/* The adopted base came from the (consistency-checked) event slot,
 			 * but that is still a free kernel read: make it the scrub target only
 			 * when it is exactly this row's fixed region and fits under exec_bound.
@@ -725,6 +734,14 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n)
 			if (base != k->exec_base || base > k->exec_bound ||
 			    g_zero_size > k->exec_bound - base) {
 				DS45_TRACE("kshim_adopt_base_unexpected");
+				g_zero_size = 0;
+			}
+			/* An applied site that was skipped (not journalled, so not reverted)
+			 * may still branch or point into the blob: never scrub it (R5). The
+			 * redirects and the journalled sites are reverted as usual; the kept
+			 * blob only passes through to the originals. Not a failure. */
+			if (skipped) {
+				DS45_TRACE_HEX("kshim_adopt_blob_kept", (uint64_t)skipped);
 				g_zero_size = 0;
 			}
 			g_scrub_armed = 0;
