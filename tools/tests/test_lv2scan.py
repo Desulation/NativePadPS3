@@ -45,12 +45,12 @@ def test_fnv_matches_c_vectors():
 
 
 def test_constants_match_kernel_h():
-    assert L.DS45_SCAN_MAX_INSNS == 16
-    assert L.DS45_SCAN_MAX_HITS == 8
-    assert L.DS45_SCAN_PROLOGUE_RANGE == 0x800
-    assert L.DS45_FP_LEN == 32
-    assert L.DS45_INSN_LD_FROM_R2 == (0xFC1F0003, 0xE8020000)
-    assert L.DS45_INSN_STDU_R1 == (0xFFFF0003, 0xF8210001)
+    assert L.NPP_SCAN_MAX_INSNS == 16
+    assert L.NPP_SCAN_MAX_HITS == 8
+    assert L.NPP_SCAN_PROLOGUE_RANGE == 0x800
+    assert L.NPP_FP_LEN == 32
+    assert L.NPP_INSN_LD_FROM_R2 == (0xFC1F0003, 0xE8020000)
+    assert L.NPP_INSN_STDU_R1 == (0xFFFF0003, 0xF8210001)
 
 
 # --------------------------------------------------------------------------
@@ -199,7 +199,7 @@ def test_function_ends_at_next_prologue():
 
 
 def test_ld_beyond_prologue_range_is_not_a_candidate():
-    far = [S.NOP] * (L.DS45_SCAN_PROLOGUE_RANGE // 4)
+    far = [S.NOP] * (L.NPP_SCAN_PROLOGUE_RANGE // 4)
     s = S.build_image(pad=len(far))
     assert L.find_candidates(s.data, BASE) == []
 
@@ -291,7 +291,7 @@ def test_common_pattern_trims_to_the_c_limit():
     tail = [S.addi(5 + i, 0, 0x100 + i) for i in range(10)]
     s = S.build_image(extra_after=tail)
     pat = L.common_pattern([(s.data, one(s.data))])
-    assert 1 <= len(pat) <= L.DS45_SCAN_MAX_INSNS
+    assert 1 <= len(pat) <= L.NPP_SCAN_MAX_INSNS
     assert 0 <= pat.toc_ld_index < len(pat)
     assert 0 <= pat.report_off_index < len(pat)
     assert pat[pat.toc_ld_index][1] == S.ld(9, 0, 2)
@@ -352,7 +352,7 @@ def test_simulate_rejects_hits_that_disagree():
 
 def test_simulate_ambiguous_beyond_max_hits():
     parts = []
-    for i in range(L.DS45_SCAN_MAX_HITS + 1):
+    for i in range(L.NPP_SCAN_MAX_HITS + 1):
         parts.append(S.build_image(func_off=0x1000 + 0x200 * i,
                                    opd_off=0x400 + 0x10 * i))
     img = parts[0].data
@@ -360,7 +360,7 @@ def test_simulate_ambiguous_beyond_max_hits():
         img = merge(img, p.data)
     pat = L.common_pattern([(parts[0].data, one(parts[0].data))])
     res = L.simulate_scan(img, BASE, pat)
-    assert res.raw_hits == L.DS45_SCAN_MAX_HITS + 1
+    assert res.raw_hits == L.NPP_SCAN_MAX_HITS + 1
     assert res.error is not None and "ambiguous" in res.error
 
 
@@ -419,11 +419,11 @@ def test_emit_c_pattern_shape():
     s = S.build_image()
     pat = L.common_pattern([(s.data, one(s.data))])
     text = L.emit_c_pattern(pat)
-    assert "static const ds45_insn_match_t ds45_scan_insns[] = {" in text
-    assert "const ds45_scan_pattern_t ds45_scan_pattern = {" in text
+    assert "static const npp_insn_match_t npp_scan_insns[] = {" in text
+    assert "const npp_scan_pattern_t npp_scan_pattern = {" in text
     ld_line = "{ 0xFFFF0003u, 0x%08Xu }" % S.ld(9, 0, 2)
     assert ld_line in text
-    tail = "ds45_scan_insns, %d, %d, %d };" % (
+    tail = "npp_scan_insns, %d, %d, %d };" % (
         len(pat), pat.toc_ld_index, pat.report_off_index)
     assert tail in text
     assert text.count("u },") == len(pat)       # one initializer per word
@@ -432,7 +432,7 @@ def test_emit_c_pattern_shape():
 def test_emit_c_pattern_rejects_what_the_c_scan_rejects():
     with pytest.raises(ValueError):
         L.emit_c_pattern(L.Pattern([], 0, 0))
-    too_long = L.Pattern([(1, 1)] * (L.DS45_SCAN_MAX_INSNS + 1), 0, 0)
+    too_long = L.Pattern([(1, 1)] * (L.NPP_SCAN_MAX_INSNS + 1), 0, 0)
     with pytest.raises(ValueError):
         L.emit_c_pattern(too_long)
     with pytest.raises(ValueError):
@@ -444,7 +444,7 @@ def test_emit_c_pattern_rejects_what_the_c_scan_rejects():
 def test_emit_c_pattern_accepts_plain_list_with_indices():
     text = L.emit_c_pattern([(0xFFFFFFFF, 0x60000000)] * 3,
                             toc_ld_index=1, report_off_index=2)
-    assert "ds45_scan_insns, 3, 1, 2 };" in text
+    assert "npp_scan_insns, 3, 1, 2 };" in text
 
 
 # --------------------------------------------------------------------------
@@ -465,10 +465,10 @@ def test_cli_two_dumps(tmp_path, capsys):
     out = capsys.readouterr().out
     assert rc == 0
     assert '{ "FW A", ' in out and '{ "FW B", ' in out
-    assert "ds45_scan_pattern" in out
+    assert "npp_scan_pattern" in out
     assert out.count("raw hits: 1") == 2
     # the verdict is printed before the pattern C
-    assert out.index("raw hits: 1") < out.index("ds45_scan_pattern")
+    assert out.index("raw hits: 1") < out.index("npp_scan_pattern")
 
 
 def test_cli_single_dump_default_name(tmp_path, capsys):
@@ -505,7 +505,7 @@ def test_cli_rejects_a_dump_of_the_wrong_size(tmp_path, capsys):
     assert L.main([str(p)]) == 2
     cap = capsys.readouterr()
     assert "short.bin" in cap.err and str(S.WINDOW) in cap.err
-    assert "ds45_scan_pattern" not in cap.out
+    assert "npp_scan_pattern" not in cap.out
 
 
 def test_cli_reports_a_missing_file_without_a_traceback(tmp_path, capsys):
@@ -516,7 +516,7 @@ def test_cli_reports_a_missing_file_without_a_traceback(tmp_path, capsys):
 
 
 def test_cli_has_no_base_option(tmp_path):
-    # the plugin always scans from DS45_LV2_BASE, so the tool does too
+    # the plugin always scans from NPP_LV2_BASE, so the tool does too
     p = tmp_path / "x.bin"
     p.write_bytes(big().data)
     with pytest.raises(SystemExit) as e:
@@ -535,8 +535,8 @@ def test_cli_prints_no_pattern_when_the_scan_fails(tmp_path, capsys):
     cap = capsys.readouterr()
     assert rc == 1
     assert "scan FAILS" in cap.out and "raw hits: 2" in cap.out
-    assert "ds45_scan_pattern" not in cap.out
-    assert "ds45_scan_insns" not in cap.out
+    assert "npp_scan_pattern" not in cap.out
+    assert "npp_scan_insns" not in cap.out
 
 
 
@@ -560,7 +560,7 @@ def test_runs_on_local_dumps():
             chosen.append((img, cands[0]))
     if chosen:
         pat = L.common_pattern(chosen)
-        assert 1 <= len(pat) <= L.DS45_SCAN_MAX_INSNS
+        assert 1 <= len(pat) <= L.NPP_SCAN_MAX_INSNS
         L.emit_c_pattern(pat)
 
 
@@ -597,9 +597,9 @@ def _patch_report_use(s, *words):
 def test_record_usable_mirrors_c():
     ok = BASE + 0x1000
     assert L.record_usable(ok, 0xE8)
-    assert L.record_usable(ok, L.DS45_REPORT_OFF_MAX)
+    assert L.record_usable(ok, L.NPP_REPORT_OFF_MAX)
     assert not L.record_usable(ok, 0x21)                  # unaligned offset
-    assert not L.record_usable(ok, L.DS45_REPORT_OFF_MAX + 8)
+    assert not L.record_usable(ok, L.NPP_REPORT_OFF_MAX + 8)
     assert not L.record_usable(ok + 4, 0xE8)              # unaligned slot
     assert not L.record_usable(BASE - 8, 0xE8)
     assert not L.record_usable(BASE + S.WINDOW - 4, 0xE8)

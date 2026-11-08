@@ -1,5 +1,5 @@
 /*
- * DS45PAD kernel shim - the DualShock 3 output payload to a DualSense
+ * NPP kernel shim - the DualShock 3 output payload to a DualSense
  * Bluetooth output report 0x31.
  *
  * The PS3 kernel's DS3 driver builds a 48 byte output payload (rumble and LED
@@ -45,8 +45,8 @@
  *
  * Licensed under GPLv2 - see LICENSE.
  */
-#ifndef DS45_DS3_OUTPUT_H
-#define DS45_DS3_OUTPUT_H
+#ifndef NPP_DS3_OUTPUT_H
+#define NPP_DS3_OUTPUT_H
 
 #include <stdint.h>
 
@@ -87,4 +87,4 @@ uint32_t ds3_crc32_seeded(uint8_t seed, const uint8_t *p, int n);
 /* Write the whole power-off payload, CRC included. A NULL out is a no-op. */
 void ds_poweroff_payload(uint8_t out[DS_POWEROFF_PAYLOAD_LEN]);
 
-#endif /* DS45_DS3_OUTPUT_H */
+#endif /* NPP_DS3_OUTPUT_H */

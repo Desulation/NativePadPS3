@@ -5,7 +5,7 @@
 #include "lv2.h"
 #include "kpatch.h"
 
-#define A        (DS45_LV2_BASE + 0x3000)   /* scratch area used by every test */
+#define A        (NPP_LV2_BASE + 0x3000)   /* scratch area used by every test */
 #define SNAP_LEN 0xE0                 /* covers all 21 slots the limit test uses */
 
 /* Image layout (all big-endian, as on the PPU):
@@ -37,7 +37,7 @@ static uint64_t qhash(uint64_t v)
 
 	for (i = 0; i < 8; i++)
 		b[i] = (uint8_t)(v >> (56 - 8 * i));
-	return ds45_fnv1a64(b, 8);
+	return npp_fnv1a64(b, 8);
 }
 
 static void fill_image(void)
@@ -51,21 +51,21 @@ static void fill_image(void)
 
 static void snap(uint8_t *out)
 {
-	ds45_lv2_read_bytes(A, out, SNAP_LEN);
+	npp_lv2_read_bytes(A, out, SNAP_LEN);
 }
 
 static uint64_t rd(uint64_t addr)
 {
 	uint64_t v = 0;
 
-	ds45_lv2_read(addr, &v);
+	npp_lv2_read(addr, &v);
 	return v;
 }
 
 static int test_verify_ptr_mismatch_writes_nothing(void)
 {
-	ds45_kpatch_t p[2];
-	ds45_kjournal_t j;
+	npp_kpatch_t p[2];
+	npp_kjournal_t j;
 	uint8_t before[SNAP_LEN], after[SNAP_LEN];
 	int pokes;
 
@@ -73,7 +73,7 @@ static int test_verify_ptr_mismatch_writes_nothing(void)
 	snap(before);
 
 	/* a PTR whose current value is not what the patch expects */
-	p[0].kind = DS45_KPATCH_PTR;
+	p[0].kind = NPP_KPATCH_PTR;
 	p[0].addr = A;
 	p[0].expect = PTR0 + 8;
 	p[0].value = 0x8000000000001000ULL;
@@ -88,7 +88,7 @@ static int test_verify_ptr_mismatch_writes_nothing(void)
 	/* the first patch is fine, the second is not: still nothing is written,
 	 * because every target is checked before the first poke */
 	p[0].expect = PTR0;
-	p[1].kind = DS45_KPATCH_PTR;
+	p[1].kind = NPP_KPATCH_PTR;
 	p[1].addr = A + 0x18;
 	p[1].expect = PTR3 ^ 1;
 	p[1].value = 0x8000000000002000ULL;
@@ -107,7 +107,7 @@ static int test_verify_ptr_mismatch_writes_nothing(void)
 	CHECK(kpatch_verify(p, 0) == 0);
 
 	/* WORD / BRANCH: a wrong hash fails, so does a hash of the wrong half */
-	p[0].kind = DS45_KPATCH_WORD;
+	p[0].kind = NPP_KPATCH_WORD;
 	p[0].addr = A + 12;
 	p[0].expect = qhash(Q1) ^ 1;
 	p[0].value = 0x4E800020ULL;
@@ -116,7 +116,7 @@ static int test_verify_ptr_mismatch_writes_nothing(void)
 	CHECK(kpatch_verify(p, 1) == 1);
 	p[0].expect = qhash(Q1);
 	CHECK(kpatch_verify(p, 1) == 0);
-	p[0].kind = DS45_KPATCH_BRANCH;
+	p[0].kind = NPP_KPATCH_BRANCH;
 	p[0].addr = A + 16;
 	p[0].expect = qhash(Q2) ^ 1;
 	p[0].value = A + 0x400;
@@ -131,25 +131,25 @@ static int test_verify_ptr_mismatch_writes_nothing(void)
 	CHECK(fake_lv2_poke_count == 0);
 
 	/* alignment, window, kind and value-width violations */
-	p[0].kind = DS45_KPATCH_PTR;
+	p[0].kind = NPP_KPATCH_PTR;
 	p[0].addr = A + 4;                             /* PTR needs 8-aligned */
 	p[0].expect = rd(A) ;
 	p[0].value = 1;
 	CHECK(kpatch_verify(p, 1) == 1);
-	p[0].kind = DS45_KPATCH_WORD;
+	p[0].kind = NPP_KPATCH_WORD;
 	p[0].addr = A + 10;                            /* WORD needs 4-aligned */
 	p[0].expect = qhash(Q1);
 	p[0].value = 1;
 	CHECK(kpatch_verify(p, 1) == 1);
-	p[0].addr = DS45_LV2_BOUND;                    /* outside the window */
+	p[0].addr = NPP_LV2_BOUND;                    /* outside the window */
 	CHECK(kpatch_verify(p, 1) == 1);
 	p[0].addr = A + 12;
 	p[0].value = 0x100000000ULL;                   /* does not fit in 32 bits */
 	CHECK(kpatch_verify(p, 1) == 1);
 	p[0].value = 1;
-	p[0].kind = (ds45_kpatch_kind_t)0;             /* unknown kind */
+	p[0].kind = (npp_kpatch_kind_t)0;             /* unknown kind */
 	CHECK(kpatch_verify(p, 1) == 1);
-	p[0].kind = (ds45_kpatch_kind_t)99;
+	p[0].kind = (npp_kpatch_kind_t)99;
 	CHECK(kpatch_verify(p, 1) == 1);
 	CHECK(kpatch_verify(NULL, 1) == -1);
 	CHECK(kpatch_apply(p, 1, NULL) == -1);
@@ -161,18 +161,18 @@ static int test_verify_ptr_mismatch_writes_nothing(void)
 
 static int test_apply_ptr_and_word(void)
 {
-	ds45_kpatch_t p[3];
-	ds45_kjournal_t j;
+	npp_kpatch_t p[3];
+	npp_kjournal_t j;
 	uint32_t w = 0;
 
 	fill_image();
 
-	p[0].kind = DS45_KPATCH_PTR;
+	p[0].kind = NPP_KPATCH_PTR;
 	p[0].addr = A;
 	p[0].expect = PTR0;
 	p[0].value = 0x8000000000ABCDE8ULL;
 	/* WORD in the low half (addr & 4 != 0): the high half is kept */
-	p[1].kind = DS45_KPATCH_WORD;
+	p[1].kind = NPP_KPATCH_WORD;
 	p[1].addr = A + 12;
 	p[1].expect = qhash(Q1);
 	p[1].value = 0x4E800020ULL;
@@ -187,7 +187,7 @@ static int test_apply_ptr_and_word(void)
 	CHECK(kpatch_verify(p, 2) != 0);               /* no longer as expected */
 
 	/* WORD in the high half (addr & 4 == 0): the low half is kept */
-	p[0].kind = DS45_KPATCH_WORD;
+	p[0].kind = NPP_KPATCH_WORD;
 	p[0].addr = A + 16;
 	p[0].expect = qhash(Q2);
 	p[0].value = 0x60000000ULL;
@@ -199,7 +199,7 @@ static int test_apply_ptr_and_word(void)
 	fill_image();
 	CHECK(kpatch_branch_word(A + 12, A + 12 + 0x200, &w) == 0);
 	CHECK(w == 0x48000200u);
-	p[0].kind = DS45_KPATCH_BRANCH;
+	p[0].kind = NPP_KPATCH_BRANCH;
 	p[0].addr = A + 12;
 	p[0].expect = qhash(Q1);
 	p[0].value = A + 12 + 0x200;
@@ -210,11 +210,11 @@ static int test_apply_ptr_and_word(void)
 	/* two patches in the same qword: the second sees the first one's result,
 	 * and reverting both restores the original */
 	fill_image();
-	p[0].kind = DS45_KPATCH_WORD;
+	p[0].kind = NPP_KPATCH_WORD;
 	p[0].addr = A + 8;
 	p[0].expect = qhash(Q1);
 	p[0].value = 0x11111111ULL;
-	p[1].kind = DS45_KPATCH_WORD;
+	p[1].kind = NPP_KPATCH_WORD;
 	p[1].addr = A + 12;
 	p[1].expect = qhash(Q1);
 	p[1].value = 0x22222222ULL;
@@ -229,13 +229,13 @@ static int test_apply_ptr_and_word(void)
 static int test_branch_encoding(void)
 {
 	uint32_t w = 0xDEADBEEF;
-	uint64_t f = DS45_LV2_BASE + 0x1000;
+	uint64_t f = NPP_LV2_BASE + 0x1000;
 
-	CHECK(kpatch_branch_word(f, DS45_LV2_BASE + 0x2000, &w) == 0);
+	CHECK(kpatch_branch_word(f, NPP_LV2_BASE + 0x2000, &w) == 0);
 	CHECK(w == 0x48001000u);
 
 	/* backwards: the displacement is two's complement in the 24-bit LI field */
-	CHECK(kpatch_branch_word(DS45_LV2_BASE + 0x2000, f, &w) == 0);
+	CHECK(kpatch_branch_word(NPP_LV2_BASE + 0x2000, f, &w) == 0);
 	CHECK(w == 0x4BFFF000u);
 	CHECK(kpatch_branch_word(f, f - 4, &w) == 0);
 	CHECK(w == 0x4BFFFFFCu);
@@ -289,22 +289,22 @@ static void arm_fault(int after)
 
 static int test_apply_rollback_on_readback_failure(void)
 {
-	ds45_kpatch_t p[3];
-	ds45_kjournal_t j;
+	npp_kpatch_t p[3];
+	npp_kjournal_t j;
 	uint8_t before[SNAP_LEN], after[SNAP_LEN];
 
 	fill_image();
 	snap(before);
 
-	p[0].kind = DS45_KPATCH_PTR;
+	p[0].kind = NPP_KPATCH_PTR;
 	p[0].addr = A;
 	p[0].expect = PTR0;
 	p[0].value = 0x8000000000ABCDE8ULL;
-	p[1].kind = DS45_KPATCH_WORD;
+	p[1].kind = NPP_KPATCH_WORD;
 	p[1].addr = A + 12;
 	p[1].expect = qhash(Q1);
 	p[1].value = 0x4E800020ULL;
-	p[2].kind = DS45_KPATCH_PTR;
+	p[2].kind = NPP_KPATCH_PTR;
 	p[2].addr = A + 0x18;
 	p[2].expect = PTR3;
 	p[2].value = 0x8000000000ABCDF0ULL;
@@ -349,23 +349,23 @@ static int test_apply_rollback_on_readback_failure(void)
 
 static int test_revert_restores_all(void)
 {
-	ds45_kpatch_t p[3];
-	ds45_kjournal_t j;
+	npp_kpatch_t p[3];
+	npp_kjournal_t j;
 	uint8_t before[SNAP_LEN], mid[SNAP_LEN], after[SNAP_LEN];
 	int pokes;
 
 	fill_image();
 	snap(before);
 
-	p[0].kind = DS45_KPATCH_PTR;
+	p[0].kind = NPP_KPATCH_PTR;
 	p[0].addr = A;
 	p[0].expect = PTR0;
 	p[0].value = 0x8000000000ABCDE8ULL;
-	p[1].kind = DS45_KPATCH_WORD;
+	p[1].kind = NPP_KPATCH_WORD;
 	p[1].addr = A + 12;
 	p[1].expect = qhash(Q1);
 	p[1].value = 0x4E800020ULL;
-	p[2].kind = DS45_KPATCH_BRANCH;
+	p[2].kind = NPP_KPATCH_BRANCH;
 	p[2].addr = A + 16;
 	p[2].expect = qhash(Q2);
 	p[2].value = A + 0x800;
@@ -416,7 +416,7 @@ static int test_revert_restores_all(void)
 	fill_image();
 	j.n = 2;
 	j.qaddr[0] = A;                 j.orig[0] = 0x0101010101010101ULL;
-	j.qaddr[1] = DS45_LV2_BOUND;    j.orig[1] = 1;
+	j.qaddr[1] = NPP_LV2_BOUND;    j.orig[1] = 1;
 	fake_lv2_poke_fail_after = -1;
 	kpatch_revert(&j);
 	CHECK(fake_lv2_out_of_bounds == 0);
@@ -427,16 +427,16 @@ static int test_revert_restores_all(void)
 
 static int test_too_many_patches(void)
 {
-	ds45_kpatch_t p[DS45_KPATCH_MAX + 1];
-	ds45_kjournal_t j;
+	npp_kpatch_t p[NPP_KPATCH_MAX + 1];
+	npp_kjournal_t j;
 	uint8_t before[SNAP_LEN], after[SNAP_LEN];
 	int i;
 
 	fill_image();
 	snap(before);
 
-	for (i = 0; i <= DS45_KPATCH_MAX; i++) {
-		p[i].kind = DS45_KPATCH_PTR;
+	for (i = 0; i <= NPP_KPATCH_MAX; i++) {
+		p[i].kind = NPP_KPATCH_PTR;
 		p[i].addr = A + 0x20 + 8 * (uint64_t)i;
 		p[i].expect = 0;
 		p[i].value = 0x8000000000001000ULL + (uint64_t)i;
@@ -444,9 +444,9 @@ static int test_too_many_patches(void)
 
 	fake_lv2_peek_count = 0;
 	memset(&j, 0x55, sizeof(j));
-	CHECK(kpatch_apply(p, DS45_KPATCH_MAX + 1, &j) == -1);
+	CHECK(kpatch_apply(p, NPP_KPATCH_MAX + 1, &j) == -1);
 	CHECK(kpatch_apply(p, -1, &j) == -1);
-	CHECK(kpatch_verify(p, DS45_KPATCH_MAX + 1) == -1);
+	CHECK(kpatch_verify(p, NPP_KPATCH_MAX + 1) == -1);
 	CHECK(kpatch_verify(p, -1) == -1);
 	CHECK(fake_lv2_peek_count == 0);                /* no reads at all */
 	CHECK(fake_lv2_poke_count == 0);
@@ -458,13 +458,13 @@ static int test_too_many_patches(void)
 	CHECK(kpatch_apply(p, 0, &j) == 0);
 	CHECK(j.n == 0);
 
-	/* exactly DS45_KPATCH_MAX is allowed and journals every one */
-	CHECK(kpatch_apply(p, DS45_KPATCH_MAX, &j) == 0);
-	CHECK(j.n == DS45_KPATCH_MAX);
-	for (i = 0; i < DS45_KPATCH_MAX; i++)
+	/* exactly NPP_KPATCH_MAX is allowed and journals every one */
+	CHECK(kpatch_apply(p, NPP_KPATCH_MAX, &j) == 0);
+	CHECK(j.n == NPP_KPATCH_MAX);
+	for (i = 0; i < NPP_KPATCH_MAX; i++)
 		CHECK(rd(p[i].addr) == p[i].value);
 	kpatch_revert(&j);
-	for (i = 0; i < DS45_KPATCH_MAX; i++)
+	for (i = 0; i < NPP_KPATCH_MAX; i++)
 		CHECK(rd(p[i].addr) == 0);
 	return 0;
 }
@@ -473,13 +473,13 @@ static int test_too_many_patches(void)
 static int test_branchl_encoding(void)
 {
 	uint32_t w = 0xDEADBEEF;
-	uint64_t f = DS45_LV2_BASE + 0x1000;
+	uint64_t f = NPP_LV2_BASE + 0x1000;
 
-	CHECK(kpatch_branchl_word(f, DS45_LV2_BASE + 0x2000, &w) == 0);
+	CHECK(kpatch_branchl_word(f, NPP_LV2_BASE + 0x2000, &w) == 0);
 	CHECK(w == 0x48001001u);
 
 	/* backwards: the displacement is two's complement in the 24-bit LI field */
-	CHECK(kpatch_branchl_word(DS45_LV2_BASE + 0x2000, f, &w) == 0);
+	CHECK(kpatch_branchl_word(NPP_LV2_BASE + 0x2000, f, &w) == 0);
 	CHECK(w == 0x4BFFF001u);
 	CHECK(kpatch_branchl_word(f, f - 4, &w) == 0);
 	CHECK(w == 0x4BFFFFFDu);
@@ -519,15 +519,15 @@ static int test_branchl_encoding(void)
 
 static int test_branchl_verify_apply_revert(void)
 {
-	ds45_kpatch_t p[2];
-	ds45_kjournal_t j;
+	npp_kpatch_t p[2];
+	npp_kjournal_t j;
 	uint8_t before[SNAP_LEN], after[SNAP_LEN];
 
 	fill_image();
 	snap(before);
 
 	/* low half (addr & 4 != 0): the high half is kept */
-	p[0].kind = DS45_KPATCH_BRANCHL;
+	p[0].kind = NPP_KPATCH_BRANCHL;
 	p[0].addr = A + 12;
 	p[0].expect = qhash(Q1);
 	p[0].value = A + 12 + 0x200;
@@ -548,7 +548,7 @@ static int test_branchl_verify_apply_revert(void)
 	CHECK(fake_lv2_poke_count == 0);
 
 	/* two halves of two qwords in one transaction */
-	p[1].kind = DS45_KPATCH_BRANCHL;
+	p[1].kind = NPP_KPATCH_BRANCHL;
 	p[1].addr = A + 16;                             /* high half: the low half is kept */
 	p[1].expect = qhash(Q2);
 	p[1].value = A + 16 + 0x400;
@@ -573,14 +573,14 @@ static int test_branchl_verify_apply_revert(void)
 
 static int test_branchl_hash_mismatch_writes_nothing(void)
 {
-	ds45_kpatch_t p[2];
-	ds45_kjournal_t j;
+	npp_kpatch_t p[2];
+	npp_kjournal_t j;
 	uint8_t before[SNAP_LEN], after[SNAP_LEN];
 
 	fill_image();
 	snap(before);
 
-	p[0].kind = DS45_KPATCH_BRANCHL;
+	p[0].kind = NPP_KPATCH_BRANCHL;
 	p[0].addr = A + 12;
 	p[0].expect = qhash(Q1) ^ 1;
 	p[0].value = A + 12 + 0x200;
@@ -595,7 +595,7 @@ static int test_branchl_hash_mismatch_writes_nothing(void)
 
 	/* a good patch followed by a bad BRANCHL: still nothing is written */
 	p[0].expect = qhash(Q1);
-	p[1].kind = DS45_KPATCH_BRANCHL;
+	p[1].kind = NPP_KPATCH_BRANCHL;
 	p[1].addr = A + 16;
 	p[1].expect = qhash(Q2) ^ 1;
 	p[1].value = A + 16 + 0x400;
@@ -612,18 +612,18 @@ static int test_branchl_hash_mismatch_writes_nothing(void)
  * and power-off rows included). */
 static int test_patch_list_limit(void)
 {
-	ds45_kpatch_t p[DS45_KPATCH_MAX + 1];
-	ds45_kjournal_t j;
+	npp_kpatch_t p[NPP_KPATCH_MAX + 1];
+	npp_kjournal_t j;
 	uint8_t before[SNAP_LEN], after[SNAP_LEN];
 	int i;
 
-	CHECK(DS45_KPATCH_MAX == 20);
+	CHECK(NPP_KPATCH_MAX == 20);
 
 	fill_image();
 	snap(before);
 
-	for (i = 0; i < DS45_KPATCH_MAX + 1; i++) {
-		p[i].kind = DS45_KPATCH_PTR;
+	for (i = 0; i < NPP_KPATCH_MAX + 1; i++) {
+		p[i].kind = NPP_KPATCH_PTR;
 		p[i].addr = A + 0x20 + 8 * (uint64_t)i;
 		p[i].expect = 0;
 		p[i].value = 0x8000000000001000ULL + (uint64_t)i;
@@ -632,24 +632,24 @@ static int test_patch_list_limit(void)
 	/* one more than the limit is refused, and nothing is even read */
 	fake_lv2_peek_count = 0;
 	memset(&j, 0x55, sizeof(j));
-	CHECK(kpatch_verify(p, DS45_KPATCH_MAX + 1) == -1);
-	CHECK(kpatch_apply(p, DS45_KPATCH_MAX + 1, &j) == -1);
+	CHECK(kpatch_verify(p, NPP_KPATCH_MAX + 1) == -1);
+	CHECK(kpatch_apply(p, NPP_KPATCH_MAX + 1, &j) == -1);
 	CHECK(fake_lv2_peek_count == 0);
 	CHECK(fake_lv2_poke_count == 0);
 	snap(after);
 	CHECK(memcmp(before, after, SNAP_LEN) == 0);
 
-	/* DS45_KPATCH_MAX apply, journal every one, and revert */
-	CHECK(kpatch_verify(p, DS45_KPATCH_MAX) == 0);
-	CHECK(kpatch_apply(p, DS45_KPATCH_MAX, &j) == 0);
-	CHECK(j.n == DS45_KPATCH_MAX);
-	for (i = 0; i < DS45_KPATCH_MAX; i++) {
+	/* NPP_KPATCH_MAX apply, journal every one, and revert */
+	CHECK(kpatch_verify(p, NPP_KPATCH_MAX) == 0);
+	CHECK(kpatch_apply(p, NPP_KPATCH_MAX, &j) == 0);
+	CHECK(j.n == NPP_KPATCH_MAX);
+	for (i = 0; i < NPP_KPATCH_MAX; i++) {
 		CHECK(j.qaddr[i] == p[i].addr);
 		CHECK(rd(p[i].addr) == p[i].value);
 	}
 	kpatch_revert(&j);
 	CHECK(j.n == 0);
-	for (i = 0; i < DS45_KPATCH_MAX; i++)
+	for (i = 0; i < NPP_KPATCH_MAX; i++)
 		CHECK(rd(p[i].addr) == 0);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;

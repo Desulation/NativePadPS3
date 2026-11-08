@@ -1,5 +1,5 @@
 /*
- * DS45PAD - DualSense input report field decoding.
+ * NPP - DualSense input report field decoding.
  *
  * The part of the report parsing that needs nothing but the report bytes, so
  * the kernel shim blob can build it freestanding: no SDK headers, no libc, no
@@ -11,7 +11,7 @@
  * a common payload layout.
  */
 
-#include "ds45_state.h"
+#include "npp_state.h"
 
 static int16_t rd16le(const uint8_t *p)
 {
@@ -28,16 +28,16 @@ static void decode_hat(uint8_t hat, uint32_t *buttons)
 		return;
 
 	if (hat == 7 || hat <= 1)
-		*buttons |= DS45_B_UP;
+		*buttons |= NPP_B_UP;
 	if (hat >= 1 && hat <= 3)
-		*buttons |= DS45_B_RIGHT;
+		*buttons |= NPP_B_RIGHT;
 	if (hat >= 3 && hat <= 5)
-		*buttons |= DS45_B_DOWN;
+		*buttons |= NPP_B_DOWN;
 	if (hat >= 5 && hat <= 7)
-		*buttons |= DS45_B_LEFT;
+		*buttons |= NPP_B_LEFT;
 }
 
-static void decode_touch(const uint8_t *p, ds45_touch_t *t)
+static void decode_touch(const uint8_t *p, npp_touch_t *t)
 {
 	t->active = (p[0] & 0x80) ? 0 : 1;
 	t->id     = p[0] & 0x7F;
@@ -50,36 +50,36 @@ uint32_t dualsense_decode_buttons(uint8_t b0, uint8_t b1, uint8_t b2)
 	uint32_t buttons = 0;
 
 	decode_hat(b0 & 0x0F, &buttons);
-	if (b0 & 0x10) buttons |= DS45_B_SQUARE;
-	if (b0 & 0x20) buttons |= DS45_B_CROSS;
-	if (b0 & 0x40) buttons |= DS45_B_CIRCLE;
-	if (b0 & 0x80) buttons |= DS45_B_TRIANGLE;
+	if (b0 & 0x10) buttons |= NPP_B_SQUARE;
+	if (b0 & 0x20) buttons |= NPP_B_CROSS;
+	if (b0 & 0x40) buttons |= NPP_B_CIRCLE;
+	if (b0 & 0x80) buttons |= NPP_B_TRIANGLE;
 
-	if (b1 & 0x01) buttons |= DS45_B_L1;
-	if (b1 & 0x02) buttons |= DS45_B_R1;
-	if (b1 & 0x04) buttons |= DS45_B_L2;
-	if (b1 & 0x08) buttons |= DS45_B_R2;
-	if (b1 & 0x10) buttons |= DS45_B_SHARE;    /* Create */
-	if (b1 & 0x20) buttons |= DS45_B_OPTIONS;
-	if (b1 & 0x40) buttons |= DS45_B_L3;
-	if (b1 & 0x80) buttons |= DS45_B_R3;
+	if (b1 & 0x01) buttons |= NPP_B_L1;
+	if (b1 & 0x02) buttons |= NPP_B_R1;
+	if (b1 & 0x04) buttons |= NPP_B_L2;
+	if (b1 & 0x08) buttons |= NPP_B_R2;
+	if (b1 & 0x10) buttons |= NPP_B_SHARE;    /* Create */
+	if (b1 & 0x20) buttons |= NPP_B_OPTIONS;
+	if (b1 & 0x40) buttons |= NPP_B_L3;
+	if (b1 & 0x80) buttons |= NPP_B_R3;
 
-	if (b2 & 0x01) buttons |= DS45_B_PS;
-	if (b2 & 0x02) buttons |= DS45_B_TOUCHPAD;
-	if (b2 & 0x04) buttons |= DS45_B_MUTE;
+	if (b2 & 0x01) buttons |= NPP_B_PS;
+	if (b2 & 0x02) buttons |= NPP_B_TOUCHPAD;
+	if (b2 & 0x04) buttons |= NPP_B_MUTE;
 
 	/* DualSense Edge extras. Mainline Linux does not decode these; the bit
 	 * positions below are the community documented layout and are worth
 	 * re-checking with the diagnostic dump on an actual Edge. */
-	if (b2 & 0x10) buttons |= DS45_B_FN_L;
-	if (b2 & 0x20) buttons |= DS45_B_FN_R;
-	if (b2 & 0x40) buttons |= DS45_B_PADDLE_L;
-	if (b2 & 0x80) buttons |= DS45_B_PADDLE_R;
+	if (b2 & 0x10) buttons |= NPP_B_FN_L;
+	if (b2 & 0x20) buttons |= NPP_B_FN_R;
+	if (b2 & 0x40) buttons |= NPP_B_PADDLE_L;
+	if (b2 & 0x80) buttons |= NPP_B_PADDLE_R;
 
 	return buttons;
 }
 
-void dualsense_decode_common(const uint8_t *c, ds45_state_t *st)
+void dualsense_decode_common(const uint8_t *c, npp_state_t *st)
 {
 	int i;
 	uint8_t status0, charge;
@@ -116,7 +116,7 @@ void dualsense_decode_common(const uint8_t *c, ds45_state_t *st)
 	st->sticks_valid = 1;
 }
 
-int dualsense_parse_bt_body(const uint8_t *buf, int len, ds45_state_t *st)
+int dualsense_parse_bt_body(const uint8_t *buf, int len, npp_state_t *st)
 {
 	if (!st)
 		return -1;

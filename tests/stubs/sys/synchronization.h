@@ -1,8 +1,8 @@
 /* Host-test replacement for the SDK's <sys/synchronization.h>: just the mutex
  * calls the plugin uses. The fakes in tests/fakes.c track the lock depth so a
  * test can assert that every lock is released and never taken twice. */
-#ifndef DS45_TEST_SYNCHRONIZATION_H
-#define DS45_TEST_SYNCHRONIZATION_H
+#ifndef NPP_TEST_SYNCHRONIZATION_H
+#define NPP_TEST_SYNCHRONIZATION_H
 #include <stdint.h>
 
 #ifndef CELL_OK

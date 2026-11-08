@@ -1,4 +1,4 @@
-/* SOURCES: lv2.c kernel.c */
+/* SOURCES: lv2.c kernel.c paths.c */
 #include <stdint.h>
 #include <string.h>
 #include "fakes.h"
@@ -8,8 +8,8 @@
 /* Synthetic image only: hand-encoded PPC64 instruction words, no kernel
  * bytes. Every test ends with fake_lv2_out_of_bounds == 0. */
 
-#define B     DS45_LV2_BASE
-#define END   DS45_LV2_BOUND
+#define B     NPP_LV2_BASE
+#define END   NPP_LV2_BOUND
 #define FUNC  (B + 0x200000)
 #define OPD   (B + 0x300000)
 #define TOC   0x800000000034FBB0ULL
@@ -25,12 +25,12 @@
 #define ADDI     0x386900E8u   /* addi r3,r9,0xE8 */
 #define ADDI_NEG 0x3869FFE8u   /* addi r3,r9,-0x18 */
 
-static const ds45_insn_match_t pat_insns[] = {
-	DS45_INSN_LD_FROM_R2,
+static const npp_insn_match_t pat_insns[] = {
+	NPP_INSN_LD_FROM_R2,
 	{ 0xFFFFFFFFu, LD_R9 },
 	{ 0xFFFF0000u, 0x38690000u },     /* addi r3,r9,any */
 };
-static const ds45_scan_pattern_t pat = { pat_insns, 3, 0, 2 };
+static const npp_scan_pattern_t pat = { pat_insns, 3, 0, 2 };
 
 static void put32(uint64_t a, uint32_t w)
 {
@@ -73,19 +73,19 @@ static void put_opd(uint64_t at, uint64_t entry, uint64_t toc)
 /* Expected fingerprint, read straight from the fake (not via lv2.c). */
 static uint64_t hash_at(uint64_t a)
 {
-	uint8_t buf[DS45_FP_LEN];
+	uint8_t buf[NPP_FP_LEN];
 	int i, b;
-	for (i = 0; i < DS45_FP_LEN; i += 8) {
+	for (i = 0; i < NPP_FP_LEN; i += 8) {
 		uint64_t q = fake_syscall(6, a + (uint64_t)i, 0, 0, 0);
 		for (b = 0; b < 8; b++)
 			buf[i + b] = (uint8_t)(q >> (56 - 8 * b));
 	}
-	return ds45_fnv1a64(buf, DS45_FP_LEN);
+	return npp_fnv1a64(buf, NPP_FP_LEN);
 }
 
 static int expect_result(uint64_t fp_addr, uint64_t slot, uint32_t off)
 {
-	ds45_kernel_t out;
+	npp_kernel_t out;
 	uint64_t h = hash_at(fp_addr);
 
 	memset(&out, 0, sizeof(out));
@@ -103,7 +103,7 @@ static int expect_result(uint64_t fp_addr, uint64_t slot, uint32_t off)
 
 static int expect_fail(void)
 {
-	ds45_kernel_t out;
+	npp_kernel_t out;
 	unsigned char *p = (unsigned char *)&out;
 	size_t i;
 
@@ -309,16 +309,16 @@ static int test_scan_hit_cap(void)
 {
 	int i;
 
-	/* DS45_SCAN_MAX_HITS identical hits under one prologue: one result */
+	/* NPP_SCAN_MAX_HITS identical hits under one prologue: one result */
 	fake_reset_all();
 	put_func(FUNC, FUNC + 0x10, LD_TOC, ADDI);
-	for (i = 1; i < DS45_SCAN_MAX_HITS; i++)
+	for (i = 1; i < NPP_SCAN_MAX_HITS; i++)
 		put_pattern(FUNC + 0x10 + 0x10 * (uint64_t)i, LD_TOC, ADDI);
 	put_opd(OPD, FUNC, TOC);
 	EXPECT(expect_result(FUNC + 0x10, SLOT, 0xE8));
 
 	/* one more overflows the hit table: ambiguous */
-	put_pattern(FUNC + 0x10 + 0x10 * (uint64_t)DS45_SCAN_MAX_HITS, LD_TOC, ADDI);
+	put_pattern(FUNC + 0x10 + 0x10 * (uint64_t)NPP_SCAN_MAX_HITS, LD_TOC, ADDI);
 	EXPECT(expect_fail());
 	return 0;
 }
@@ -362,19 +362,19 @@ static int test_scan_never_leaves_window(void)
 
 static int test_scan_empty_pattern(void)
 {
-	static const ds45_scan_pattern_t empty = { pat_insns, 0, 0, 0 };
-	static const ds45_scan_pattern_t too_long = { pat_insns, DS45_SCAN_MAX_INSNS + 1, 0, 2 };
-	static const ds45_scan_pattern_t bad_ld = { pat_insns, 3, 3, 2 };
-	static const ds45_scan_pattern_t bad_off = { pat_insns, 3, 0, -1 };
-	static const ds45_scan_pattern_t no_insns = { NULL, 3, 0, 2 };
-	ds45_kernel_t out;
+	static const npp_scan_pattern_t empty = { pat_insns, 0, 0, 0 };
+	static const npp_scan_pattern_t too_long = { pat_insns, NPP_SCAN_MAX_INSNS + 1, 0, 2 };
+	static const npp_scan_pattern_t bad_ld = { pat_insns, 3, 3, 2 };
+	static const npp_scan_pattern_t bad_off = { pat_insns, 3, 0, -1 };
+	static const npp_scan_pattern_t no_insns = { NULL, 3, 0, 2 };
+	npp_kernel_t out;
 
 	fake_reset_all();
 	put_func(FUNC, FUNC + 0x40, LD_TOC, ADDI);   /* a scannable image */
 	put_opd(OPD, FUNC, TOC);
 
-	CHECK(ds45_scan_pattern.count == 0);         /* real pattern: Task 11 */
-	CHECK(kernel_scan(&ds45_scan_pattern, &out) == -1);
+	CHECK(npp_scan_pattern.count == 0);         /* real pattern: Task 11 */
+	CHECK(kernel_scan(&npp_scan_pattern, &out) == -1);
 	CHECK(kernel_scan(&empty, &out) == -1);
 	CHECK(kernel_scan(&too_long, &out) == -1);
 	CHECK(kernel_scan(&bad_ld, &out) == -1);

@@ -1,5 +1,5 @@
 /*
- * DS45PAD - diagnostics.
+ * NPP - diagnostics.
  *
  * The Bluetooth passthrough path has one genuinely unknown: what, if
  * anything, the firmware's generic HID driver does with the buttons a
@@ -7,7 +7,7 @@
  * answered from documentation, only measured on the console.
  *
  * Turning DIAG on writes every pad code that changes to
- * /dev_hdd0/tmp/ds45pad_diag.txt, so pressing a button and reading the file
+ * /dev_hdd0/tmp/nativepadps3_diag.txt, so pressing a button and reading the file
  * tells you exactly which code and bit to put in BT_PS_CODE / BT_PS_MASK.
  *
  * cellPadGetRawData() would be worth sampling too, since it can carry codes
@@ -19,7 +19,7 @@
 #include <cell/cell_fs.h>
 #include <cell/pad.h>
 
-#include "ds45pad.h"
+#include "npp.h"
 
 /* Writes are buffered and only committed when the buffer is nearly full.
  *
@@ -37,8 +37,8 @@ static int  diag_len;
 static int  diag_written;
 static int  diag_full;
 
-static uint16_t last_cooked[DS45_MAX_PORT_NUM][64];
-static int      seeded[DS45_MAX_PORT_NUM];
+static uint16_t last_cooked[NPP_MAX_PORT_NUM][64];
+static int      seeded[NPP_MAX_PORT_NUM];
 
 /* In the in-game build diag_sticks() runs on the game's own pad-reading
  * threads, so this buffer has more than one writer - and none of it was written
@@ -72,7 +72,7 @@ static void commit(void)
 	if (diag_len <= 0)
 		return;
 
-	if (cellFsOpen(DS45_DIAG_FILE,
+	if (cellFsOpen(NPP_DIAG_FILE,
 	               CELL_FS_O_WRONLY | CELL_FS_O_CREAT | CELL_FS_O_APPEND,
 	               &fd, NULL, 0) == CELL_FS_SUCCEEDED) {
 		cellFsWrite(fd, diag_buf, (uint64_t)diag_len, &written);
@@ -168,8 +168,8 @@ void diag_dump_ports(void)
 	put(" conectados="); put_dec((int)info.now_connect);
 	put("\n");
 
-	for (port = 0; port < DS45_MAX_PORT_NUM; port++) {
-		if (!(info.port_status[port] & DS45_STATUS_CONNECTED))
+	for (port = 0; port < NPP_MAX_PORT_NUM; port++) {
+		if (!(info.port_status[port] & NPP_STATUS_CONNECTED))
 			continue;
 
 		put("porta "); put_dec(port);
@@ -177,7 +177,7 @@ void diag_dump_ports(void)
 		put("  setting=0x");  put_hex(info.port_setting[port], 4);
 		put("  cap=0x");      put_hex(info.device_capability[port], 4);
 		put("  type=");       put_dec((int)info.device_type[port]);
-		put(info.device_capability[port] & DS45_CAP_PS3_CONFORMITY
+		put(info.device_capability[port] & NPP_CAP_PS3_CONFORMITY
 		    ? "  [CONFORME]" : "  [GENERICO]");
 		put("\n");
 	}
@@ -222,7 +222,7 @@ static void dump_changes(const char *tag, int port, const CellPadData *data,
 void diag_observe(int port, const void *sample)
 {
 	const CellPadData *data = (const CellPadData *)sample;
-	if (!data || port < 0 || port >= DS45_MAX_PORT_NUM || data->len <= 0)
+	if (!data || port < 0 || port >= NPP_MAX_PORT_NUM || data->len <= 0)
 		return;
 	if (!diag_claim())
 		return;
@@ -242,14 +242,14 @@ void diag_flush(void)
 /* What the plugin itself decoded from the controller, before any of it reaches
  * libpad. This is the only way to tell "the controller never reported the
  * button" apart from "we reported it and the system ignored it". */
-void diag_state(const ds45_pad_t *pad)
+void diag_state(const npp_pad_t *pad)
 {
-	static uint32_t last[DS45_MAX_PADS];
-	static int seeded_state[DS45_MAX_PADS];
+	static uint32_t last[NPP_MAX_PADS];
+	static int seeded_state[NPP_MAX_PADS];
 	int slot = (int)(pad - g_pads);
 	uint32_t b;
 
-	if (slot < 0 || slot >= DS45_MAX_PADS || !pad->state.valid)
+	if (slot < 0 || slot >= NPP_MAX_PADS || !pad->state.valid)
 		return;
 
 	b = pad->state.buttons;
@@ -264,11 +264,11 @@ void diag_state(const ds45_pad_t *pad)
 
 	put("btn slot "); put_dec(slot);
 	put(" = 0x"); put_hex(b, 8);
-	if (b & DS45_B_PS)       put("  PS");
-	if (b & DS45_B_TOUCHPAD) put("  TOUCH");
-	if (b & DS45_B_MUTE)     put("  MUTE");
-	if (b & DS45_B_SHARE)    put("  SHARE");
-	if (b & DS45_B_OPTIONS)  put("  OPTIONS");
+	if (b & NPP_B_PS)       put("  PS");
+	if (b & NPP_B_TOUCHPAD) put("  TOUCH");
+	if (b & NPP_B_MUTE)     put("  MUTE");
+	if (b & NPP_B_SHARE)    put("  SHARE");
+	if (b & NPP_B_OPTIONS)  put("  OPTIONS");
 	put("\n");
 	flush();
 	diag_release();
@@ -288,7 +288,7 @@ void diag_state(const ds45_pad_t *pad)
 #define DIAG_STICK_EVERY  5     /* keep one sample in this many         */
 
 void diag_sticks(uint8_t in_x, uint8_t in_y, uint8_t out_x, uint8_t out_y,
-                 const ds45_axis_cal_t *cx, const ds45_axis_cal_t *cy)
+                 const npp_axis_cal_t *cx, const npp_axis_cal_t *cy)
 {
 	static int skip;
 	int dx = (int)in_x - 128;
@@ -329,17 +329,17 @@ void diag_watch(void)
 	if (!diag_claim())
 		return;
 
-	for (port = 0; port < DS45_MAX_PORT_NUM; port++) {
+	for (port = 0; port < NPP_MAX_PORT_NUM; port++) {
 		int slot, bound = 0;
-		if (!(info.port_status[port] & DS45_STATUS_CONNECTED))
+		if (!(info.port_status[port] & NPP_STATUS_CONNECTED))
 			continue;
 
 		/* Skip our own virtual pads: watching those would just echo back
 		 * whatever we injected a moment ago. */
-		if (info.device_type[port] == DS45_DEV_TYPE_LDD)
+		if (info.device_type[port] == NPP_DEV_TYPE_LDD)
 			continue;
-		for (slot = 0; slot < DS45_MAX_PADS; slot++)
-			if (g_pads[slot].in_use && g_pads[slot].link == DS45_LINK_BT &&
+		for (slot = 0; slot < NPP_MAX_PADS; slot++)
+			if (g_pads[slot].in_use && g_pads[slot].link == NPP_LINK_BT &&
 			    g_pads[slot].src_port == port)
 				bound = 1;
 		if (bound)

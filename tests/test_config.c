@@ -2,37 +2,37 @@
 #include <stdint.h>
 #include <string.h>
 #include "fakes.h"
-#include "ds45pad.h"
+#include "npp.h"
 
 /* The configuration file's ENABLE_SHIM key, in a release-shaped build (neither
- * DS45_DEBUG nor DS45_GAME). Synthetic config text only.
+ * NPP_DEBUG nor NPP_GAME). Synthetic config text only.
  *
  * ENABLE_SHIM is the safety gate in front of the DS3-route kernel shim: the shim
  * patches live kernel code, so a deployed plugin must never install it on its own.
- * It is off unless ds45pad.txt says ENABLE_SHIM = 1, which is also the way out of a
+ * It is off unless nativepadps3.txt says ENABLE_SHIM = 1, which is also the way out of a
  * hang - remove the line and reboot. */
 
-static ds45_config_t cfg_from(const char *text)
+static npp_config_t cfg_from(const char *text)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
 	fake_reset_all();
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	fake_file_set("/c.txt", text);
-	ds45_config_load(&c, "/c.txt");
+	npp_config_load(&c, "/c.txt");
 	return c;
 }
 
 static int test_shim_is_off_by_default(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	CHECK(c.enable_shim == 0);
 
 	/* no config file at all: the defaults stand */
 	fake_reset_all();
-	CHECK(ds45_config_load(&c, "/absent.txt") != 0);
+	CHECK(npp_config_load(&c, "/absent.txt") != 0);
 	CHECK(c.enable_shim == 0);
 
 	/* a file that never mentions it, however much else it sets, or that only
@@ -46,7 +46,7 @@ static int test_shim_is_off_by_default(void)
 
 static int test_shim_is_enabled_by_one(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
 	c = cfg_from("ENABLE_SHIM = 1\n");
 	CHECK(c.enable_shim == 1);
@@ -60,14 +60,14 @@ static int test_shim_is_enabled_by_one(void)
 	/* its neighbours still parse */
 	c = cfg_from("MODE = BT\nENABLE_SHIM = 1\nNOTIFY = 0\n");
 	CHECK(c.enable_shim == 1);
-	CHECK(c.mode == DS45_MODE_BT);
+	CHECK(c.mode == NPP_MODE_BT);
 	CHECK(c.notify == 0);
 	return 0;
 }
 
 static int test_shim_can_be_switched_back_off(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
 	c = cfg_from("ENABLE_SHIM = 0\n");
 	CHECK(c.enable_shim == 0);
@@ -82,7 +82,7 @@ static int test_shim_can_be_switched_back_off(void)
 /* Anything that is not a number leaves the gate where it was: shut. */
 static int test_shim_ignores_what_it_cannot_parse(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
 	c = cfg_from("ENABLE_SHIM = yes\n");
 	CHECK(c.enable_shim == 0);
@@ -98,7 +98,7 @@ static int test_shim_ignores_what_it_cannot_parse(void)
 /* ENABLE (the plugin's master switch) and ENABLE_SHIM are different keys. */
 static int test_shim_key_is_independent_of_enable(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
 	c = cfg_from("ENABLE = 0\n");
 	CHECK(c.enable == 0);
@@ -119,9 +119,9 @@ static int test_shim_key_is_independent_of_enable(void)
  * that is not a number leaves it off. */
 static int test_shim_inline_pid_key(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	CHECK(c.shim_inline_pid == 0);
 	c = cfg_from("ENABLE_SHIM = 1\n");
 	CHECK(c.shim_inline_pid == 0);
@@ -144,9 +144,9 @@ static int test_shim_inline_pid_key(void)
  * number leaves it off - exactly like ENABLE_SHIM / SHIM_INLINE_PID. */
 static int test_probe_exec_key(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	CHECK(c.probe_exec == 0);
 	c = cfg_from("ENABLE_SHIM = 1\n");
 	CHECK(c.probe_exec == 0);
@@ -170,9 +170,9 @@ static int test_probe_exec_key(void)
  * is on, and anything that is not a number leaves the default (on) in place. */
 static int test_shim_input_hook_key(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	CHECK(c.shim_input_hook == 1);
 	c = cfg_from("ENABLE_SHIM = 1\n");
 	CHECK(c.shim_input_hook == 1);                         /* never mentioned: default */
@@ -201,9 +201,9 @@ static int test_shim_input_hook_key(void)
 
 static int test_shim_event_enable_hook_keys(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	CHECK(c.shim_event_hook == 1 && c.shim_enable_hook == 1);   /* both default on */
 	c = cfg_from("SHIM_EVENT_HOOK = 0\n");
 	CHECK(c.shim_event_hook == 0 && c.shim_enable_hook == 1);   /* independent */
@@ -223,9 +223,9 @@ static int test_shim_event_enable_hook_keys(void)
  * by default; 0 turns it off, any other number is on, junk leaves the default. */
 static int test_shim_stable_id_key(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	CHECK(c.shim_stable_id == 1);
 	c = cfg_from("ENABLE_SHIM = 1\n");
 	CHECK(c.shim_stable_id == 1);
@@ -250,9 +250,9 @@ static int test_shim_stable_id_key(void)
  * the mode is clamped to 0..2 and junk leaves either default. */
 static int test_shim_output_keys(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	CHECK(c.shim_output_hook == 1);
 	CHECK(c.shim_output_mode == 2);
 	c = cfg_from("ENABLE_SHIM = 1\n");
@@ -298,9 +298,9 @@ static int test_shim_output_keys(void)
  * and junk leaves either default. */
 static int test_shim_poweroff_keys(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	CHECK(c.shim_poweroff_hook == 1);
 	CHECK(c.shim_poweroff_mode == 1);
 	c = cfg_from("ENABLE_SHIM = 1\n");

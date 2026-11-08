@@ -1,8 +1,8 @@
 /* Host-test replacement for the SDK's <cell/cell_fs.h>, just enough for util.c
- * to compile. Tests that link util.c do it for ds45_crc32 and the remap
+ * to compile. Tests that link util.c do it for npp_crc32 and the remap
  * helpers; none of them touches the file system, so every call here fails. */
-#ifndef DS45_TEST_CELL_FS_H
-#define DS45_TEST_CELL_FS_H
+#ifndef NPP_TEST_CELL_FS_H
+#define NPP_TEST_CELL_FS_H
 #include <stdint.h>
 
 #define CELL_FS_SUCCEEDED 0

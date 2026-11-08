@@ -1,5 +1,5 @@
 /*
- * DS45PAD kernel shim - linker script for the flat, position-independent blob.
+ * NPP kernel shim - linker script for the flat, position-independent blob.
  *
  * The blob is linked at address 0: every absolute 64-bit word the link leaves
  * behind (the .opd descriptors' entry and TOC words, and the .toc entries that

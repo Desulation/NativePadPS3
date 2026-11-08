@@ -8,9 +8,9 @@ boot**. Este documento cobre só as diferenças; o passo a passo detalhado está
 
 ## O que é igual
 
-- Os arquivos vão para `/dev_hdd0/plugins/ds45pad/`
+- Os arquivos vão para `/dev_hdd0/plugins/nativepadps3/`
 - O webMAN MOD entra no `boot_plugins.txt`
-- O `ds45pad_game.sprx` é carregado pelo PS3MAPI com o jogo rodando
+- O `nativepadps3_game.sprx` é carregado pelo PS3MAPI com o jogo rodando
 - A assinatura do meu `.sprx` (revisão de chave `0A`) serve nos dois
 
 ## O que muda
@@ -61,13 +61,13 @@ monte o pendrive antes de testar.
 
 ```
 /dev_hdd0/plugins/webftp_server_cobra_ps3mapi.sprx
-/dev_hdd0/plugins/ds45pad/ds45pad_vsh.sprx
+/dev_hdd0/plugins/nativepadps3/nativepadps3_vsh.sprx
 ```
 
 A segunda linha é **opcional** — serve só para o botão PS funcionar no XMB. Se
 não fizer diferença para você, deixe só o webMAN: menos peças móveis.
 
-E no `ds45pad.txt`, `INSERT_INTO_GAME = 0`. Ligado, ele impede apps de carregar,
+E no `nativepadps3.txt`, `INSERT_INTO_GAME = 0`. Ligado, ele impede apps de carregar,
 e não é mais necessário — a compatibilidade vem do hook em jogo.
 
 ---
@@ -75,7 +75,7 @@ e não é mais necessário — a compatibilidade vem do hook em jogo.
 ## Uma vantagem que o CFW tem
 
 Com **kernel DEX** e EBOOT convertido para debug, existe a possibilidade de
-carregar o `ds45pad_game.sprx` automaticamente no boot do jogo, em vez de pelo
+carregar o `nativepadps3_game.sprx` automaticamente no boot do jogo, em vez de pelo
 PS3MAPI a cada vez. É o mecanismo que o PS3xPAD documenta como
 `AUTO_GAME_LOAD`.
 

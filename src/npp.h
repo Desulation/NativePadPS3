@@ -1,5 +1,5 @@
 /*
- * DS45PAD - Full DualShock 4 / DualSense compatibility plugin for PlayStation 3
+ * NPP - Full DualShock 4 / DualSense compatibility plugin for PlayStation 3
  *
  * Shared types, constants and module-wide declarations.
  *
@@ -10,35 +10,48 @@
  *
  * Licensed under GPLv2 - see LICENSE.
  */
-#ifndef DS45PAD_H
-#define DS45PAD_H
+#ifndef NPP_H
+#define NPP_H
 
 #include <stdint.h>
 #include <stddef.h>
 #include <cell/pad.h>   /* CellPadData in the VSH detour prototypes below */
 #include "report_queue.h"
-#include "ds45_state.h" /* ds45_state_t, DS45_B_*, ds45_map_t, DualSense layout */
-#include "sixaxis.h"    /* DS45_SENSOR_CENTER, sixaxis_from_accel/gyro */
+#include "npp_state.h" /* npp_state_t, NPP_B_*, npp_map_t, DualSense layout */
+#include "sixaxis.h"    /* NPP_SENSOR_CENTER, sixaxis_from_accel/gyro */
 
-#ifdef DS45_DEBUG
-#define DS45PAD_VERSION "1.0.1-ps-usb-candidate-debug"
+#ifdef NPP_DEBUG
+#define NPP_VERSION "1.0.1-ps-usb-candidate-debug"
 #else
-#define DS45PAD_VERSION "1.0.1-ps-usb-candidate"
+#define NPP_VERSION "1.0.1-ps-usb-candidate"
 #endif
 
 /* The LV2 dumper (lv2dump.c): debug builds of the VSH plugin only. Nothing of
  * it - code, config key, file names, toast - exists in release or game builds. */
-#if defined(DS45_DEBUG) && !defined(DS45_GAME)
-#define DS45_LV2DUMP 1
+#if defined(NPP_DEBUG) && !defined(NPP_GAME)
+#define NPP_LV2DUMP 1
 #endif
 
-/* Where the plugin looks for its data files. */
-#define DS45_DIR          "/dev_hdd0/plugins/ds45pad"
-#define DS45_CONFIG_FILE  DS45_DIR "/ds45pad.txt"
-#define DS45_DEVICE_FILE  DS45_DIR "/ds45pad_devices.txt"
-#define DS45_CAL_FILE     DS45_DIR "/ds45pad_cal.txt"
-#define DS45_DIAG_FILE    "/dev_hdd0/tmp/ds45pad_diag.txt"
-#define DS45_BOOT_FILE    "/dev_hdd0/tmp/ds45pad_boot.txt"
+/* Where the plugin looks for its data files (paths.c). The folder is chosen
+ * once, by npp_paths_init() at plugin start:
+ *   1. NPP_DATADIR_NEW, if its config file exists;
+ *   2. else the legacy folder (old name, old file names), if its config exists;
+ *   3. else NPP_DATADIR_NEW.
+ * npp_path() never probes and returns the new folder's file before init; an
+ * out-of-range kind gives "". */
+#define NPP_DATADIR_NEW "/dev_hdd0/plugins/nativepadps3"
+typedef enum {
+	NPP_PATH_CONFIG = 0,
+	NPP_PATH_DEVICES,
+	NPP_PATH_CAL,
+	NPP_PATH_KERNEL_CACHE,
+	NPP_PATH_COUNT
+} npp_path_kind_t;
+void        npp_paths_init(void);
+const char *npp_path(npp_path_kind_t kind);
+
+#define NPP_DIAG_FILE   "/dev_hdd0/tmp/nativepadps3_diag.txt"
+#define NPP_BOOT_FILE    "/dev_hdd0/tmp/nativepadps3_boot.txt"
 
 /* ------------------------------------------------------------------------ */
 /* libpad constants                                                          */
@@ -53,107 +66,107 @@
 /* Deliberately not named CELL_PAD_MAX_PORT_NUM: the SDK may declare that as
  * an enumerator rather than a macro, and shadowing it with a #define would
  * depend on header include order to stay harmless. */
-#define DS45_MAX_PORT_NUM       7
+#define NPP_MAX_PORT_NUM       7
 
 /* Indices into CellPadData.button[] */
-#define DS45_BTN_LDD            0   /* LDD-only extension word          */
-#define DS45_BTN_DIGITAL1       2
-#define DS45_BTN_DIGITAL2       3
-#define DS45_BTN_ANALOG_RIGHT_X 4
-#define DS45_BTN_ANALOG_RIGHT_Y 5
-#define DS45_BTN_ANALOG_LEFT_X  6
-#define DS45_BTN_ANALOG_LEFT_Y  7
-#define DS45_BTN_PRESS_RIGHT    8
-#define DS45_BTN_PRESS_LEFT     9
-#define DS45_BTN_PRESS_UP       10
-#define DS45_BTN_PRESS_DOWN     11
-#define DS45_BTN_PRESS_TRIANGLE 12
-#define DS45_BTN_PRESS_CIRCLE   13
-#define DS45_BTN_PRESS_CROSS    14
-#define DS45_BTN_PRESS_SQUARE   15
-#define DS45_BTN_PRESS_L1       16
-#define DS45_BTN_PRESS_R1       17
-#define DS45_BTN_PRESS_L2       18
-#define DS45_BTN_PRESS_R2       19
-#define DS45_BTN_SENSOR_X       20
-#define DS45_BTN_SENSOR_Y       21
-#define DS45_BTN_SENSOR_Z       22
-#define DS45_BTN_SENSOR_G       23
+#define NPP_BTN_LDD            0   /* LDD-only extension word          */
+#define NPP_BTN_DIGITAL1       2
+#define NPP_BTN_DIGITAL2       3
+#define NPP_BTN_ANALOG_RIGHT_X 4
+#define NPP_BTN_ANALOG_RIGHT_Y 5
+#define NPP_BTN_ANALOG_LEFT_X  6
+#define NPP_BTN_ANALOG_LEFT_Y  7
+#define NPP_BTN_PRESS_RIGHT    8
+#define NPP_BTN_PRESS_LEFT     9
+#define NPP_BTN_PRESS_UP       10
+#define NPP_BTN_PRESS_DOWN     11
+#define NPP_BTN_PRESS_TRIANGLE 12
+#define NPP_BTN_PRESS_CIRCLE   13
+#define NPP_BTN_PRESS_CROSS    14
+#define NPP_BTN_PRESS_SQUARE   15
+#define NPP_BTN_PRESS_L1       16
+#define NPP_BTN_PRESS_R1       17
+#define NPP_BTN_PRESS_L2       18
+#define NPP_BTN_PRESS_R2       19
+#define NPP_BTN_SENSOR_X       20
+#define NPP_BTN_SENSOR_Y       21
+#define NPP_BTN_SENSOR_Z       22
+#define NPP_BTN_SENSOR_G       23
 
 /* A DS3 in press+sensor mode reports 24 codes. */
-#define DS45_PAD_LEN            24
+#define NPP_PAD_LEN            24
 
-/* button[DS45_BTN_DIGITAL1] bits */
-#define DS45_CTRL_SELECT        0x0001
-#define DS45_CTRL_L3            0x0002
-#define DS45_CTRL_R3            0x0004
-#define DS45_CTRL_START         0x0008
-#define DS45_CTRL_UP            0x0010
-#define DS45_CTRL_RIGHT         0x0020
-#define DS45_CTRL_DOWN          0x0040
-#define DS45_CTRL_LEFT          0x0080
-#define DS45_CTRL_PS            0x0100  /* PS button, digital1 extension */
+/* button[NPP_BTN_DIGITAL1] bits */
+#define NPP_CTRL_SELECT        0x0001
+#define NPP_CTRL_L3            0x0002
+#define NPP_CTRL_R3            0x0004
+#define NPP_CTRL_START         0x0008
+#define NPP_CTRL_UP            0x0010
+#define NPP_CTRL_RIGHT         0x0020
+#define NPP_CTRL_DOWN          0x0040
+#define NPP_CTRL_LEFT          0x0080
+#define NPP_CTRL_PS            0x0100  /* PS button, digital1 extension */
 
-/* button[DS45_BTN_DIGITAL2] bits */
-#define DS45_CTRL_L2            0x0001
-#define DS45_CTRL_R2            0x0002
-#define DS45_CTRL_L1            0x0004
-#define DS45_CTRL_R1            0x0008
-#define DS45_CTRL_TRIANGLE      0x0010
-#define DS45_CTRL_CIRCLE        0x0020
-#define DS45_CTRL_CROSS         0x0040
-#define DS45_CTRL_SQUARE        0x0080
+/* button[NPP_BTN_DIGITAL2] bits */
+#define NPP_CTRL_L2            0x0001
+#define NPP_CTRL_R2            0x0002
+#define NPP_CTRL_L1            0x0004
+#define NPP_CTRL_R1            0x0008
+#define NPP_CTRL_TRIANGLE      0x0010
+#define NPP_CTRL_CIRCLE        0x0020
+#define NPP_CTRL_CROSS         0x0040
+#define NPP_CTRL_SQUARE        0x0080
 
-/* button[DS45_BTN_LDD] bits - only meaningful for LDD pads. This is the one
+/* button[NPP_BTN_LDD] bits - only meaningful for LDD pads. This is the one
  * that actually makes the XMB react to the PS button. */
-#define DS45_CTRL_LDD_PS        0x0001
+#define NPP_CTRL_LDD_PS        0x0001
 
 /* Device capability bits reported through cellPadGetInfo2(). Games that
  * "require an official DualShock 3" are almost always testing PS3_CONFORMITY. */
-#define DS45_CAP_PS3_CONFORMITY 0x0001
-#define DS45_CAP_PRESS_MODE     0x0002
-#define DS45_CAP_SENSOR_MODE    0x0004
-#define DS45_CAP_HP_ANALOG      0x0008
-#define DS45_CAP_ACTUATOR       0x0010
+#define NPP_CAP_PS3_CONFORMITY 0x0001
+#define NPP_CAP_PRESS_MODE     0x0002
+#define NPP_CAP_SENSOR_MODE    0x0004
+#define NPP_CAP_HP_ANALOG      0x0008
+#define NPP_CAP_ACTUATOR       0x0010
 
-#define DS45_SETTING_PRESS_ON   0x0002
-#define DS45_SETTING_SENSOR_ON  0x0004
+#define NPP_SETTING_PRESS_ON   0x0002
+#define NPP_SETTING_SENSOR_ON  0x0004
 
-#define DS45_STATUS_CONNECTED       0x0001
-#define DS45_STATUS_ASSIGN_CHANGES  0x0002
+#define NPP_STATUS_CONNECTED       0x0001
+#define NPP_STATUS_ASSIGN_CHANGES  0x0002
 
-#define DS45_DEV_TYPE_STANDARD  0
-#define DS45_DEV_TYPE_LDD       5
+#define NPP_DEV_TYPE_STANDARD  0
+#define NPP_DEV_TYPE_LDD       5
 
-/* DS45_STICK_CENTER (ds45_state.h) and DS45_SENSOR_CENTER (sixaxis.h), the
+/* NPP_STICK_CENTER (npp_state.h) and NPP_SENSOR_CENTER (sixaxis.h), the
  * neutral values of a DS3 at rest, are in headers the kernel shim builds. */
 
 /* ------------------------------------------------------------------------ */
 /* Controller models                                                         */
 /* ------------------------------------------------------------------------ */
 
-#define DS45_VID_SONY           0x054c
-#define DS45_PID_DS4_V1         0x05c4  /* CUH-ZCT1 */
-#define DS45_PID_DS4_V2         0x09cc  /* CUH-ZCT2 */
-#define DS45_PID_DS4_DONGLE     0x0ba0  /* DUALSHOCK 4 USB Wireless Adaptor */
-#define DS45_PID_DUALSENSE      0x0ce6  /* CFI-ZCT1 */
-#define DS45_PID_DUALSENSE_EDGE 0x0df2  /* CFI-ZCT1W */
+#define NPP_VID_SONY           0x054c
+#define NPP_PID_DS4_V1         0x05c4  /* CUH-ZCT1 */
+#define NPP_PID_DS4_V2         0x09cc  /* CUH-ZCT2 */
+#define NPP_PID_DS4_DONGLE     0x0ba0  /* DUALSHOCK 4 USB Wireless Adaptor */
+#define NPP_PID_DUALSENSE      0x0ce6  /* CFI-ZCT1 */
+#define NPP_PID_DUALSENSE_EDGE 0x0df2  /* CFI-ZCT1W */
 
 typedef enum {
-	DS45_MODEL_UNKNOWN = 0,
-	DS45_MODEL_DS4,          /* DualShock 4, either revision + dongle */
-	DS45_MODEL_DUALSENSE,    /* DualSense and DualSense Edge          */
-} ds45_model_t;
+	NPP_MODEL_UNKNOWN = 0,
+	NPP_MODEL_DS4,          /* DualShock 4, either revision + dongle */
+	NPP_MODEL_DUALSENSE,    /* DualSense and DualSense Edge          */
+} npp_model_t;
 
 typedef enum {
-	DS45_LINK_USB = 0,
-	DS45_LINK_BT,            /* reports carry the BT framing + CRC32 */
-} ds45_link_t;
+	NPP_LINK_USB = 0,
+	NPP_LINK_BT,            /* reports carry the BT framing + CRC32 */
+} npp_link_t;
 
 /* ------------------------------------------------------------------------ */
 /* Normalised controller state                                               */
 /*                                                                           */
-/* ds45_state_t, its DS45_B_* bits and ds45_map_t are in ds45_state.h, which */
+/* npp_state_t, its NPP_B_* bits and npp_map_t are in npp_state.h, which */
 /* has no SDK dependency so the kernel shim can build against it too. It is  */
 /* included at the top of this file.                                         */
 /* ------------------------------------------------------------------------ */
@@ -168,22 +181,22 @@ typedef struct {
 	uint8_t led_r, led_g, led_b;
 	uint8_t player;         /* 1..4, 0 = unassigned         */
 	uint8_t dirty;
-} ds45_output_t;
+} npp_output_t;
 
 /* ------------------------------------------------------------------------ */
 /* Configuration                                                             */
 /* ------------------------------------------------------------------------ */
 
 typedef enum {
-	DS45_MODE_AUTO = 0,   /* USB when cabled, otherwise BT passthrough */
-	DS45_MODE_USB,        /* USB only                                  */
-	DS45_MODE_BT,         /* internal-Bluetooth passthrough only       */
-} ds45_mode_t;
+	NPP_MODE_AUTO = 0,   /* USB when cabled, otherwise BT passthrough */
+	NPP_MODE_USB,        /* USB only                                  */
+	NPP_MODE_BT,         /* internal-Bluetooth passthrough only       */
+} npp_mode_t;
 
 typedef enum {
-	DS45_PRESSURE_DIGITAL = 0, /* held -> 255                            */
-	DS45_PRESSURE_RAMP,        /* held -> ramps up over PRESSURE_RAMP_MS */
-} ds45_pressure_t;
+	NPP_PRESSURE_DIGITAL = 0, /* held -> 255                            */
+	NPP_PRESSURE_RAMP,        /* held -> ramps up over PRESSURE_RAMP_MS */
+} npp_pressure_t;
 
 /* ------------------------------------------------------------------------ */
 /* Analog stick calibration                                                  */
@@ -195,46 +208,46 @@ typedef enum {
 /* module that only swings 0x14..0xEB still ends up producing full travel.    */
 /* ------------------------------------------------------------------------ */
 
-#define DS45_CAL_BUCKETS 16   /* histogram resolution: 256 / 16 = 16 units */
+#define NPP_CAL_BUCKETS 16   /* histogram resolution: 256 / 16 = 16 units */
 
 typedef struct {
 	uint8_t  min, max, ctr;
 	uint8_t  rest_cand;      /* candidate resting value being confirmed   */
 	uint16_t rest_hits;
 	uint16_t centre_budget;  /* samples left in which ctr may still move  */
-	uint8_t  hist[DS45_CAL_BUCKETS]; /* raw values seen this window       */
+	uint8_t  hist[NPP_CAL_BUCKETS]; /* raw values seen this window       */
 	uint16_t win_count;      /* samples into the current window           */
-} ds45_axis_cal_t;
+} npp_axis_cal_t;
 
 /* Axis order: LX, LY, RX, RY. */
-#define DS45_AXIS_LX 0
-#define DS45_AXIS_LY 1
-#define DS45_AXIS_RX 2
-#define DS45_AXIS_RY 3
-#define DS45_AXIS_NUM 4
+#define NPP_AXIS_LX 0
+#define NPP_AXIS_LY 1
+#define NPP_AXIS_RX 2
+#define NPP_AXIS_RY 3
+#define NPP_AXIS_NUM 4
 
 typedef struct {
-	ds45_axis_cal_t axis[DS45_AXIS_NUM];
+	npp_axis_cal_t axis[NPP_AXIS_NUM];
 	int             dirty;
-} ds45_stickcal_t;
+} npp_stickcal_t;
 
 typedef enum {
-	DS45_TOUCH_OFF = 0,
-	DS45_TOUCH_BUTTONS,   /* left/right halves act as two buttons */
-	DS45_TOUCH_RSTICK,    /* finger position drives right stick   */
-} ds45_touchmode_t;
+	NPP_TOUCH_OFF = 0,
+	NPP_TOUCH_BUTTONS,   /* left/right halves act as two buttons */
+	NPP_TOUCH_RSTICK,    /* finger position drives right stick   */
+} npp_touchmode_t;
 
 /* Substitute for the PS button when the transport cannot deliver a real one
  * (Bluetooth passthrough). The combination is swallowed, so the games never
  * see the buttons it is built from. */
 typedef enum {
-	DS45_PSCOMBO_NONE = 0,
-	DS45_PSCOMBO_SELECT_START,
-	DS45_PSCOMBO_L3_R3,
-} ds45_pscombo_t;
+	NPP_PSCOMBO_NONE = 0,
+	NPP_PSCOMBO_SELECT_START,
+	NPP_PSCOMBO_L3_R3,
+} npp_pscombo_t;
 
-/* ds45_map_t, the symbolic targets a physical control can be remapped onto
- * (DS45_MAP_*), is in ds45_state.h: the kernel shim honours two of the maps. */
+/* npp_map_t, the symbolic targets a physical control can be remapped onto
+ * (NPP_MAP_*), is in npp_state.h: the kernel shim honours two of the maps. */
 
 typedef struct {
 	/* Master switch. With this off the plugin loads, writes its boot trace
@@ -247,10 +260,10 @@ typedef struct {
 	int              insert_into_game;
 	int              allow_insert_combo; /* legacy service shortcut, opt-in */
 
-	ds45_mode_t      mode;
-	ds45_pressure_t  pressure;
+	npp_mode_t      mode;
+	npp_pressure_t  pressure;
 	uint32_t         pressure_ramp_ms;
-	ds45_touchmode_t touch_mode;
+	npp_touchmode_t touch_mode;
 
 	uint32_t poll_ms;          /* LDD injection period                    */
 	/* Hard limit on virtual pads. One by default: a single controller is the
@@ -293,11 +306,11 @@ typedef struct {
 	 * will only accept 0. */
 	uint32_t ldd_dev_type;
 
-	ds45_map_t map_touchpad;   /* touchpad click target                   */
-	ds45_map_t map_mute;       /* DualSense mute button target            */
-	ds45_map_t map_touch_left; /* touch zones when touch_mode = BUTTONS   */
-	ds45_map_t map_touch_right;
-	ds45_map_t map_fn_l, map_fn_r, map_paddle_l, map_paddle_r;
+	npp_map_t map_touchpad;   /* touchpad click target                   */
+	npp_map_t map_mute;       /* DualSense mute button target            */
+	npp_map_t map_touch_left; /* touch zones when touch_mode = BUTTONS   */
+	npp_map_t map_touch_right;
+	npp_map_t map_fn_l, map_fn_r, map_paddle_l, map_paddle_r;
 
 	/* Passthrough mode: which OEM port to read, -1 = auto-detect. */
 	int      bt_source_port;
@@ -306,7 +319,7 @@ typedef struct {
 	 * reported". Discovered with the diagnostic dump - docs/DIAGNOSTICO.md. */
 	int      bt_ps_code;
 	int      bt_ps_mask;
-	ds45_pscombo_t bt_ps_combo;
+	npp_pscombo_t bt_ps_combo;
 
 	/* In-game build only: answer cellPadGetInfo2 as a conformant DualShock 3
 	 * so a game that gates on device type accepts whatever pad is present. */
@@ -314,12 +327,12 @@ typedef struct {
 	/* Only for passthrough: raw USB ownership needs the full controller. */
 	int      ps_only;
 
-	int      diag;             /* write DS45_DIAG_FILE                    */
+	int      diag;             /* write NPP_DIAG_FILE                    */
 	int      notify;           /* show XMB notifications                  */
 	/* ENABLE_SHIM (0/1): install the DS3-route kernel shim (kshim.c) when the
 	 * plugin loads. Off by default. The shim patches live kernel code, and a build
 	 * that gets a patch wrong can hang the console, so a deployed plugin never
-	 * installs it on its own: ds45pad.txt has to say ENABLE_SHIM = 1. That is also
+	 * installs it on its own: nativepadps3.txt has to say ENABLE_SHIM = 1. That is also
 	 * the way out of a hang - remove the line (or set it to 0) and reboot. */
 	int      enable_shim;
 	/* SHIM_INLINE_PID (0/1, VSH builds only): with the shim installed, also
@@ -373,7 +386,7 @@ typedef struct {
 	 * DualSense off). Debug VSH builds on DEX 4.92 only, like the rest of the shim. */
 	int      shim_poweroff_hook;
 	int      shim_poweroff_mode;
-#ifdef DS45_LV2DUMP
+#ifdef NPP_LV2DUMP
 	int      dump_lv2;         /* DUMP_LV2: debug VSH builds only, see lv2dump.c */
 	uint32_t capture_off;      /* CAPTURE_LV2: LV2 offset to watch, 8-aligned  */
 	uint32_t capture_len;      /* CAPTURE_LEN: bytes, multiple of 8, 0 = off   */
@@ -381,23 +394,23 @@ typedef struct {
 	                            * nonzero = watch CAPTURE_LV2 bytes into the
 	                            * object it points to, 0 = off                 */
 #endif
-} ds45_config_t;
+} npp_config_t;
 
-extern ds45_config_t g_cfg;
+extern npp_config_t g_cfg;
 
-void ds45_config_defaults(ds45_config_t *c);
-int  ds45_config_load(ds45_config_t *c, const char *path);
+void npp_config_defaults(npp_config_t *c);
+int  npp_config_load(npp_config_t *c, const char *path);
 
 /* ------------------------------------------------------------------------ */
 /* Per-controller runtime slot                                               */
 /* ------------------------------------------------------------------------ */
 
-#define DS45_MAX_PADS 4
+#define NPP_MAX_PADS 4
 
-typedef struct ds45_pad {
+typedef struct npp_pad {
 	int           in_use;
-	ds45_model_t  model;
-	ds45_link_t   link;
+	npp_model_t  model;
+	npp_link_t   link;
 
 	/* USB plumbing (unused in passthrough mode). */
 	int32_t       dev_id;
@@ -409,7 +422,7 @@ typedef struct ds45_pad {
 
 	/* USB callbacks copy completed transfers into reports under usb_mutex.
 	 * The polling thread parses private copies in arrival order. */
-	ds45_state_t  state;
+	npp_state_t  state;
 	int           buf_idx;
 
 	/* libpad LDD handle and the port the system gave us. */
@@ -429,14 +442,14 @@ typedef struct ds45_pad {
 	int           inject_error;
 	int           ps_sent;
 	int           ps_seeded;
-	ds45_report_queue_t reports;
+	npp_report_queue_t reports;
 	int           usb_ps_suppressed;
 	int           usb_report_seen;
 	int           usb_error;
 	int           usb_error_reported;
 
-	ds45_output_t   out;
-	ds45_stickcal_t cal;
+	npp_output_t   out;
+	npp_stickcal_t cal;
 	uint32_t      press_ticks[16];   /* ramp accumulators, per press code */
 	uint32_t      out_seq;           /* DualSense Bluetooth sequence tag  */
 
@@ -444,45 +457,45 @@ typedef struct ds45_pad {
 	 * in the slot rather than on a stack. */
 	uint8_t       buf[2][80];
 	uint8_t       obuf[80];
-} ds45_pad_t;
+} npp_pad_t;
 
-extern ds45_pad_t g_pads[DS45_MAX_PADS];
+extern npp_pad_t g_pads[NPP_MAX_PADS];
 
 /* ------------------------------------------------------------------------ */
 /* Module interfaces                                                         */
 /* ------------------------------------------------------------------------ */
 
 /* ds4.c / dualsense.c - HID report translation. The DualSense field decoding
- * itself is ds_body.c (dualsense_parse_bt_body, declared in ds45_state.h). */
-int  ds4_parse(const uint8_t *buf, int len, ds45_link_t link, ds45_state_t *st);
-int  ds4_build_output(uint8_t *buf, int cap, ds45_link_t link,
-                      const ds45_output_t *out);
-int  dualsense_parse(const uint8_t *buf, int len, ds45_link_t link,
-                     ds45_state_t *st);
-int  dualsense_build_output(uint8_t *buf, int cap, ds45_link_t link,
-                            const ds45_output_t *out);
+ * itself is ds_body.c (dualsense_parse_bt_body, declared in npp_state.h). */
+int  ds4_parse(const uint8_t *buf, int len, npp_link_t link, npp_state_t *st);
+int  ds4_build_output(uint8_t *buf, int cap, npp_link_t link,
+                      const npp_output_t *out);
+int  dualsense_parse(const uint8_t *buf, int len, npp_link_t link,
+                     npp_state_t *st);
+int  dualsense_build_output(uint8_t *buf, int cap, npp_link_t link,
+                            const npp_output_t *out);
 
 /* sticks.c - calibration and the DualShock 3 stick response curve */
-void sticks_cal_defaults(ds45_stickcal_t *cal);
+void sticks_cal_defaults(npp_stickcal_t *cal);
 void sticks_load(void);
 void sticks_save_if_dirty(int force);
-void sticks_transform(ds45_pad_t *pad, const ds45_state_t *st,
+void sticks_transform(npp_pad_t *pad, const npp_state_t *st,
                       uint8_t *lx, uint8_t *ly, uint8_t *rx, uint8_t *ry);
 
 /* padldd.c - virtual controller */
-int  ldd_register(ds45_pad_t *pad);
-int  ldd_set_insert_into_game(ds45_pad_t *pad, int on);
-void ldd_check_combo(ds45_pad_t *pad);
-void ldd_unregister(ds45_pad_t *pad);
-void ldd_inject(ds45_pad_t *pad);
-void ldd_translate(ds45_pad_t *pad, const ds45_state_t *st, uint16_t *button);
+int  ldd_register(npp_pad_t *pad);
+int  ldd_set_insert_into_game(npp_pad_t *pad, int on);
+void ldd_check_combo(npp_pad_t *pad);
+void ldd_unregister(npp_pad_t *pad);
+void ldd_inject(npp_pad_t *pad);
+void ldd_translate(npp_pad_t *pad, const npp_state_t *st, uint16_t *button);
 
 /* usb.c - cellUsbd device driver */
 int  usb_init(void);
 void usb_poll(void);
 void usb_report_probes(void);
 void usb_shutdown(void);
-void usb_send_output(ds45_pad_t *pad);
+void usb_send_output(npp_pad_t *pad);
 
 /* passthru.c - internal Bluetooth passthrough */
 int  passthru_scan(void);   /* rescan tick: virtual pads registered by this call */
@@ -501,40 +514,40 @@ void passthru_observe_vsh(uint32_t port_no, const CellPadData *data);
 int  passthru_btcheck_state(void);
 int  passthru_btcheck_vsh_samples(void);
 int  passthru_raw_samples(void);
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 void passthru_trace_vsh_reads(void);   /* boot trace: what VSH's pad reads look like */
 #endif
-void ds45_process_bt_input(uint32_t port_no, CellPadData *data);
-void ds45_trigger_bt_ps(int pressed);
+void npp_process_bt_input(uint32_t port_no, CellPadData *data);
+void npp_trigger_bt_ps(int pressed);
 
-/* gamehook.c - in-game stick correction (DS45_GAME build) */
+/* gamehook.c - in-game stick correction (NPP_GAME build) */
 int  gamehook_install(void);
 void gamehook_remove(void);
 
 /* diag.c */
 void diag_dump_ports(void);
 void diag_watch(void);
-void diag_state(const ds45_pad_t *pad);
+void diag_state(const npp_pad_t *pad);
 void diag_sticks(uint8_t in_x, uint8_t in_y, uint8_t out_x, uint8_t out_y,
-                 const ds45_axis_cal_t *cx, const ds45_axis_cal_t *cy);
+                 const npp_axis_cal_t *cx, const npp_axis_cal_t *cy);
 void diag_msg(const char *msg);
 void diag_observe(int port, const void *data);
 void diag_flush(void);
 
 /* util.c */
-void  ds45_notify(const char *msg);
-void  ds45_boot_mark(const char *stage);
-void  ds45_boot_mark_hex(const char *stage, uint32_t value);
-uint32_t ds45_crc32(uint32_t crc, const uint8_t *data, int len);
-int   ds45_read_file(const char *path, char *out, int cap);
-int   ds45_write_file(const char *path, const void *data, int len);  /* create/truncate; 0 ok, -1 fail */
-#ifndef DS45_GAME   /* VSH-only: would add libfs imports to the game build */
-int   ds45_delete_file(const char *path);                            /* 0 ok, -1 fail */
-int   ds45_file_exists(const char *path);                            /* 1 yes, 0 no */
-int   ds45_append_file(const char *path, const void *data, int len); /* create or append; 0 ok, -1 fail */
+void  npp_notify(const char *msg);
+void  npp_boot_mark(const char *stage);
+void  npp_boot_mark_hex(const char *stage, uint32_t value);
+uint32_t npp_crc32(uint32_t crc, const uint8_t *data, int len);
+int   npp_read_file(const char *path, char *out, int cap);
+int   npp_write_file(const char *path, const void *data, int len);  /* create/truncate; 0 ok, -1 fail */
+#ifndef NPP_GAME   /* VSH-only: would add libfs imports to the game build */
+int   npp_delete_file(const char *path);                            /* 0 ok, -1 fail */
+int   npp_file_exists(const char *path);                            /* 1 yes, 0 no */
+int   npp_append_file(const char *path, const void *data, int len); /* create or append; 0 ok, -1 fail */
 #endif
 
-#ifdef DS45_LV2DUMP
+#ifdef NPP_LV2DUMP
 /* lv2dump.c: two dumps of the LV2 window once a Bluetooth pad is connected
  * (A untouched, B with Cross held and the left stick left). Zero-initialise
  * the state, then poll every tick; it stops by itself when done. */
@@ -549,41 +562,41 @@ typedef struct {
 void  lv2dump_poll(lv2dump_t *st, uint32_t now_ms);
 /* passthru.c: any generic (Bluetooth) pad connected, bound or not. */
 int   passthru_bt_pad_present(void);
-/* passthru.c: the bound pad's d1/d2 (DS45_CTRL_*) from this tick's raw
+/* passthru.c: the bound pad's d1/d2 (NPP_CTRL_*) from this tick's raw
  * report; 0 when there is none (no record, not bound, not connected). */
 int   passthru_source_buttons(uint16_t *d1, uint16_t *d2);
 
 /* lv2capture.c: watch CAPTURE_LEN bytes at LV2 offset CAPTURE_LV2 every
  * tick and write each change to the boot trace, bounded in total. Zero-
  * initialise the state, then poll every tick. */
-#define DS45_CAPTURE_MAX_LEN  128
-#define DS45_CAPTURE_MAX_LOGS 400
+#define NPP_CAPTURE_MAX_LEN  128
+#define NPP_CAPTURE_MAX_LOGS 400
 typedef struct {
 	int      have;             /* snap holds the last logged bytes */
 	int      stopped;          /* read refused or log limit reached */
 	uint32_t logs;             /* changes written so far */
 	uint64_t ptr;              /* CAPTURE_PTR mode: last pointer value seen */
 	int      ptr_bytes;        /* CAPTURE_PTR mode: snap holds its bytes */
-	uint8_t  snap[DS45_CAPTURE_MAX_LEN];
+	uint8_t  snap[NPP_CAPTURE_MAX_LEN];
 } lv2capture_t;
 void  lv2capture_poll(lv2capture_t *st, uint32_t now_ms);
 #endif
 
 /* Debug-build-only boot trace. Compiles to nothing (and the tag strings are
- * not emitted) unless built with -DDS45_DEBUG. */
-#ifdef DS45_DEBUG
-#define DS45_TRACE(tag)         ds45_boot_mark(tag)
-#define DS45_TRACE_HEX(tag, v)  ds45_boot_mark_hex((tag), (uint32_t)(v))
+ * not emitted) unless built with -DNPP_DEBUG. */
+#ifdef NPP_DEBUG
+#define NPP_TRACE(tag)         npp_boot_mark(tag)
+#define NPP_TRACE_HEX(tag, v)  npp_boot_mark_hex((tag), (uint32_t)(v))
 #else
-#define DS45_TRACE(tag)         ((void)0)
-#define DS45_TRACE_HEX(tag, v)  ((void)0)
+#define NPP_TRACE(tag)         ((void)0)
+#define NPP_TRACE_HEX(tag, v)  ((void)0)
 #endif
-ds45_map_t ds45_parse_map(const char *name);
-void  ds45_apply_map(ds45_map_t m, uint16_t *button);
+npp_map_t npp_parse_map(const char *name);
+void  npp_apply_map(npp_map_t m, uint16_t *button);
 
 /* Number of controllers currently producing input. */
-int   ds45_active_pads(void);
-int   ds45_usb_pads_active(void);
-int   ds45_bt_pads_active(void);
+int   npp_active_pads(void);
+int   npp_usb_pads_active(void);
+int   npp_bt_pads_active(void);
 
-#endif /* DS45PAD_H */
+#endif /* NPP_H */

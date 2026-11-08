@@ -1,6 +1,6 @@
 # =============================================================================
-# DS45Pad Enhanced - Configuration File
-# Console path: /dev_hdd0/plugins/ds45pad/ds45pad.txt
+# NativePadPS3 - Configuration File
+# Console path: /dev_hdd0/plugins/nativepadps3/nativepadps3.txt
 # =============================================================================
 
 # Plugin status: 1 = Enabled, 0 = Disabled

@@ -1,6 +1,6 @@
 # =============================================================================
-# DS45PAD - Recognized USB Controllers
-# Console path: /dev_hdd0/plugins/ds45pad/ds45pad_devices.txt
+# NativePadPS3 - Recognized USB Controllers
+# Console path: /dev_hdd0/plugins/nativepadps3/nativepadps3_devices.txt
 #
 # Official controllers are already built into the plugin; this file allows
 # adding clones, third-party pads, and new revisions without recompiling.

@@ -1,5 +1,5 @@
 /*
- * DS45PAD kernel shim - decision logic (start-up and enable completion, pad
+ * NPP kernel shim - decision logic (start-up and enable completion, pad
  * identity, input, product ID).
  *
  * Built twice, exactly like ds3_report.c: natively by the host tests, and
@@ -33,7 +33,7 @@
 #define PID_DUALSENSE   0x0CE6   /* DualSense              */
 
 /* DualSense Bluetooth full report id (the same value as DS_IN_BT; redefined
- * here because the freestanding shim must not pull in ds45_state.h). */
+ * here because the freestanding shim must not pull in npp_state.h). */
 #define DS_BT_INPUT_ID  0x31
 
 /* The DualSense Bluetooth output report id the rewritten call carries (the id
@@ -82,7 +82,7 @@ int shim_pid_ok(uint32_t vid, uint32_t pid)
 	       (pid == PID_DS3 || pid == PID_MOVE_NAV || pid == PID_DUALSENSE);
 }
 
-int shim_pad_is_dualsense(const ds45_shim_data_t *d, const uint8_t *pad)
+int shim_pad_is_dualsense(const npp_shim_data_t *d, const uint8_t *pad)
 {
 	if (!d || !pad || d->pad_vtable == 0)
 		return 0;
@@ -107,7 +107,7 @@ static inline void put_status_ok(uint8_t *drv)
  * shim_event_complete's contract); 1 and id[0..7] on success, else 0 with id
  * untouched. The byte at +0x0D is unused by the kernel's compare and is forced to
  * 0, so the identity does not depend on stale heap there. */
-static int stable_identity(const ds45_shim_data_t *d, const uint8_t *drv, uint8_t id[8])
+static int stable_identity(const npp_shim_data_t *d, const uint8_t *drv, uint8_t id[8])
 {
 	const uint8_t *tbl, *ent;
 	uint8_t h;
@@ -133,7 +133,7 @@ static int stable_identity(const ds45_shim_data_t *d, const uint8_t *drv, uint8_
 	return 1;
 }
 
-int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv)
+int shim_event_complete(npp_shim_data_t *d, uint8_t *drv)
 {
 	uint8_t *pad, *info;
 	uint8_t bd[8];
@@ -159,7 +159,7 @@ int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv)
 		return 0;
 
 	/* 1. the DS3 info block (identity bytes zero in the template) */
-	for (i = 0; i < DS45_SHIM_INFO_LEN; i++)
+	for (i = 0; i < NPP_SHIM_INFO_LEN; i++)
 		info[i] = d->info_tmpl[i];
 
 	/* 2. this pad's identity. Preferred: the controller's own Bluetooth address,
@@ -201,7 +201,7 @@ int shim_event_complete(ds45_shim_data_t *d, uint8_t *drv)
 	return 1;
 }
 
-int shim_enable_complete(ds45_shim_data_t *d, uint8_t *drv)
+int shim_enable_complete(npp_shim_data_t *d, uint8_t *drv)
 {
 	if (!d || !drv || !d->enabled)
 		return 0;
@@ -220,7 +220,7 @@ int shim_enable_complete(ds45_shim_data_t *d, uint8_t *drv)
 	return 1;
 }
 
-void shim_input_note(ds45_shim_data_t *d, const uint8_t *pad)
+void shim_input_note(npp_shim_data_t *d, const uint8_t *pad)
 {
 	if (!d)
 		return;
@@ -240,7 +240,7 @@ void shim_input_note(ds45_shim_data_t *d, const uint8_t *pad)
 		d->dbg_input_ds++;
 }
 
-const uint8_t *shim_pad_from_xport(const ds45_shim_data_t *d, const void *xport)
+const uint8_t *shim_pad_from_xport(const npp_shim_data_t *d, const void *xport)
 {
 	const uint8_t *mgr, *obj;
 	int i;
@@ -262,7 +262,7 @@ const uint8_t *shim_pad_from_xport(const ds45_shim_data_t *d, const void *xport)
 	return 0;
 }
 
-int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
+int shim_input_filter(npp_shim_data_t *d, uint16_t vid, uint16_t pid,
                       uint8_t *buf, uint16_t *len)
 {
 	int ok = 0;
@@ -294,7 +294,7 @@ int shim_input_filter(ds45_shim_data_t *d, uint16_t vid, uint16_t pid,
 	return len ? (int)*len : 0;
 }
 
-int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
+int shim_input_bounce(npp_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
                       uint16_t len_in, int rc)
 {
 	uint16_t n, i;
@@ -346,7 +346,7 @@ int shim_input_bounce(ds45_shim_data_t *d, const uint8_t *pad, uint8_t *dst,
 	return n;
 }
 
-int shim_output_filter(ds45_shim_data_t *d, const uint8_t *buf, uint16_t len,
+int shim_output_filter(npp_shim_data_t *d, const uint8_t *buf, uint16_t len,
                        uint8_t *rid, const uint8_t **out_buf, uint16_t *out_len)
 {
 	uint16_t n, i;
@@ -430,7 +430,7 @@ typedef uint32_t __attribute__((may_alias)) shim_u32_alias_t;
  * (po_seq - 1) & 7, write the sequence big-endian byte by byte and the site in
  * byte 4. Returns the slot. Every multi-byte value in a record is stored byte by
  * byte, so the record is the same on the host and in the big-endian blob. */
-static inline uint8_t *po_ring_begin(ds45_shim_data_t *d, uint8_t site)
+static inline uint8_t *po_ring_begin(npp_shim_data_t *d, uint8_t site)
 {
 	uint32_t seq = ++d->po_seq;
 	uint8_t *r = d->po_ring[(seq - 1) & 7];
@@ -446,7 +446,7 @@ static inline uint8_t *po_ring_begin(ds45_shim_data_t *d, uint8_t site)
 	return r;
 }
 
-int shim_poweroff_filter(ds45_shim_data_t *d, ds45_po_call_t *c)
+int shim_poweroff_filter(npp_shim_data_t *d, npp_po_call_t *c)
 {
 	const uint8_t *obj, *pad = 0, *pl;
 	uint8_t *r;
@@ -513,7 +513,7 @@ int shim_poweroff_filter(ds45_shim_data_t *d, ds45_po_call_t *c)
 	return 0;
 }
 
-void shim_teardown_note(ds45_shim_data_t *d, uint64_t addr, uint64_t flag, uint64_t lr)
+void shim_teardown_note(npp_shim_data_t *d, uint64_t addr, uint64_t flag, uint64_t lr)
 {
 	uint8_t *r;
 

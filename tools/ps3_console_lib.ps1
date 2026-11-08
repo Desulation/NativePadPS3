@@ -12,11 +12,44 @@
 if (-not $Ip) { throw 'set $Ip (the console address) before dot-sourcing ps3_console_lib.ps1' }
 $ftp = "ftp://$Ip"
 
+# Console file names (the plugin is NativePadPS3). The boot trace name must match
+# NPP_BOOT_FILE in the plugin header and the plugin name the output of src/build.ps1;
+# tools/test_console_lib.ps1 checks both offline.
+$TraceFile          = '/dev_hdd0/tmp/nativepadps3_boot.txt'
+$RemoteDebugSprx    = '/dev_hdd0/plugins/nativepadps3_vsh_debug.sprx'
+$ConfigFile         = '/dev_hdd0/plugins/nativepadps3/nativepadps3.txt'
+# legacy on-console name, read-only compatibility, do not rename
+$LegacyConfigFile   = '/dev_hdd0/plugins/ds45pad/ds45pad.txt'
+# legacy on-console name, read-only compatibility, do not rename
+$PluginEntryPattern = 'ds45pad|nativepadps3'
+
 function Say([string]$m) { Write-Host ("[{0}] {1}" -f [DateTime]::Now.ToString('HH:mm:ss'), $m) }
 
 function Test-Port([int]$Port) {
     $c = New-Object Net.Sockets.TcpClient
     try { return ($c.ConnectAsync($Ip, $Port).Wait(1500) -and $c.Connected) } catch { return $false } finally { $c.Close() }
+}
+
+# /dev_hdd0/boot_plugins.txt helpers (pure string work, no network). A plugin line is any
+# line naming the plugin under its old or its new name (this also catches a commented-out
+# old line); two of them would install the kernel shim twice at boot. Callers wrap the
+# results in @(...).
+# Blank lines and every plugin line dropped, the other lines kept verbatim in order,
+# $Entry appended once.
+function Set-BootPluginEntry([string[]]$Lines, [string]$Entry) {
+    $keep = @($Lines | Where-Object { $null -ne $_ -and $_.Trim() -and $_ -notmatch $PluginEntryPattern })
+    $keep + $Entry
+}
+
+# Blank lines and every plugin line dropped.
+function Remove-BootPluginEntries([string[]]$Lines) {
+    @($Lines | Where-Object { $null -ne $_ -and $_.Trim() -and $_ -notmatch $PluginEntryPattern })
+}
+
+# True when exactly one line is a plugin line and it is $Entry.
+function Test-BootPluginSingle([string[]]$Lines, [string]$Entry) {
+    $hits = @($Lines | Where-Object { $null -ne $_ -and $_ -match $PluginEntryPattern })
+    ($hits.Count -eq 1) -and ($hits[0].Trim() -ceq $Entry)
 }
 
 function Curl-Ok([string[]]$a) {
@@ -54,18 +87,31 @@ function Decode-Branch([string]$word, [int64]$at) {
     @{ Kind = $kind; Target = $(if ($aa) { $li } else { $at + $li }) }
 }
 
-# The kernel shim's entry points for the power-off hooks, as offsets from the blob base.
-# Read from the generated src/shim_blob.h when it is present (so they follow the build);
-# otherwise the DEX 4.92 build's values.
+# The kernel shim's entry points for the power-off hooks, as offsets from the blob base,
+# read from the generated shim header. Throws when the file exists but lacks either
+# define (a stale or foreign header must never silently fall back to guessed offsets).
+function Get-PoOffsets([string]$HeaderPath) {
+    $text = Get-Content -Raw -LiteralPath $HeaderPath
+    $res = @{}
+    foreach ($kv in @(@('Poweroff', 'POWEROFF'), @('Teardown', 'TEARDOWN'))) {
+        $m = [regex]::Match($text, ('(?m)^\s*#define\s+NPP_SHIM_OFF_{0}\s+0x([0-9A-Fa-f]+)' -f $kv[1]))
+        if ($m.Success) { $res[$kv[0]] = [Convert]::ToInt32($m.Groups[1].Value, 16) }
+    }
+    if (-not ($res.ContainsKey('Poweroff') -and $res.ContainsKey('Teardown'))) {
+        throw "$HeaderPath has no NPP_SHIM_OFF_POWEROFF/TEARDOWN defines (stale or foreign shim_blob.h; rebuild with src/build.ps1)"
+    }
+    $res
+}
+
+# From the generated src/shim_blob.h when it is present (so the offsets follow the build);
+# only when the file is absent, the DEX 4.92 build's values, and it says so.
 $ExecBase = 0x57C000
-$PoOffs = @{ Poweroff = 0x130; Teardown = 0x1D0 }
 $blobHdr = Join-Path $PSScriptRoot '../src/shim_blob.h'
 if (Test-Path -LiteralPath $blobHdr) {
-    $hdr = Get-Content -LiteralPath $blobHdr
-    foreach ($kv in @(@('Poweroff', 'POWEROFF'), @('Teardown', 'TEARDOWN'))) {
-        $m = $hdr | Select-String -Pattern ("DS45_SHIM_OFF_{0}\s+0x([0-9A-Fa-f]+)" -f $kv[1]) | Select-Object -First 1
-        if ($m) { $PoOffs[$kv[0]] = [Convert]::ToInt32($m.Matches[0].Groups[1].Value, 16) }
-    }
+    $PoOffs = Get-PoOffsets $blobHdr
+} else {
+    $PoOffs = @{ Poweroff = 0x130; Teardown = 0x1D0 }
+    Write-Host "note: $blobHdr not found; using the DEX 4.92 power-off offsets (Poweroff 0x130, Teardown 0x1D0)"
 }
 
 # The four power-off code sites (DEX 4.92): the instruction at each is a branch; the shim
@@ -121,7 +167,7 @@ function Wait-Reboot {
 
 # The plugin's on-disk boot trace (one FTP GET), saved to $Dest\$as and returned as lines.
 function Get-Trace([string]$Dest, [string]$as) {
-    Curl-Ok @('-o', (Join-Path $Dest $as), "$ftp/dev_hdd0/tmp/ds45pad_boot.txt")
+    Curl-Ok @('-o', (Join-Path $Dest $as), "$ftp$TraceFile")
     Get-Content -LiteralPath (Join-Path $Dest $as)
 }
 

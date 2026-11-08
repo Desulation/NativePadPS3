@@ -9,6 +9,7 @@ src/obj/
 .DS_Store
 Thumbs.db
 ds45pad_boot*.txt
+nativepadps3_boot*.txt
 sdk_doc_chm/
 
 # Proprietary / non-redistributable material must never be committed

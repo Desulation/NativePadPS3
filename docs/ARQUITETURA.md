@@ -24,7 +24,7 @@ pelo driver do próprio firmware. Nenhum plugin pode fazer isso.
 ### O que funciona: responder a pergunta de dentro do jogo
 
 Se o jogo pergunta "esse controle é oficial?" e nós estamos dentro do processo
-dele, podemos responder. O `ds45pad_game.sprx` intercepta `cellPadGetInfo2` e
+dele, podemos responder. O `nativepadps3_game.sprx` intercepta `cellPadGetInfo2` e
 reporta `device_type = 0` com conformidade total.
 
 Isso compra o mesmo resultado que o adaptador, sem hardware. É o que o

@@ -110,7 +110,7 @@ Como funciona, e por que é seguro:
   effect. Errar para o lado estreito é inofensivo — o clamp absorve. Errar para
   o lado largo é que impediria alcançar o máximo.
 
-O resultado vai para `/dev_hdd0/plugins/ds45pad/ds45pad_cal.txt`, então o primeiro menu depois de um
+O resultado vai para `/dev_hdd0/plugins/nativepadps3/nativepadps3_cal.txt`, então o primeiro menu depois de um
 reboot já está certo. Girar os dois analógicos uma vez ao ligar acelera tudo.
 
 ### Por que não é mais uma catraca
@@ -146,7 +146,7 @@ troca da catraca pelo histograma.
 | Quero o valor cru, sem correção | `STICK_SATURATION = 100` |
 | Analógico anda sozinho | Suba `STICK_DEADZONE` |
 | Hall effect, quero precisão máxima no centro | `STICK_DEADZONE = 0` |
-| Calibração ficou estranha | Apague `/dev_hdd0/plugins/ds45pad/ds45pad_cal.txt` e gire os sticks |
+| Calibração ficou estranha | Apague `/dev_hdd0/plugins/nativepadps3/nativepadps3_cal.txt` e gire os sticks |
 
 `71` merece uma nota: é o valor em que 0,707 / 0,71 ≈ 1, ou seja, a diagonal
 chega ao canto exato (`0x00`/`0xFF`). Um DS3 real **não** faz isso — vai até

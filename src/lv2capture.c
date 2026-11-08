@@ -1,5 +1,5 @@
 /*
- * DS45PAD - debug-build LV2 capture.
+ * NPP - debug-build LV2 capture.
  *
  * Watches a small kernel range (CAPTURE_LEN bytes at LV2 offset CAPTURE_LV2)
  * every tick through the bounds-checked reads in lv2.c, and writes each
@@ -11,11 +11,11 @@
  */
 
 #include <string.h>
-#include <cell/pad.h>   /* CellPadData, needed by ds45pad.h */
+#include <cell/pad.h>   /* CellPadData, needed by npp.h */
 
-#include "ds45pad.h"
+#include "npp.h"
 
-#ifdef DS45_LV2DUMP
+#ifdef NPP_LV2DUMP
 
 #include "lv2.h"
 
@@ -38,7 +38,7 @@ static void log_bytes(const uint8_t *b, int len)
 			line[n++] = hex[b[i] & 0xF];
 		}
 		line[n] = 0;
-		ds45_boot_mark(line);
+		npp_boot_mark(line);
 	}
 }
 
@@ -52,10 +52,10 @@ static int poll_ptr(lv2capture_t *st, uint8_t *now, int len)
 	uint64_t ptr;
 	int bytes;
 
-	if (ds45_lv2_read(DS45_LV2_BASE + g_cfg.capture_ptr, &ptr) != 0)
+	if (npp_lv2_read(NPP_LV2_BASE + g_cfg.capture_ptr, &ptr) != 0)
 		return -1;
 	bytes = ptr != 0 &&
-	        ds45_lv2_read_bytes(ptr + g_cfg.capture_off, now, len) == 0;
+	        npp_lv2_read_bytes(ptr + g_cfg.capture_off, now, len) == 0;
 	if (st->have && ptr == st->ptr && bytes == st->ptr_bytes &&
 	    (!bytes || memcmp(now, st->snap, (size_t)len) == 0))
 		return 0;
@@ -66,22 +66,22 @@ static int poll_ptr(lv2capture_t *st, uint8_t *now, int len)
 
 void lv2capture_poll(lv2capture_t *st, uint32_t now_ms)
 {
-	uint8_t now[DS45_CAPTURE_MAX_LEN];
+	uint8_t now[NPP_CAPTURE_MAX_LEN];
 	int len = (int)g_cfg.capture_len;
 	int changed;
 
-	if (st->stopped || len <= 0 || len > DS45_CAPTURE_MAX_LEN)
+	if (st->stopped || len <= 0 || len > NPP_CAPTURE_MAX_LEN)
 		return;
 
 	if (g_cfg.capture_ptr) {
 		changed = poll_ptr(st, now, len);
 	} else {
-		changed = ds45_lv2_read_bytes(DS45_LV2_BASE + g_cfg.capture_off,
+		changed = npp_lv2_read_bytes(NPP_LV2_BASE + g_cfg.capture_off,
 		                              now, len) != 0 ? -1 :
 		          !st->have || memcmp(now, st->snap, (size_t)len) != 0;
 	}
 	if (changed < 0) {
-		ds45_boot_mark("cap_read_failed");
+		npp_boot_mark("cap_read_failed");
 		st->stopped = 1;
 		return;
 	}
@@ -90,9 +90,9 @@ void lv2capture_poll(lv2capture_t *st, uint32_t now_ms)
 
 	memcpy(st->snap, now, (size_t)len);
 	st->have = 1;
-	ds45_boot_mark_hex("cap_t", now_ms);
+	npp_boot_mark_hex("cap_t", now_ms);
 	if (g_cfg.capture_ptr) {
-		ds45_boot_mark_hex("cap_p", (uint32_t)st->ptr);
+		npp_boot_mark_hex("cap_p", (uint32_t)st->ptr);
 		if (st->ptr_bytes)
 			log_bytes(now, len);
 	} else {
@@ -100,10 +100,10 @@ void lv2capture_poll(lv2capture_t *st, uint32_t now_ms)
 	}
 
 	/* Every change is a file append per line: bound the trace. */
-	if (++st->logs >= DS45_CAPTURE_MAX_LOGS) {
-		ds45_boot_mark("cap_limit");
+	if (++st->logs >= NPP_CAPTURE_MAX_LOGS) {
+		npp_boot_mark("cap_limit");
 		st->stopped = 1;
 	}
 }
 
-#endif /* DS45_LV2DUMP */
+#endif /* NPP_LV2DUMP */

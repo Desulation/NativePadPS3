@@ -1,5 +1,5 @@
 /*
- * DS45PAD - DualShock 4 / DualSense motion to DualShock 3 sixaxis scaling.
+ * NPP - DualShock 4 / DualSense motion to DualShock 3 sixaxis scaling.
  *
  * Split out of padldd.c so the kernel shim blob can build it freestanding: it
  * needs nothing but integer arithmetic.
@@ -26,7 +26,7 @@ uint16_t sixaxis_from_accel(int16_t raw, int scale, int invert)
 	if (invert)
 		v = -v;
 
-	return (uint16_t)clamp(v + DS45_SENSOR_CENTER, 0, 1023);
+	return (uint16_t)clamp(v + NPP_SENSOR_CENTER, 0, 1023);
 }
 
 uint16_t sixaxis_from_gyro(int16_t raw, int scale, int invert)
@@ -40,5 +40,5 @@ uint16_t sixaxis_from_gyro(int16_t raw, int scale, int invert)
 	if (invert)
 		v = -v;
 
-	return (uint16_t)clamp(v + DS45_SENSOR_CENTER, 0, 1023);
+	return (uint16_t)clamp(v + NPP_SENSOR_CENTER, 0, 1023);
 }

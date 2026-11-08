@@ -15,7 +15,7 @@ reativação do HEN. **Só cinco coisas mudam:**
 
 ### 1. Tire o meu plugin do ar primeiro
 
-No `/dev_hdd0/boot_plugins.txt`, **apague ou comente a linha do ds45pad**. Dois
+No `/dev_hdd0/boot_plugins.txt`, **apague ou comente a linha do NativePadPS3** (em instalações antigas, a linha do ds45pad). Dois
 plugins de controle disputando o mesmo dispositivo dá resultado sem sentido, e
 invalida o teste.
 

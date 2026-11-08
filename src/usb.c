@@ -1,5 +1,5 @@
 /*
- * DS45PAD - USB transport.
+ * NPP - USB transport.
  *
  * Requests access using cellUsbdRegisterExtraLdd(). Successful registration
  * does not prove ownership: only attach followed by valid reports does.
@@ -16,7 +16,7 @@
 #include <sys/timer.h>
 #include <cell/usbd.h>
 
-#include "ds45pad.h"
+#include "npp.h"
 
 #define USB_CLASS_HID       0x03
 #define MAX_DEVICE_ENTRIES  16
@@ -24,31 +24,31 @@
 typedef struct {
 	uint16_t     vid;
 	uint16_t     pid;
-	ds45_model_t model;
+	npp_model_t model;
 	const char  *name;
-} ds45_device_t;
+} npp_device_t;
 
 /* Known controllers. Additional ids can be appended at runtime from
- * ds45pad_devices.txt without rebuilding. */
-static ds45_device_t devices[MAX_DEVICE_ENTRIES] = {
-	{ DS45_VID_SONY, DS45_PID_DS4_V1,         DS45_MODEL_DS4,       "DualShock 4 (CUH-ZCT1)" },
-	{ DS45_VID_SONY, DS45_PID_DS4_V2,         DS45_MODEL_DS4,       "DualShock 4 (CUH-ZCT2)" },
-	{ DS45_VID_SONY, DS45_PID_DS4_DONGLE,     DS45_MODEL_DS4,       "DualShock 4 USB adaptor" },
-	{ DS45_VID_SONY, DS45_PID_DUALSENSE,      DS45_MODEL_DUALSENSE, "DualSense" },
-	{ DS45_VID_SONY, DS45_PID_DUALSENSE_EDGE, DS45_MODEL_DUALSENSE, "DualSense Edge" },
+ * nativepadps3_devices.txt without rebuilding. */
+static npp_device_t devices[MAX_DEVICE_ENTRIES] = {
+	{ NPP_VID_SONY, NPP_PID_DS4_V1,         NPP_MODEL_DS4,       "DualShock 4 (CUH-ZCT1)" },
+	{ NPP_VID_SONY, NPP_PID_DS4_V2,         NPP_MODEL_DS4,       "DualShock 4 (CUH-ZCT2)" },
+	{ NPP_VID_SONY, NPP_PID_DS4_DONGLE,     NPP_MODEL_DS4,       "DualShock 4 USB adaptor" },
+	{ NPP_VID_SONY, NPP_PID_DUALSENSE,      NPP_MODEL_DUALSENSE, "DualSense" },
+	{ NPP_VID_SONY, NPP_PID_DUALSENSE_EDGE, NPP_MODEL_DUALSENSE, "DualSense Edge" },
 };
 static int device_count = 5;
 
-static int32_t ds45_probe(int32_t dev_id);
-static int32_t ds45_attach(int32_t dev_id);
-static int32_t ds45_detach(int32_t dev_id);
+static int32_t npp_probe(int32_t dev_id);
+static int32_t npp_attach(int32_t dev_id);
+static int32_t npp_detach(int32_t dev_id);
 
 static const char *op_names[MAX_DEVICE_ENTRIES] = {
-	"ds45_0", "ds45_1", "ds45_2", "ds45_3", "ds45_4",
-	"ds45_5", "ds45_6", "ds45_7", "ds45_8", "ds45_9",
-	"ds45_10", "ds45_11", "ds45_12", "ds45_13", "ds45_14", "ds45_15"
+	"npp_0", "npp_1", "npp_2", "npp_3", "npp_4",
+	"npp_5", "npp_6", "npp_7", "npp_8", "npp_9",
+	"npp_10", "npp_11", "npp_12", "npp_13", "npp_14", "npp_15"
 };
-static CellUsbdLddOps ds45_ops[MAX_DEVICE_ENTRIES];
+static CellUsbdLddOps npp_ops[MAX_DEVICE_ENTRIES];
 
 static sys_mutex_t usb_mutex;
 static int         usb_ready;
@@ -58,7 +58,7 @@ static int         usb_ready;
 static void lock(void)   { if (usb_ready) sys_mutex_lock(usb_mutex, 0); }
 static void unlock(void) { if (usb_ready) sys_mutex_unlock(usb_mutex); }
 
-static const ds45_device_t *lookup(uint16_t vid, uint16_t pid)
+static const npp_device_t *lookup(uint16_t vid, uint16_t pid)
 {
 	int i;
 
@@ -69,25 +69,25 @@ static const ds45_device_t *lookup(uint16_t vid, uint16_t pid)
 	return NULL;
 }
 
-static ds45_pad_t *alloc_slot(void)
+static npp_pad_t *alloc_slot(void)
 {
 	int i;
 
 	/* Skip slots that still hold a virtual pad awaiting cleanup, or handing
 	 * one out here would overwrite the handle and leak it. */
-	for (i = 0; i < DS45_MAX_PADS; i++)
+	for (i = 0; i < NPP_MAX_PADS; i++)
 		if (!g_pads[i].in_use && g_pads[i].handle < 0)
 			return &g_pads[i];
 
 	return NULL;
 }
 
-static ds45_pad_t *slot_for_dev(int32_t dev_id)
+static npp_pad_t *slot_for_dev(int32_t dev_id)
 {
 	int i;
 
-	for (i = 0; i < DS45_MAX_PADS; i++)
-		if (g_pads[i].in_use && g_pads[i].link == DS45_LINK_USB &&
+	for (i = 0; i < NPP_MAX_PADS; i++)
+		if (g_pads[i].in_use && g_pads[i].link == NPP_LINK_USB &&
 		    g_pads[i].dev_id == dev_id)
 			return &g_pads[i];
 
@@ -98,11 +98,11 @@ static ds45_pad_t *slot_for_dev(int32_t dev_id)
 /* Transfers                                                                 */
 /* ------------------------------------------------------------------------ */
 
-static void submit_in(ds45_pad_t *pad);
+static void submit_in(npp_pad_t *pad);
 
 static void in_done(int32_t result, int32_t count, void *arg)
 {
-	ds45_pad_t *pad = (ds45_pad_t *)arg;
+	npp_pad_t *pad = (npp_pad_t *)arg;
 
 	lock();
 	if (!pad->in_use) {
@@ -111,7 +111,7 @@ static void in_done(int32_t result, int32_t count, void *arg)
 	}
 
 	if (result == 0 && count > 0) {
-		ds45_report_push(&pad->reports, pad->buf[pad->buf_idx], count);
+		npp_report_push(&pad->reports, pad->buf[pad->buf_idx], count);
 		pad->buf_idx ^= 1;
 	} else if (result != 0) {
 		pad->usb_error = result;
@@ -121,7 +121,7 @@ static void in_done(int32_t result, int32_t count, void *arg)
 	submit_in(pad);
 }
 
-static void submit_in(ds45_pad_t *pad)
+static void submit_in(npp_pad_t *pad)
 {
 	int result;
 	if (!pad->in_use || pad->i_pipe < 0)
@@ -137,19 +137,19 @@ static void out_done(int32_t result, int32_t count, void *arg)
 	(void)result; (void)count; (void)arg;
 }
 
-void usb_send_output(ds45_pad_t *pad)
+void usb_send_output(npp_pad_t *pad)
 {
 	int len;
 
-	if (pad->link != DS45_LINK_USB || pad->o_pipe < 0)
+	if (pad->link != NPP_LINK_USB || pad->o_pipe < 0)
 		return;
 
-	if (pad->model == DS45_MODEL_DUALSENSE)
+	if (pad->model == NPP_MODEL_DUALSENSE)
 		len = dualsense_build_output(pad->obuf, sizeof(pad->obuf),
-		                             DS45_LINK_USB, &pad->out);
+		                             NPP_LINK_USB, &pad->out);
 	else
 		len = ds4_build_output(pad->obuf, sizeof(pad->obuf),
-		                       DS45_LINK_USB, &pad->out);
+		                       NPP_LINK_USB, &pad->out);
 
 	if (len > 0)
 		cellUsbdInterruptTransfer(pad->o_pipe, pad->obuf, len, out_done, pad);
@@ -159,7 +159,7 @@ void usb_send_output(ds45_pad_t *pad)
 
 static void config_done(int32_t result, int32_t count, void *arg)
 {
-	ds45_pad_t *pad = (ds45_pad_t *)arg;
+	npp_pad_t *pad = (npp_pad_t *)arg;
 	(void)count;
 	if (result != 0) {
 		pad->usb_error = result;
@@ -184,7 +184,7 @@ static volatile int      probe_n;
 static int               probe_reported;
 static int               probe_empty_ticks;
 
-static int32_t ds45_probe(int32_t dev_id)
+static int32_t npp_probe(int32_t dev_id)
 {
 	UsbDeviceDescriptor *ddesc;
 	uint16_t vid, pid;
@@ -220,25 +220,25 @@ void usb_report_probes(void)
 
 	if (n == 0) {
 		if (++probe_empty_ticks == 10)
-			ds45_boot_mark("usb_no_probe_first_10s_replug_to_test");
+			npp_boot_mark("usb_no_probe_first_10s_replug_to_test");
 		return;
 	}
 
 	for (i = probe_reported; i < n; i++)
-		ds45_boot_mark_hex(probe_hit[i] ? "probe_MATCH_vidpid"
+		npp_boot_mark_hex(probe_hit[i] ? "probe_MATCH_vidpid"
 		                               : "probe_seen_vidpid",
 		                   ((uint32_t)probe_vid[i] << 16) | probe_pid[i]);
 	probe_reported = n;
 }
 
-static int32_t ds45_attach(int32_t dev_id)
+static int32_t npp_attach(int32_t dev_id)
 {
 	UsbDeviceDescriptor        *ddesc;
 	UsbConfigurationDescriptor *cdesc;
 	UsbInterfaceDescriptor     *idesc;
 	UsbEndpointDescriptor      *ep_in = NULL, *ep_out = NULL;
-	const ds45_device_t        *dev;
-	ds45_pad_t                 *pad;
+	const npp_device_t        *dev;
+	npp_pad_t                 *pad;
 	uint8_t                    *desc;
 	int                         in_hid = 0, result;
 
@@ -304,20 +304,20 @@ static int32_t ds45_attach(int32_t dev_id)
 	 * (e.g. Controller 7 / Port 6), which guarantees Port 0 is free for the USB
 	 * controller without double input. If Bluetooth is on Port 0, skip USB attach
 	 * so it charges safely over USB without conflict. */
-	if (g_cfg.mode == DS45_MODE_AUTO && ds45_bt_pads_active() > 0) {
+	if (g_cfg.mode == NPP_MODE_AUTO && npp_bt_pads_active() > 0) {
 		int can_preempt = 1;
 		int j;
-		for (j = 0; j < DS45_MAX_PADS; j++) {
-			if (g_pads[j].in_use && g_pads[j].link == DS45_LINK_BT && g_pads[j].src_port == 0) {
+		for (j = 0; j < NPP_MAX_PADS; j++) {
+			if (g_pads[j].in_use && g_pads[j].link == NPP_LINK_BT && g_pads[j].src_port == 0) {
 				can_preempt = 0;
 				break;
 			}
 		}
 		if (can_preempt) {
-			ds45_boot_mark("usb_preempt_bt_clean");
+			npp_boot_mark("usb_preempt_bt_clean");
 			passthru_release();
 		} else {
-			ds45_boot_mark("usb_attach_skip_bt_active");
+			npp_boot_mark("usb_attach_skip_bt_active");
 			unlock();
 			return CELL_USBD_ATTACH_SUCCEEDED;
 		}
@@ -334,7 +334,7 @@ static int32_t ds45_attach(int32_t dev_id)
 	 * axes with a span of one unit, which turns half of every stick into an
 	 * on/off switch. */
 	{
-		ds45_stickcal_t keep = pad->cal;
+		npp_stickcal_t keep = pad->cal;
 
 		memset(pad, 0, sizeof(*pad));
 		pad->cal = keep;
@@ -342,7 +342,7 @@ static int32_t ds45_attach(int32_t dev_id)
 
 	pad->in_use  = 1;
 	pad->model   = dev->model;
-	pad->link    = DS45_LINK_USB;
+	pad->link    = NPP_LINK_USB;
 	pad->dev_id  = dev_id;
 	pad->handle  = -1;
 	pad->port    = -1;
@@ -393,9 +393,9 @@ fail:
 	return CELL_USBD_ATTACH_FAILED;
 }
 
-static int32_t ds45_detach(int32_t dev_id)
+static int32_t npp_detach(int32_t dev_id)
 {
-	ds45_pad_t *pad;
+	npp_pad_t *pad;
 
 	lock();
 	pad = slot_for_dev(dev_id);
@@ -422,36 +422,36 @@ void usb_poll(void)
 {
 	int i;
 
-	for (i = 0; i < DS45_MAX_PADS; i++) {
-		ds45_pad_t *pad = &g_pads[i];
+	for (i = 0; i < NPP_MAX_PADS; i++) {
+		npp_pad_t *pad = &g_pads[i];
 		unsigned remaining;
 
 		/* Deferred cleanup for controllers unplugged since the last pass. */
 		if (!pad->in_use && pad->handle >= 0) {
 			ldd_unregister(pad);
-			if (g_cfg.mode == DS45_MODE_AUTO && ds45_usb_pads_active() == 0) {
-				ds45_boot_mark("usb_detached_scanning_bt");
+			if (g_cfg.mode == NPP_MODE_AUTO && npp_usb_pads_active() == 0) {
+				npp_boot_mark("usb_detached_scanning_bt");
 				passthru_scan();
 			}
 			continue;
 		}
 
-		if (!pad->in_use || pad->link != DS45_LINK_USB)
+		if (!pad->in_use || pad->link != NPP_LINK_USB)
 			continue;
 		if (pad->usb_error && pad->usb_error != pad->usb_error_reported) {
-			ds45_boot_mark_hex("usb_transfer_FAILED", (uint32_t)pad->usb_error);
+			npp_boot_mark_hex("usb_transfer_FAILED", (uint32_t)pad->usb_error);
 			pad->usb_error_reported = pad->usb_error;
 		}
 
 		/* Deferred from the attach callback, so the slow parts happen here. */
 		if (pad->needs_register) {
 			pad->needs_register = 0;
-			ds45_boot_mark("usb_attached");
+			npp_boot_mark("usb_attached");
 			if (ldd_register(pad) == 0)
 				usb_send_output(pad);
 		}
 
-		for (remaining = DS45_REPORT_QUEUE_SIZE; remaining; remaining--) {
+		for (remaining = NPP_REPORT_QUEUE_SIZE; remaining; remaining--) {
 			uint8_t buf[80];
 			int len, result, overflow;
 			lock();
@@ -460,39 +460,39 @@ void usb_poll(void)
 				memset(&pad->reports, 0, sizeof(pad->reports));
 				pad->usb_ps_suppressed = 1;
 			}
-			len = ds45_report_pop(&pad->reports, buf);
+			len = npp_report_pop(&pad->reports, buf);
 			unlock();
 			if (overflow) {
-				ds45_boot_mark("usb_queue_overflow_release_PS_to_rearm");
-				pad->state.buttons &= ~DS45_B_PS;
+				npp_boot_mark("usb_queue_overflow_release_PS_to_rearm");
+				pad->state.buttons &= ~NPP_B_PS;
 				ldd_inject(pad);
 			}
 			if (!len)
 				break;
 
-			if (pad->model == DS45_MODEL_DUALSENSE)
-				result = dualsense_parse(buf, len, DS45_LINK_USB, &pad->state);
+			if (pad->model == NPP_MODEL_DUALSENSE)
+				result = dualsense_parse(buf, len, NPP_LINK_USB, &pad->state);
 			else
-				result = ds4_parse(buf, len, DS45_LINK_USB, &pad->state);
+				result = ds4_parse(buf, len, NPP_LINK_USB, &pad->state);
 			if (result != 0)
 				continue;
 			if (!pad->usb_report_seen) {
 				pad->usb_report_seen = 1;
-				ds45_boot_mark("usb_HID_report_valid");
+				npp_boot_mark("usb_HID_report_valid");
 			}
 			if (pad->usb_ps_suppressed) {
-				if (!(pad->state.buttons & DS45_B_PS))
+				if (!(pad->state.buttons & NPP_B_PS))
 					pad->usb_ps_suppressed = 0;
-				pad->state.buttons &= ~DS45_B_PS;
+				pad->state.buttons &= ~NPP_B_PS;
 			}
 
 			static uint32_t s_last_buttons = 0;
 			if (pad->state.buttons != s_last_buttons) {
 				s_last_buttons = pad->state.buttons;
-				ds45_boot_mark_hex("BTN_PARSED", s_last_buttons);
+				npp_boot_mark_hex("BTN_PARSED", s_last_buttons);
 				if (len >= 11) {
-					ds45_boot_mark_hex("RAW_8_9", ((uint32_t)buf[8] << 8) | buf[9]);
-					ds45_boot_mark_hex("RAW_10_11", ((uint32_t)buf[10] << 8) | buf[11]);
+					npp_boot_mark_hex("RAW_8_9", ((uint32_t)buf[8] << 8) | buf[9]);
+					npp_boot_mark_hex("RAW_10_11", ((uint32_t)buf[10] << 8) | buf[11]);
 				}
 			}
 
@@ -549,7 +549,7 @@ static void load_extra_devices(void)
 	char *line, *p;
 	int n;
 
-	n = ds45_read_file(DS45_DEVICE_FILE, text, sizeof(text) - 1);
+	n = npp_read_file(npp_path(NPP_PATH_DEVICES), text, sizeof(text) - 1);
 	if (n <= 0)
 		return;
 	text[n] = 0;
@@ -580,8 +580,8 @@ static void load_extra_devices(void)
 		devices[device_count].vid   = vid;
 		devices[device_count].pid   = pid;
 		devices[device_count].model = (*p == 'D' && p[1] == 'U')
-		                              ? DS45_MODEL_DUALSENSE : DS45_MODEL_DS4;
-		devices[device_count].name  = "DS45PAD device";
+		                              ? NPP_MODEL_DUALSENSE : NPP_MODEL_DS4;
+		devices[device_count].name  = "NativePadPS3 device";
 		device_count++;
 	}
 }
@@ -599,16 +599,16 @@ int usb_init(void)
 	load_extra_devices();
 
 	for (i = 0; i < device_count; i++) {
-		ds45_ops[i].name   = op_names[i];
-		ds45_ops[i].probe  = ds45_probe;
-		ds45_ops[i].attach = ds45_attach;
-		ds45_ops[i].detach = ds45_detach;
-		r = cellUsbdRegisterExtraLdd(&ds45_ops[i], devices[i].vid, devices[i].pid);
+		npp_ops[i].name   = op_names[i];
+		npp_ops[i].probe  = npp_probe;
+		npp_ops[i].attach = npp_attach;
+		npp_ops[i].detach = npp_detach;
+		r = cellUsbdRegisterExtraLdd(&npp_ops[i], devices[i].vid, devices[i].pid);
 		if (r != CELL_OK) {
-			ds45_boot_mark_hex("usb_reg_FAIL", (uint32_t)r);
+			npp_boot_mark_hex("usb_reg_FAIL", (uint32_t)r);
 		} else {
 			reg_count++;
-			ds45_boot_mark_hex("usb_reg_OK_pid", (uint32_t)devices[i].pid);
+			npp_boot_mark_hex("usb_reg_OK_pid", (uint32_t)devices[i].pid);
 		}
 	}
 
@@ -625,12 +625,12 @@ void usb_shutdown(void)
 	int i;
 
 	for (i = 0; i < device_count; i++) {
-		if (ds45_ops[i].name)
-			cellUsbdUnregisterExtraLdd(&ds45_ops[i]);
+		if (npp_ops[i].name)
+			cellUsbdUnregisterExtraLdd(&npp_ops[i]);
 	}
 
-	for (i = 0; i < DS45_MAX_PADS; i++) {
-		if (g_pads[i].in_use && g_pads[i].link == DS45_LINK_USB) {
+	for (i = 0; i < NPP_MAX_PADS; i++) {
+		if (g_pads[i].in_use && g_pads[i].link == NPP_LINK_USB) {
 			g_pads[i].in_use = 0;
 			ldd_unregister(&g_pads[i]);
 		}

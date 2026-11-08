@@ -2,20 +2,22 @@ param(
     [ValidateSet('vsh', 'game')][string]$Variant = 'vsh',
     [switch]$Debug,
     [string]$Sdk = $env:CELL_SDK,
-    [string]$Tools = $env:DS45_TOOLS,
+    [string]$Tools = $env:NPP_TOOLS,
     [ValidateSet('auto', 'fself', 'scetool')][string]$Sign = 'auto'
 )
 # Native Windows equivalent of build.sh. Requires an independently provided
 # Cell SDK; one without GetInfo2/SetPortSetting (192.001) gets the compat shim.
 #
 # Signing: 'scetool' signs with retail keys (runs on CEX CFW and HEN) and needs
-# DS45_TOOLS. 'fself' uses the SDK's own make_fself: a fake-signed SELF meant
+# NPP_TOOLS. 'fself' uses the SDK's own make_fself: a fake-signed SELF meant
 # for DEX/debug firmware (a retail console rejects it); it needs no keys and
-# ignores DS45_TOOLS. 'auto' picks scetool when DS45_TOOLS is set, fself otherwise.
+# ignores NPP_TOOLS. 'auto' picks scetool when NPP_TOOLS is set, fself otherwise.
 $ErrorActionPreference = 'Stop'
+# legacy variable name, one-cycle migration check; remove after the next release
+if ($env:DS45_TOOLS -and !$env:NPP_TOOLS) { throw 'DS45_TOOLS was renamed NPP_TOOLS: set NPP_TOOLS to the same folder (and unset DS45_TOOLS). No SPRX was built.' }
 if (!$Sdk) { throw 'Set CELL_SDK. No SPRX was built.' }
 if ($Sign -eq 'auto') { $Sign = if ($Tools) { 'scetool' } else { 'fself' } }
-if ($Sign -eq 'scetool' -and !$Tools) { throw 'Set DS45_TOOLS (scetool plus data/keys) to sign with scetool. No SPRX was built.' }
+if ($Sign -eq 'scetool' -and !$Tools) { throw 'Set NPP_TOOLS (scetool plus data/keys) to sign with scetool. No SPRX was built.' }
 $gcc = Join-Path $Sdk 'host-win32/ppu/bin/ppu-lv2-gcc.exe'
 $strip = Join-Path $Sdk 'host-win32/bin/ppu-lv2-prx-strip.exe'
 $include = Join-Path $Sdk 'target/ppu/include'
@@ -82,7 +84,7 @@ function Build-ShimBlob([string]$Repo) {
                            (Join-Path $src 'shim_blob.h'))
     Write-Output "Regenerated src/shim_blob.h from the freestanding kernel shim blob."
 }
-$sources = @('libc','util','hook','config','sticks','diag','main')
+$sources = @('libc','util','hook','config','paths','sticks','diag','main')
 $libs = @('-lio_stub','-lfs_stub','-llv2_stub')
 $compat = Join-Path $PSScriptRoot '../patches/compat_pad.h'
 $flags = @('-mprx','-Os','-ffunction-sections','-fdata-sections','-fno-builtin-printf','-nodefaultlibs','-std=gnu99','-Wall','-Wno-unused-parameter','-I',$include)
@@ -93,11 +95,11 @@ $hasInfo2 = (Test-Path -LiteralPath $libpad) -and (Select-String -LiteralPath $l
 if (!$hasInfo2 -and (Test-Path -LiteralPath $compat)) {
     $flags = @('-include', $compat) + $flags
 }
-# -Debug defines DS45_DEBUG (boot trace, LV2 dumper) and tags the output name.
+# -Debug defines NPP_DEBUG (boot trace, LV2 dumper) and tags the output name.
 $suffix = ''
-if ($Debug) { $flags += '-DDS45_DEBUG'; $suffix = '_debug' }
+if ($Debug) { $flags += '-DNPP_DEBUG'; $suffix = '_debug' }
 if ($Variant -eq 'game') {
-    $sources += 'gamehook'; $flags += '-DDS45_GAME'; $auth = '1010000001000003'
+    $sources += 'gamehook'; $flags += '-DNPP_GAME'; $auth = '1010000001000003'
 } else {
     # sixaxis + ds_body are VSH-only: the DualSense body decode and sixaxis
     # scaling feed dualsense/padldd, neither of which the game variant links.
@@ -114,10 +116,10 @@ foreach ($name in $sources) {
     Invoke-BuildTool $gcc ($flags + @('-c',(Join-Path $PSScriptRoot "$name.c"),'-o',$object))
     $objects += $object
 }
-$sym = Join-Path $objdir 'ds45pad.sym'
-$prx = Join-Path $objdir 'ds45pad.prx'
-$signed = Join-Path $objdir 'ds45pad.signed.tmp'
-$output = Join-Path $PSScriptRoot "ds45pad_$Variant$suffix.sprx"
+$sym = Join-Path $objdir 'nativepadps3.sym'
+$prx = Join-Path $objdir 'nativepadps3.prx'
+$signed = Join-Path $objdir 'nativepadps3.signed.tmp'
+$output = Join-Path $PSScriptRoot "nativepadps3_$Variant$suffix.sprx"
 Invoke-BuildTool $gcc (@('-mprx','-zgenprx','-zgenstub','-ffunction-sections','-fdata-sections') + $objects + @('-L',$lib) + $libs + @('-o',$sym))
 Invoke-BuildTool $strip @('--strip-debug','--strip-section-header',$sym,'-o',$prx)
 $oldPS3 = $env:PS3

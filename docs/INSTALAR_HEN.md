@@ -4,31 +4,31 @@ Guia específico para HEN. Para CFW, veja [INSTALAR_CFW.md](INSTALAR_CFW.md) —
 o mesmo caminho, sem o passo de reativar a cada boot.
 
 > **Arquitetura final:** o que resolve compatibilidade e analógicos é o
-> **`ds45pad_game.sprx`**, carregado no processo do jogo pelo PS3MAPI do webMAN.
-> O `ds45pad_vsh.sprx` é opcional e serve só para o botão PS no XMB.
+> **`nativepadps3_game.sprx`**, carregado no processo do jogo pelo PS3MAPI do webMAN.
+> O `nativepadps3_vsh.sprx` é opcional e serve só para o botão PS no XMB.
 > Veja [ARQUITETURA.md](ARQUITETURA.md).
 
 ## Resumo do que instalar
 
 ```
 /dev_hdd0/plugins/webftp_server_ps3mapi.sprx     <- webMAN MOD (obrigatorio)
-/dev_hdd0/plugins/ds45pad/ds45pad_game.sprx      <- o que faz o trabalho
-/dev_hdd0/plugins/ds45pad/ds45pad.txt            <- configuracao
-/dev_hdd0/plugins/ds45pad/ds45pad_vsh.sprx       <- opcional (botao PS no XMB)
+/dev_hdd0/plugins/nativepadps3/nativepadps3_game.sprx      <- o que faz o trabalho
+/dev_hdd0/plugins/nativepadps3/nativepadps3.txt            <- configuracao
+/dev_hdd0/plugins/nativepadps3/nativepadps3_vsh.sprx       <- opcional (botao PS no XMB)
 ```
 
 `/dev_hdd0/boot_plugins.txt`:
 
 ```
 /dev_hdd0/plugins/webftp_server_ps3mapi.sprx
-/dev_hdd0/plugins/ds45pad/ds45pad_vsh.sprx
+/dev_hdd0/plugins/nativepadps3/nativepadps3_vsh.sprx
 ```
 
 Com o jogo rodando: navegador no IP do PS3 → aba **PS3MAPI** → **Game Plugins**
 → selecione o processo do jogo → **Set** → num slot livre digite
-`/dev_hdd0/plugins/ds45pad/ds45pad_game.sprx` → **Load**.
+`/dev_hdd0/plugins/nativepadps3/nativepadps3_game.sprx` → **Load**.
 
-Confirme em `/dev_hdd0/tmp/ds45pad_boot.txt`:
+Confirme em `/dev_hdd0/tmp/nativepadps3_boot.txt`:
 
 ```
 game_mode
@@ -62,7 +62,7 @@ pronto de outra pessoa, confirme que foi assinado assim.
 | Item | Observação |
 |---|---|
 | PS3 com HEN ativo | Qualquer versão recente (4.8x / 4.9x) |
-| `ds45pad_vsh.sprx` compilado e assinado | Veja o Passo 2 — este é o passo mais trabalhoso |
+| `nativepadps3_vsh.sprx` compilado e assinado | Veja o Passo 2 — este é o passo mais trabalhoso |
 | Um pendrive FAT32 | Para a rede de segurança e para transferir arquivos |
 | Um gerenciador de arquivos no PS3 | multiMAN, IRISMAN ou webMAN MOD |
 
@@ -115,7 +115,7 @@ cd src
 make
 ```
 
-Sai `src/ds45pad_vsh.sprx`.
+Sai `src/nativepadps3_vsh.sprx`.
 
 Se preferir não montar ambiente nenhum, [PEDIR_BUILD.md](PEDIR_BUILD.md) tem um
 pedido pronto para postar em fórum.
@@ -126,23 +126,23 @@ De qualquer forma, **confirme a linha de assinatura**: tem que ter `-2 0A`.
 
 ## Passo 3 — Copie os arquivos para o console
 
-Crie a pasta `/dev_hdd0/plugins/ds45pad/` e ponha três arquivos nela:
+Crie a pasta `/dev_hdd0/plugins/nativepadps3/` e ponha três arquivos nela:
 
 ```
-/dev_hdd0/plugins/ds45pad/ds45pad_vsh.sprx        <- src/ds45pad_vsh.sprx
-/dev_hdd0/plugins/ds45pad/ds45pad.txt             <- data/ds45pad.txt
-/dev_hdd0/plugins/ds45pad/ds45pad_devices.txt     <- data/ds45pad_devices.txt
+/dev_hdd0/plugins/nativepadps3/nativepadps3_vsh.sprx        <- src/nativepadps3_vsh.sprx
+/dev_hdd0/plugins/nativepadps3/nativepadps3.txt             <- ps3_ready/plugins/nativepadps3/nativepadps3.txt
+/dev_hdd0/plugins/nativepadps3/nativepadps3_devices.txt     <- ps3_ready/plugins/nativepadps3/nativepadps3_devices.txt
 ```
 
 **Por FTP (webMAN MOD instalado):** conecte no IP do PS3 pela porta 21, usuário
 e senha em branco, e arraste os arquivos.
 
-**Por pendrive:** copie a pasta `ds45pad` para o pendrive, plugue no PS3, e use
-o multiMAN/IRISMAN para copiar de `/dev_usb000/ds45pad` para
-`/dev_hdd0/plugins/ds45pad`.
+**Por pendrive:** copie a pasta `nativepadps3` para o pendrive, plugue no PS3, e use
+o multiMAN/IRISMAN para copiar de `/dev_usb000/nativepadps3` para
+`/dev_hdd0/plugins/nativepadps3`.
 
 Os dois `.txt` são opcionais — sem eles o plugin usa os padrões, que já são os
-que você quer. Mas leve o `ds45pad.txt` de qualquer forma: é ali que fica o
+que você quer. Mas leve o `nativepadps3.txt` de qualquer forma: é ali que fica o
 ajuste dos analógicos.
 
 ---
@@ -153,7 +153,7 @@ ajuste dos analógicos.
 2. Adicione **uma linha**, com o caminho completo:
 
 ```
-/dev_hdd0/plugins/ds45pad/ds45pad_vsh.sprx
+/dev_hdd0/plugins/nativepadps3/nativepadps3_vsh.sprx
 ```
 
 3. Salve.
@@ -164,6 +164,9 @@ Detalhes que costumam dar problema:
 - O arquivo tem que estar na **raiz** do `dev_hdd0`, não dentro de `plugins/`.
 - Se você já usa webMAN MOD, a linha dele já está aí. Só acrescente a sua
   embaixo, não substitua.
+- Se já existir uma linha do plugin antigo `ds45pad`, **substitua** essa linha
+  pela nova; nunca deixe as duas, senão o plugin é instalado duas vezes no
+  boot. Veja "Upgrading from ds45pad" no README.
 - Se o seu setup usa MAMBA em vez de Cobra, o arquivo se chama
   `mamba_plugins.txt`.
 
@@ -174,7 +177,7 @@ Detalhes que costumam dar problema:
 1. Reinicie o PS3.
 2. Ative o HEN do jeito que você já faz (o app HEN Installer ou o exploit pelo
    navegador).
-3. Alguns segundos depois deve aparecer o aviso **`DS45PAD 1.0.0 carregado`**.
+3. Alguns segundos depois deve aparecer o aviso **`NativePadPS3 Caricato / Loaded`**.
 
 O aviso demora ~8 segundos de propósito, para não aparecer enquanto o XMB ainda
 está montando. O controle já funciona antes disso.
@@ -217,10 +220,10 @@ batente**, fazendo círculos completos.
 
 Isso ensina ao plugin o curso real de cada eixo. É o que faz um stick Hall
 effect — que muitas vezes só vai de `0x14` a `0xEB` — alcançar o extremo. O
-resultado fica salvo em `/dev_hdd0/plugins/ds45pad/ds45pad_cal.txt` e não precisa ser refeito.
+resultado fica salvo em `/dev_hdd0/plugins/nativepadps3/nativepadps3_cal.txt` e não precisa ser refeito.
 
 Depois teste num jogo. Se ainda faltar alcance nos cantos, abra
-`ds45pad.txt` e baixe:
+`nativepadps3.txt` e baixe:
 
 ```
 STICK_SATURATION = 75
@@ -234,7 +237,7 @@ Ou `71`, que leva a diagonal ao canto absoluto. O detalhamento está em
 ## Se o console travar ao ligar o HEN
 
 Plugue o pendrive do Passo 1 e ligue o HEN — nenhum plugin carrega e você entra
-normal. Então leia **`/dev_hdd0/tmp/ds45pad_boot.txt`**.
+normal. Então leia **`/dev_hdd0/tmp/nativepadps3_boot.txt`**.
 
 O plugin grava um marcador nesse arquivo **antes** de cada etapa que mexe com o
 sistema, fechando o arquivo a cada escrita. O último marcador presente nomeia a
@@ -243,8 +246,8 @@ etapa que travou:
 | Último marcador | Onde travou |
 |---|---|
 | *(arquivo não existe)* | O módulo nem chegou a rodar — assinatura ou formato do SPRX |
-| `start` | Leitura do `ds45pad.txt` |
-| `config` | Leitura do `ds45pad_cal.txt` |
+| `start` | Leitura do `nativepadps3.txt` |
+| `config` | Leitura do `nativepadps3_cal.txt` |
 | `sticks` | Registro do driver USB (`cellUsbdRegisterExtraLdd`) |
 | `usb_init` | Ainda no registro USB |
 | `usb_ok` | Instalação do desvio de vibração |
@@ -255,7 +258,7 @@ etapa que travou:
 Com o marcador em mãos, dá para isolar rápido. Duas mitigações que quase sempre
 adiantam:
 
-- `MODE = BT` no `ds45pad.txt` pula todo o registro USB;
+- `MODE = BT` no `nativepadps3.txt` pula todo o registro USB;
 - `NOTIFY = 0` (já é o padrão) evita a leitura da tabela de imports, que depende
   do layout do firmware.
 
@@ -267,12 +270,12 @@ adiantam:
 | Nenhum aviso no XMB | Caminho errado no `boot_plugins.txt`, ou o arquivo não está na raiz do `dev_hdd0` |
 | Aviso aparece, controle não responde no USB | Outro plugin de controle pegou o aparelho antes. Tire o PS3xPAD do `boot_plugins.txt` se estiver lá |
 | Funciona no XMB mas não no jogo | O HEN não expôs as syscalls de pad. O plugin ainda funciona parcialmente; o botão PS continua bom |
-| Um jogo específico recusa o controle | `CAPABILITY_MASK = 0xFFFF` no `ds45pad.txt` |
+| Um jogo específico recusa o controle | `CAPABILITY_MASK = 0xFFFF` no `nativepadps3.txt` |
 | Dois controles respondendo juntos (Bluetooth) | Falta reatribuir o físico para a porta 7 (Passo 6) |
 | Analógicos ainda curtos nos cantos | Refaça o Passo 7, depois `STICK_SATURATION = 75` |
 
-Para investigar qualquer um desses, ligue `DIAG = 1` no `ds45pad.txt` e leia
-`/dev_hdd0/tmp/ds45pad_diag.txt` — o procedimento está em
+Para investigar qualquer um desses, ligue `DIAG = 1` no `nativepadps3.txt` e leia
+`/dev_hdd0/tmp/nativepadps3_diag.txt` — o procedimento está em
 [DIAGNOSTICO.md](DIAGNOSTICO.md).
 
 ---
@@ -280,4 +283,4 @@ Para investigar qualquer um desses, ligue `DIAG = 1` no `ds45pad.txt` e leia
 ## Desinstalar
 
 Apague a linha do `/dev_hdd0/boot_plugins.txt` e reinicie. A pasta
-`plugins/ds45pad/` pode ficar onde está sem efeito nenhum.
+`plugins/nativepadps3/` pode ficar onde está sem efeito nenhum.

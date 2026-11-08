@@ -1,5 +1,5 @@
 #!/bin/bash
-# DS45PAD - build script (Git Bash / MSYS2 on Windows)
+# NPP - build script (Git Bash / MSYS2 on Windows)
 #
 # Reproduces the build exactly, without GNU make. The make.exe that ships in
 # the webMAN MOD repo is linked as a GUI subsystem binary, so under Git Bash it
@@ -7,18 +7,21 @@
 # both simpler and easier to debug.
 #
 # Usage:  ./build.sh [game] [debug]
-#   (no argument) -> ds45pad_vsh.sprx   (boot plugin, runs in the VSH)
-#   game          -> ds45pad_game.sprx  (-DDS45_GAME; injected into a running
+#   (no argument) -> nativepadps3_vsh.sprx   (boot plugin, runs in the VSH)
+#   game          -> nativepadps3_game.sprx  (-DNPP_GAME; injected into a running
 #                                        game to correct the stick curve)
-#   debug         -> the same with -DDS45_DEBUG, named ds45pad_<variant>_debug.sprx
+#   debug         -> the same with -DNPP_DEBUG, named nativepadps3_<variant>_debug.sprx
 #                    (boot trace; the VSH build also gets the LV2 dumper)
 
 set -e
 
+# legacy variable name, one-cycle migration check; remove after the next release
+if [ -n "${DS45_TOOLS:-}" ] && [ -z "${NPP_TOOLS:-}" ]; then echo "ERRO: DS45_TOOLS was renamed NPP_TOOLS: set NPP_TOOLS to the same folder. No SPRX was built." >&2; exit 1; fi
+
 SDK="${CELL_SDK:-C:/ps3sdk/cell}"
-# DS45_TOOLS set: sign with scetool and retail keys (CEX CFW and HEN).
+# NPP_TOOLS set: sign with scetool and retail keys (CEX CFW and HEN).
 # Unset: the SDK's make_fself, a fake-signed SELF for DEX/debug firmware only.
-TOOLS="${DS45_TOOLS:-}"
+TOOLS="${NPP_TOOLS:-}"
 
 PPU_BIN="$SDK/host-win32/ppu/bin"
 HOST_BIN="$SDK/host-win32/bin"
@@ -42,28 +45,28 @@ for a in "$@"; do
 done
 
 if [ "$VARIANT" = "game" ]; then
-	EXTRA="-DDS45_GAME"
-	OUT="ds45pad_game.sprx"
+	EXTRA="-DNPP_GAME"
+	OUT="nativepadps3_game.sprx"
 	AUTH="$AUTH_GAME"
 	# A game process loads libio and libfs but *not* libusbd, so the in-game
 	# build must not contain a single reference to it - otherwise the loader
 	# cannot resolve the module and PS3MAPI hangs on "Load" forever.
-	SRCS="libc.c util.c hook.c config.c sticks.c gamehook.c diag.c main.c"
+	SRCS="libc.c util.c hook.c config.c paths.c sticks.c gamehook.c diag.c main.c"
 	LDLIBS="-lio_stub -lfs_stub"
 else
 	EXTRA=""
-	OUT="ds45pad_vsh.sprx"
+	OUT="nativepadps3_vsh.sprx"
 	AUTH="$AUTH_VSH"
-	SRCS="libc.c util.c hook.c config.c ds4.c dualsense.c ds_body.c sixaxis.c \
+	SRCS="libc.c util.c hook.c config.c paths.c ds4.c dualsense.c ds_body.c sixaxis.c \
 	      sticks.c padldd.c usb.c passthru.c lv2.c kernel.c btcheck.c \
 	      kpatch.c kshim.c kshim_table.c diag.c main.c"
 	LDLIBS="-lusbd_stub -lio_stub -lfs_stub -llv2_stub"
 fi
 
-# debug: -DDS45_DEBUG (boot trace, and for the VSH build the LV2 dumper),
+# debug: -DNPP_DEBUG (boot trace, and for the VSH build the LV2 dumper),
 # output tagged _debug. Same switch as `make DEBUG=1` / `build.ps1 -Debug`.
 if [ "$DEBUG" = "1" ]; then
-	EXTRA="$EXTRA -DDS45_DEBUG"
+	EXTRA="$EXTRA -DNPP_DEBUG"
 	OUT="${OUT%.sprx}_debug.sprx"
 	if [ "$VARIANT" = "vsh" ]; then
 		SRCS="$SRCS lv2dump.c lv2capture.c"
@@ -151,18 +154,18 @@ for f in $SRCS; do
 done
 
 echo "linkando..."
-"$GCC" $LDFLAGS obj/*.o -L "$LIBDIR" $LDLIBS -o obj/ds45pad.sym
+"$GCC" $LDFLAGS obj/*.o -L "$LIBDIR" $LDLIBS -o obj/nativepadps3.sym
 
 echo "strip..."
 "$PRXSTRIP" --strip-debug --strip-section-header \
-            obj/ds45pad.sym -o obj/ds45pad.prx
+            obj/nativepadps3.sym -o obj/nativepadps3.prx
 
 echo "assinando..."
 if [ -n "$TOOLS" ]; then
-	"$SCETOOL" $SCEFLAGS -e obj/ds45pad.prx "$OUT" > /dev/null
+	"$SCETOOL" $SCEFLAGS -e obj/nativepadps3.prx "$OUT" > /dev/null
 else
 	# make_fself takes no auth id (loading on DEX is confirmed on console, Task 11).
-	"$MAKE_FSELF" obj/ds45pad.prx "$OUT" > /dev/null
+	"$MAKE_FSELF" obj/nativepadps3.prx "$OUT" > /dev/null
 fi
 
 # A SPRX that still starts with 7F 45 4C 46 ("ELF") means signing silently did

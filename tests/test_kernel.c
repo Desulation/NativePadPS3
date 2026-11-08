@@ -1,4 +1,4 @@
-/* SOURCES: lv2.c kernel.c */
+/* SOURCES: lv2.c kernel.c paths.c */
 #include <stdint.h>
 #include <string.h>
 #include "fakes.h"
@@ -8,15 +8,15 @@
 #define FP_ADDR 0x8000000000123400ULL
 #define GOOD_TAIL " 0x80000000003a2b10 0xe8"
 
-static uint8_t g_fp[DS45_FP_LEN];
+static uint8_t g_fp[NPP_FP_LEN];
 
 static uint64_t plant_fp(uint64_t addr, uint8_t seed)
 {
 	int i;
-	for (i = 0; i < DS45_FP_LEN; i++)
+	for (i = 0; i < NPP_FP_LEN; i++)
 		g_fp[i] = (uint8_t)(seed + i * 7);
-	fake_lv2_set(addr, g_fp, DS45_FP_LEN);
-	return ds45_fnv1a64(g_fp, DS45_FP_LEN);
+	fake_lv2_set(addr, g_fp, NPP_FP_LEN);
+	return npp_fnv1a64(g_fp, NPP_FP_LEN);
 }
 
 /* "0x" + 16 lowercase hex digits, independent of the code under test */
@@ -32,14 +32,14 @@ static void hex16(char *dst, uint64_t v)
 
 static int load_text(const char *text)
 {
-	ds45_kernel_t out;
-	fake_file_set(DS45_KERNEL_CACHE_FILE, text);
+	npp_kernel_t out;
+	fake_file_set(npp_path(NPP_PATH_KERNEL_CACHE), text);
 	return kernel_cache_load(&out);
 }
 
 static int test_table_hit(void)
 {
-	ds45_kernel_t tab[3];
+	npp_kernel_t tab[3];
 	uint64_t h;
 
 	fake_reset_all();
@@ -59,7 +59,7 @@ static int test_table_hit(void)
 
 static int test_table_miss_wrong_hash(void)
 {
-	ds45_kernel_t tab[1];
+	npp_kernel_t tab[1];
 	uint64_t h;
 
 	fake_reset_all();
@@ -75,16 +75,16 @@ static int test_table_miss_wrong_hash(void)
 
 static int test_table_fp_out_of_window(void)
 {
-	ds45_kernel_t tab[4];
+	npp_kernel_t tab[4];
 
 	fake_reset_all();
 	memset(tab, 0, sizeof(tab));
-	tab[0].name = "bound";     tab[0].fp_addr = DS45_LV2_BOUND;
-	tab[1].name = "straddle";  tab[1].fp_addr = DS45_LV2_BOUND - 8; /* 32 bytes cross the end */
+	tab[0].name = "bound";     tab[0].fp_addr = NPP_LV2_BOUND;
+	tab[1].name = "straddle";  tab[1].fp_addr = NPP_LV2_BOUND - 8; /* 32 bytes cross the end */
 	tab[2].name = "unaligned"; tab[2].fp_addr = FP_ADDR + 4;
-	tab[3].name = "below";     tab[3].fp_addr = DS45_LV2_BASE - 8;
+	tab[3].name = "below";     tab[3].fp_addr = NPP_LV2_BASE - 8;
 	CHECK(kernel_match_table(tab, 4) == NULL);
-	CHECK(kernel_fingerprint_matches(DS45_LV2_BOUND, 0) == 0);
+	CHECK(kernel_fingerprint_matches(NPP_LV2_BOUND, 0) == 0);
 	CHECK(kernel_fingerprint_matches(0xFFFFFFFFFFFFFFF8ULL, 0) == 0);
 	CHECK(fake_lv2_out_of_bounds == 0);
 	return 0;
@@ -92,13 +92,13 @@ static int test_table_fp_out_of_window(void)
 
 static int test_table_contents(void)
 {
-	const ds45_kernel_t *leg = NULL;
+	const npp_kernel_t *leg = NULL;
 	int i;
 
-	CHECK(ds45_kernel_table_count >= 1);
-	for (i = 0; i < ds45_kernel_table_count; i++)
-		if (ds45_kernel_table[i].fp_addr == 0)
-			leg = &ds45_kernel_table[i];
+	CHECK(npp_kernel_table_count >= 1);
+	for (i = 0; i < npp_kernel_table_count; i++)
+		if (npp_kernel_table[i].fp_addr == 0)
+			leg = &npp_kernel_table[i];
 	CHECK(leg != NULL);
 	CHECK(leg->fp_hash == 0);
 	CHECK(leg->slot_addr == 0x800000000034C530ULL);
@@ -108,7 +108,7 @@ static int test_table_contents(void)
 
 static int test_cache_roundtrip(void)
 {
-	ds45_kernel_t k, out;
+	npp_kernel_t k, out;
 	uint64_t h;
 
 	fake_reset_all();
@@ -131,42 +131,42 @@ static int test_cache_roundtrip(void)
 
 static int test_cache_exact_format(void)
 {
-	ds45_kernel_t k;
+	npp_kernel_t k;
 
 	fake_reset_all();
 	memset(&k, 0, sizeof(k));
 	k.fp_addr = 0x8000000000123400ULL; k.fp_hash = 0xDEADBEEF0123ULL;
 	k.slot_addr = 0x80000000003A2B10ULL; k.report_off = 0xE8;
 	CHECK(kernel_cache_store(&k) == 0);
-	CHECK(strcmp(fake_file_get(DS45_KERNEL_CACHE_FILE),
+	CHECK(strcmp(fake_file_get(npp_path(NPP_PATH_KERNEL_CACHE)),
 	  "DS45K1 0x8000000000123400 0xdeadbeef0123 0x80000000003a2b10 0xe8\n") == 0);
 
 	/* zero values print as 0x0; a rewrite replaces the old content */
 	k.fp_hash = 0; k.report_off = 0;
 	CHECK(kernel_cache_store(&k) == 0);
-	CHECK(strcmp(fake_file_get(DS45_KERNEL_CACHE_FILE),
+	CHECK(strcmp(fake_file_get(npp_path(NPP_PATH_KERNEL_CACHE)),
 	  "DS45K1 0x8000000000123400 0x0 0x80000000003a2b10 0x0\n") == 0);
 	return 0;
 }
 
 static int test_cache_store_rejects_no_fingerprint(void)
 {
-	ds45_kernel_t k;
+	npp_kernel_t k;
 
 	fake_reset_all();
 	memset(&k, 0, sizeof(k));
 	k.slot_addr = 0x800000000034C530ULL; k.report_off = 0xE8;
 	CHECK(kernel_cache_store(&k) == -1);
 	CHECK(kernel_cache_store(NULL) == -1);
-	CHECK(fake_file_size(DS45_KERNEL_CACHE_FILE) == -1);
+	CHECK(fake_file_size(npp_path(NPP_PATH_KERNEL_CACHE)) == -1);
 	return 0;
 }
 
 static int test_cache_stale_fingerprint(void)
 {
-	ds45_kernel_t k, out;
+	npp_kernel_t k, out;
 	uint64_t h;
-	uint8_t other[DS45_FP_LEN];
+	uint8_t other[NPP_FP_LEN];
 
 	fake_reset_all();
 	h = plant_fp(FP_ADDR, 0x44);
@@ -182,13 +182,13 @@ static int test_cache_stale_fingerprint(void)
 	CHECK(kernel_cache_load(&out) == -1);
 
 	/* stored hash simply wrong */
-	fake_lv2_set(FP_ADDR, g_fp, DS45_FP_LEN);
+	fake_lv2_set(FP_ADDR, g_fp, NPP_FP_LEN);
 	k.fp_hash = h ^ 0x10;
 	CHECK(kernel_cache_store(&k) == 0);
 	CHECK(kernel_cache_load(&out) == -1);
 
 	/* fingerprint address outside the window: no peek, no match */
-	k.fp_addr = DS45_LV2_BOUND; k.fp_hash = h;
+	k.fp_addr = NPP_LV2_BOUND; k.fp_hash = h;
 	CHECK(kernel_cache_store(&k) == 0);
 	CHECK(kernel_cache_load(&out) == -1);
 	CHECK(fake_lv2_out_of_bounds == 0);
@@ -197,7 +197,7 @@ static int test_cache_stale_fingerprint(void)
 
 static int test_cache_malformed_lines(void)
 {
-	ds45_kernel_t out;
+	npp_kernel_t out;
 	char good[160], buf[256], hh[24];
 	uint64_t h;
 
@@ -268,13 +268,13 @@ static int test_cache_malformed_lines(void)
 
 static int test_cache_load_leaves_out_untouched_on_failure(void)
 {
-	ds45_kernel_t out;
+	npp_kernel_t out;
 	unsigned char *p = (unsigned char *)&out;
 	size_t i;
 
 	fake_reset_all();
 	memset(&out, 0xAA, sizeof(out));
-	fake_file_set(DS45_KERNEL_CACHE_FILE, "garbage\n");
+	fake_file_set(npp_path(NPP_PATH_KERNEL_CACHE), "garbage\n");
 	CHECK(kernel_cache_load(&out) == -1);
 	for (i = 0; i < sizeof(out); i++)
 		CHECK(p[i] == 0xAA);
@@ -283,15 +283,15 @@ static int test_cache_load_leaves_out_untouched_on_failure(void)
 
 static int test_cache_delete(void)
 {
-	ds45_kernel_t k;
+	npp_kernel_t k;
 
 	fake_reset_all();
 	memset(&k, 0, sizeof(k));
 	k.fp_addr = FP_ADDR; k.fp_hash = 1; k.slot_addr = 0x80000000003A2B10ULL;
 	CHECK(kernel_cache_store(&k) == 0);
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 0);
+	CHECK(fake_file_deleted(npp_path(NPP_PATH_KERNEL_CACHE)) == 0);
 	kernel_cache_delete();
-	CHECK(fake_file_deleted(DS45_KERNEL_CACHE_FILE) == 1);
+	CHECK(fake_file_deleted(npp_path(NPP_PATH_KERNEL_CACHE)) == 1);
 	return 0;
 }
 

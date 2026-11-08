@@ -1,15 +1,15 @@
-/* SOURCES: lv2.c kernel.c btcheck.c passthru.c */
-/* CFLAGS: -DDS45_DEBUG */
+/* SOURCES: lv2.c kernel.c btcheck.c passthru.c paths.c */
+/* CFLAGS: -DNPP_DEBUG */
 #include <stdint.h>
 #include <string.h>
 #include "fakes.h"
-#include "ds45pad.h"
+#include "npp.h"
 
 /* passthru_bt_pad_present() (debug builds, for the LV2 dumper): any generic
  * pad counts, with or without a kernel record, bound or not. */
 
-ds45_config_t g_cfg;
-ds45_pad_t    g_pads[DS45_MAX_PADS];
+npp_config_t g_cfg;
+npp_pad_t    g_pads[NPP_MAX_PADS];
 
 static void clear_ports(void)
 {
@@ -29,7 +29,7 @@ static int test_no_pad(void)
 static int test_generic_pad_without_kernel_record(void)
 {
 	clear_ports();                        /* no kernel_resolve: nothing active */
-	fake_pad_info.port_status[3] = DS45_STATUS_CONNECTED;
+	fake_pad_info.port_status[3] = NPP_STATUS_CONNECTED;
 	CHECK(passthru_bt_pad_present() == 1);
 	return 0;
 }
@@ -37,10 +37,10 @@ static int test_generic_pad_without_kernel_record(void)
 static int test_ldd_and_ds3_do_not_count(void)
 {
 	clear_ports();
-	fake_pad_info.port_status[0] = DS45_STATUS_CONNECTED;
-	fake_pad_info.device_type[0] = DS45_DEV_TYPE_LDD;
-	fake_pad_info.port_status[1] = DS45_STATUS_CONNECTED;
-	fake_pad_info.device_capability[1] = DS45_CAP_PS3_CONFORMITY;
+	fake_pad_info.port_status[0] = NPP_STATUS_CONNECTED;
+	fake_pad_info.device_type[0] = NPP_DEV_TYPE_LDD;
+	fake_pad_info.port_status[1] = NPP_STATUS_CONNECTED;
+	fake_pad_info.device_capability[1] = NPP_CAP_PS3_CONFORMITY;
 	CHECK(passthru_bt_pad_present() == 0);
 	return 0;
 }
@@ -50,13 +50,13 @@ static int test_ldd_and_ds3_do_not_count(void)
 static int test_own_pad_excluded_last_port_counts(void)
 {
 	clear_ports();
-	fake_pad_info.port_status[2] = DS45_STATUS_CONNECTED;
+	fake_pad_info.port_status[2] = NPP_STATUS_CONNECTED;
 	g_pads[0].in_use = 1;
 	g_pads[0].handle = 100;
 	g_pads[0].port   = 2;
 	CHECK(passthru_bt_pad_present() == 0);
 
-	fake_pad_info.port_status[DS45_MAX_PORT_NUM - 1] = DS45_STATUS_CONNECTED;
+	fake_pad_info.port_status[NPP_MAX_PORT_NUM - 1] = NPP_STATUS_CONNECTED;
 	CHECK(passthru_bt_pad_present() == 1);
 	return 0;
 }
@@ -65,11 +65,11 @@ static int test_own_pad_excluded_last_port_counts(void)
 static int test_generic_pad_next_to_others(void)
 {
 	clear_ports();
-	fake_pad_info.port_status[0] = DS45_STATUS_CONNECTED;
-	fake_pad_info.device_type[0] = DS45_DEV_TYPE_LDD;
-	fake_pad_info.port_status[1] = DS45_STATUS_CONNECTED;
-	fake_pad_info.device_capability[1] = DS45_CAP_PS3_CONFORMITY;
-	fake_pad_info.port_status[4] = DS45_STATUS_CONNECTED;
+	fake_pad_info.port_status[0] = NPP_STATUS_CONNECTED;
+	fake_pad_info.device_type[0] = NPP_DEV_TYPE_LDD;
+	fake_pad_info.port_status[1] = NPP_STATUS_CONNECTED;
+	fake_pad_info.device_capability[1] = NPP_CAP_PS3_CONFORMITY;
+	fake_pad_info.port_status[4] = NPP_STATUS_CONNECTED;
 	CHECK(passthru_bt_pad_present() == 1);
 	return 0;
 }
@@ -77,7 +77,7 @@ static int test_generic_pad_next_to_others(void)
 static int test_pad_info_error(void)
 {
 	clear_ports();
-	fake_pad_info.port_status[3] = DS45_STATUS_CONNECTED;
+	fake_pad_info.port_status[3] = NPP_STATUS_CONNECTED;
 	fake_pad_info_rc = -1;
 	CHECK(passthru_bt_pad_present() == 0);
 	return 0;

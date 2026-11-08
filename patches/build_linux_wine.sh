@@ -1,6 +1,6 @@
 #!/bin/bash
-# Uso: ds45_build.sh <cartella_sorgenti> <vsh|game> <file_output.sprx>
-# Replica build.sh di DS45Pad su Linux: compilatore Cell SDK sotto Wine + scetool nativo.
+# Uso: npp_build.sh <cartella_sorgenti> <vsh|game> <file_output.sprx>
+# Replica build.sh di NativePadPS3 su Linux: compilatore Cell SDK sotto Wine + scetool nativo.
 set -e
 SRCDIR="$1"; MODE="$2"; OUT="$3"
 SDK=/tmp/ps3sdk
@@ -14,7 +14,7 @@ INCLUDE="$SDK/target/ppu/include"; LIBDIR="$SDK/target/ppu/lib"
 
 AUTH_VSH=1070000052000001; AUTH_GAME=1010000001000003
 if [ "$MODE" = "game" ]; then
-  EXTRA="-DDS45_GAME"; AUTH=$AUTH_GAME
+  EXTRA="-DNPP_GAME"; AUTH=$AUTH_GAME
   SRCS="libc.c util.c hook.c config.c sticks.c diag.c main.c"; LDLIBS="-lio_stub -lfs_stub"
 else
   EXTRA=""; AUTH=$AUTH_VSH
@@ -29,11 +29,11 @@ cd "$SRCDIR"; mkdir -p obj; rm -f obj/*.o
 echo "compilando ($MODE)..."
 for f in $SRCS; do $WINE "$GCC" $CFLAGS -c "$f" -o "obj/${f%.c}.o"; done
 echo "linkando..."
-$WINE "$GCC" $LDFLAGS obj/*.o -L "$LIBDIR" $LDLIBS -o obj/ds45pad.sym
+$WINE "$GCC" $LDFLAGS obj/*.o -L "$LIBDIR" $LDLIBS -o obj/nativepadps3.sym
 echo "strip..."
-$WINE "$PRXSTRIP" --strip-debug --strip-section-header obj/ds45pad.sym -o obj/ds45pad.prx
+$WINE "$PRXSTRIP" --strip-debug --strip-section-header obj/nativepadps3.sym -o obj/nativepadps3.prx
 echo "assinando..."
-PS3="$SCEDIR/data" "$SCEDIR/scetool" $SCEFLAGS -e obj/ds45pad.prx "$OUT" > /dev/null
+PS3="$SCEDIR/data" "$SCEDIR/scetool" $SCEFLAGS -e obj/nativepadps3.prx "$OUT" > /dev/null
 magic=$(od -A n -t x1 -N 4 "$OUT" | tr -d ' ')
 [ "$magic" = "53434500" ] || { echo "ERRORE: $OUT non inizia con SCE ($magic)"; exit 1; }
 echo "ok: $OUT ($(stat -c %s "$OUT") bytes)"

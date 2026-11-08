@@ -1,5 +1,5 @@
-/* SOURCES: lv2.c kernel.c lv2dump.c config.c */
-/* CFLAGS: -DDS45_DEBUG */
+/* SOURCES: lv2.c kernel.c lv2dump.c config.c paths.c */
+/* CFLAGS: -DNPP_DEBUG */
 #include <stdint.h>
 #include <string.h>
 #include "fakes.h"
@@ -8,11 +8,11 @@
 
 /* Synthetic image only: made-up qwords and a made-up PS3MAPI answer. */
 
-#define A_BIN   "/dev_hdd0/tmp/ds45pad_lv2.bin"
-#define A_TXT   "/dev_hdd0/tmp/ds45pad_lv2.txt"
-#define B_BIN   "/dev_hdd0/tmp/ds45pad_lv2_b.bin"
-#define B_TXT   "/dev_hdd0/tmp/ds45pad_lv2_b.txt"
-#define WINDOW  ((int)(DS45_LV2_BOUND - DS45_LV2_BASE))
+#define A_BIN   "/dev_hdd0/tmp/nativepadps3_lv2.bin"
+#define A_TXT   "/dev_hdd0/tmp/nativepadps3_lv2.txt"
+#define B_BIN   "/dev_hdd0/tmp/nativepadps3_lv2_b.bin"
+#define B_TXT   "/dev_hdd0/tmp/nativepadps3_lv2_b.txt"
+#define WINDOW  ((int)(NPP_LV2_BOUND - NPP_LV2_BASE))
 #define CHUNK   65536
 
 #define T_A     20000u    /* dump A is due 20 s after the pad shows up */
@@ -45,7 +45,7 @@ int passthru_source_buttons(uint16_t *d1, uint16_t *d2)
 static char traces[4][64];
 static int  trace_count;
 
-void ds45_boot_mark(const char *stage)
+void npp_boot_mark(const char *stage)
 {
 	if (trace_count < 4) {
 		strncpy(traces[trace_count], stage, 63);
@@ -54,7 +54,7 @@ void ds45_boot_mark(const char *stage)
 	trace_count++;
 }
 
-void ds45_boot_mark_hex(const char *stage, uint32_t value)
+void npp_boot_mark_hex(const char *stage, uint32_t value)
 {
 	static const char hex[] = "0123456789ABCDEF";
 	char line[80];
@@ -67,7 +67,7 @@ void ds45_boot_mark_hex(const char *stage, uint32_t value)
 	for (d = 28; d >= 0; d -= 4)
 		line[i++] = hex[(value >> d) & 0xF];
 	line[i] = 0;
-	ds45_boot_mark(line);
+	npp_boot_mark(line);
 }
 
 /* PS3MAPI over syscall 8: a1 = 0x7777, a2 = opcode, a3 = out buffer. */
@@ -89,8 +89,8 @@ static lv2dump_t st;
 
 static void setup(void)
 {
-	static const ds45_kernel_t legacy[1] = {
-		{ "legacy", 0, 0, DS45_LV2_BASE + 0x345670, 0xE8 }
+	static const npp_kernel_t legacy[1] = {
+		{ "legacy", 0, 0, NPP_LV2_BASE + 0x345670, 0xE8 }
 	};
 
 	fake_reset_all();
@@ -99,12 +99,12 @@ static void setup(void)
 	btn_valid = 0;
 	btn_d1 = btn_d2 = 0;
 	fake_syscall8 = fake_mapi;
-	fake_lv2_set(DS45_LV2_BASE, Q_FIRST, 8);
-	fake_lv2_set(DS45_LV2_BASE + CHUNK - 8, Q_PREV, 8);   /* chunk edge */
-	fake_lv2_set(DS45_LV2_BASE + CHUNK, Q_NEXT, 8);
-	fake_lv2_set(DS45_LV2_BOUND - 8, Q_LAST, 8);
+	fake_lv2_set(NPP_LV2_BASE, Q_FIRST, 8);
+	fake_lv2_set(NPP_LV2_BASE + CHUNK - 8, Q_PREV, 8);   /* chunk edge */
+	fake_lv2_set(NPP_LV2_BASE + CHUNK, Q_NEXT, 8);
+	fake_lv2_set(NPP_LV2_BOUND - 8, Q_LAST, 8);
 	/* an active kernel record, so kmatch= is not just the default 0 */
-	if (kernel_resolve_from(legacy, 1, NULL, NULL) != DS45_KMATCH_LEGACY)
+	if (kernel_resolve_from(legacy, 1, NULL, NULL) != NPP_KMATCH_LEGACY)
 		fake_reset_all();      /* makes the checks below fail loudly */
 }
 
@@ -112,14 +112,14 @@ static void setup(void)
  * the pad's buttons drive the dumps instead of the countdowns. */
 static int setup_verified(void)
 {
-	uint8_t fp[DS45_FP_LEN];
-	ds45_kernel_t tab[1] = { { "verified", DS45_LV2_BASE, 0, DS45_LV2_BASE + 0x345670, 0xE8 } };
+	uint8_t fp[NPP_FP_LEN];
+	npp_kernel_t tab[1] = { { "verified", NPP_LV2_BASE, 0, NPP_LV2_BASE + 0x345670, 0xE8 } };
 
 	setup();
 	memset(fp, 0, sizeof(fp));
 	memcpy(fp, Q_FIRST, 8);                  /* the fake image at BASE */
-	tab[0].fp_hash = ds45_fnv1a64(fp, DS45_FP_LEN);
-	return kernel_resolve_from(tab, 1, NULL, NULL) == DS45_KMATCH_TABLE;
+	tab[0].fp_hash = npp_fnv1a64(fp, NPP_FP_LEN);
+	return kernel_resolve_from(tab, 1, NULL, NULL) == NPP_KMATCH_TABLE;
 }
 
 static int bin_ok(const char *path)
@@ -145,7 +145,7 @@ static int test_waits_for_pad(void)
 	CHECK(fake_file_size(A_TXT) == -1);
 	CHECK(fake_toasts == 1);                             /* said once */
 	CHECK(strcmp(fake_last_toast, "LV2 dump: connect the Bluetooth pad") == 0);
-	CHECK(strcmp(fake_tty, "ds45pad: LV2 dump: connect the Bluetooth pad\n") == 0);
+	CHECK(strcmp(fake_tty, "nativepadps3: LV2 dump: connect the Bluetooth pad\n") == 0);
 	return 0;
 }
 
@@ -175,10 +175,10 @@ static int test_two_dumps_with_countdown(void)
 	CHECK(txt != NULL);
 	CHECK(strstr(txt, "base=0x8000000000000000\n") != NULL);
 	CHECK(strstr(txt, "bound=0x8000000000800000\n") != NULL);
-	CHECK(strstr(txt, "version=" DS45PAD_VERSION "\n") != NULL);
+	CHECK(strstr(txt, "version=" NPP_VERSION "\n") != NULL);
 	CHECK(strstr(txt, "fw_type=DEX\n") != NULL);
 	CHECK(strstr(txt, "fw_version=0x00000492\n") != NULL);
-	CHECK(strstr(txt, "kmatch=4\n") != NULL);            /* DS45_KMATCH_LEGACY */
+	CHECK(strstr(txt, "kmatch=4\n") != NULL);            /* NPP_KMATCH_LEGACY */
 	CHECK(strstr(txt, "pad=untouched\n") != NULL);
 	txt = fake_file_get(B_TXT);
 	CHECK(txt != NULL);
@@ -186,13 +186,13 @@ static int test_two_dumps_with_countdown(void)
 
 	/* Toasts are easy to miss; every step also goes to the TTY. */
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dump A in 20 s: leave the pad untouched\n"
-	             "ds45pad: LV2 dump started: " A_BIN "\n"
-	             "ds45pad: LV2 dump written: " A_BIN " (8388608 bytes) and " A_TXT "\n"
-	             "ds45pad: LV2 dump B in 30 s: hold Cross, left stick fully left\n"
-	             "ds45pad: LV2 dump started: " B_BIN "\n"
-	             "ds45pad: LV2 dump written: " B_BIN " (8388608 bytes) and " B_TXT "\n"
-	             "ds45pad: LV2 dumps written: release the pad\n") == 0);
+	             "nativepadps3: LV2 dump A in 20 s: leave the pad untouched\n"
+	             "nativepadps3: LV2 dump started: " A_BIN "\n"
+	             "nativepadps3: LV2 dump written: " A_BIN " (8388608 bytes) and " A_TXT "\n"
+	             "nativepadps3: LV2 dump B in 30 s: hold Cross, left stick fully left\n"
+	             "nativepadps3: LV2 dump started: " B_BIN "\n"
+	             "nativepadps3: LV2 dump written: " B_BIN " (8388608 bytes) and " B_TXT "\n"
+	             "nativepadps3: LV2 dumps written: release the pad\n") == 0);
 	CHECK(fake_tty_overflow == 0);
 
 	/* Done: nothing more, however long it keeps being polled. */
@@ -217,7 +217,7 @@ static int test_skips_when_both_exist(void)
 	CHECK(fake_lv2_peek_count == 0);
 	CHECK(fake_sc8_calls == 0);
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dumps skipped: " A_BIN " and " B_BIN
+	             "nativepadps3: LV2 dumps skipped: " A_BIN " and " B_BIN
 	             " exist, delete both to dump again\n") == 0);
 	return 0;
 }
@@ -237,7 +237,7 @@ static int test_existing_a_goes_straight_to_b(void)
 
 	CHECK(fake_file_size(A_BIN) == 3);
 	CHECK(bin_ok(B_BIN));
-	CHECK(strstr(fake_tty, "ds45pad: LV2 dump skipped: " A_BIN
+	CHECK(strstr(fake_tty, "nativepadps3: LV2 dump skipped: " A_BIN
 	                       " exists, delete it to dump again\n") != NULL);
 	CHECK(strcmp(fake_last_toast, "LV2 dumps written: release the pad") == 0);
 	return 0;
@@ -317,7 +317,7 @@ static int test_b_failure_says_release(void)
 	CHECK(bin_ok(A_BIN));
 	CHECK(fake_file_size(B_BIN) == -1);
 	CHECK(strcmp(fake_last_toast, "LV2 dump failed: see the TTY, release the pad") == 0);
-	CHECK(strstr(fake_tty, "ds45pad: LV2 dump failed: cannot write " B_TXT "\n") != NULL);
+	CHECK(strstr(fake_tty, "nativepadps3: LV2 dump failed: cannot write " B_TXT "\n") != NULL);
 	lv2dump_poll(&st, T_B + 100000);                     /* done */
 	CHECK(fake_toasts == 3);
 	return 0;
@@ -351,10 +351,10 @@ static int test_dump_failure_deletes_partial(void)
 	CHECK(strcmp(fake_last_toast, "LV2 dump failed: see the TTY, release the pad") == 0);
 	/* 1 write + 5 appends succeeded: the 7th chunk (offset 6 * 64 KiB) failed */
 	CHECK(strcmp(fake_tty,
-	             "ds45pad: LV2 dump A in 20 s: leave the pad untouched\n"
-	             "ds45pad: LV2 dump started: " A_BIN "\n"
-	             "ds45pad: LV2 dump failed at offset 0x00060000, partial .bin deleted\n"
-	             "ds45pad: LV2 dump failed: see the TTY, release the pad\n") == 0);
+	             "nativepadps3: LV2 dump A in 20 s: leave the pad untouched\n"
+	             "nativepadps3: LV2 dump started: " A_BIN "\n"
+	             "nativepadps3: LV2 dump failed at offset 0x00060000, partial .bin deleted\n"
+	             "nativepadps3: LV2 dump failed: see the TTY, release the pad\n") == 0);
 	/* the run is over: with writes working again, still no dump B */
 	fake_append_fail_after = -1;
 	{
@@ -402,7 +402,7 @@ static int test_dump_needs_text_file(void)
 
 	CHECK(fake_file_size(A_BIN) == -1);
 	CHECK(fake_lv2_peek_count == 0);
-	CHECK(strstr(fake_tty, "ds45pad: LV2 dump failed: cannot write " A_TXT "\n") != NULL);
+	CHECK(strstr(fake_tty, "nativepadps3: LV2 dump failed: cannot write " A_TXT "\n") != NULL);
 	CHECK(fake_toasts == 2);                             /* countdown, failure */
 	return 0;
 }
@@ -420,7 +420,7 @@ static int test_buttons_drive_dumps(void)
 	CHECK(fake_file_size(A_BIN) == -1);
 
 	btn_valid = 1;
-	btn_d1 = DS45_CTRL_START;
+	btn_d1 = NPP_CTRL_START;
 	lv2dump_poll(&st, 100010);
 	CHECK(fake_file_size(A_TXT) == -1);                  /* held: not yet */
 	btn_d1 = 0;
@@ -434,7 +434,7 @@ static int test_buttons_drive_dumps(void)
 
 	lv2dump_poll(&st, 200000);                           /* no Cross: waits */
 	CHECK(fake_file_size(B_BIN) == -1);
-	btn_d2 = DS45_CTRL_CROSS;
+	btn_d2 = NPP_CTRL_CROSS;
 	lv2dump_poll(&st, 200010);
 	lv2dump_poll(&st, 202009);
 	CHECK(fake_file_size(B_BIN) == -1);
@@ -457,11 +457,11 @@ static int test_cross_hold_restarts(void)
 	CHECK(strcmp(fake_last_toast, "LV2 dump B: hold Cross for 2 s") == 0);
 
 	btn_valid = 1;
-	btn_d2 = DS45_CTRL_CROSS;
+	btn_d2 = NPP_CTRL_CROSS;
 	lv2dump_poll(&st, 1000);
 	btn_d2 = 0;
 	lv2dump_poll(&st, 2000);                             /* released */
-	btn_d2 = DS45_CTRL_CROSS;
+	btn_d2 = NPP_CTRL_CROSS;
 	lv2dump_poll(&st, 2500);
 	btn_valid = 0;
 	lv2dump_poll(&st, 3000);                             /* no report */
@@ -479,7 +479,7 @@ static int test_legacy_keeps_countdowns(void)
 {
 	setup();                                             /* legacy match */
 	btn_valid = 1;
-	btn_d2 = DS45_CTRL_CROSS;
+	btn_d2 = NPP_CTRL_CROSS;
 	lv2dump_poll(&st, 0);
 	CHECK(strcmp(fake_last_toast, "LV2 dump A in 20 s: leave the pad untouched") == 0);
 	return 0;
@@ -488,13 +488,13 @@ static int test_legacy_keeps_countdowns(void)
 /* DUMP_LV2 is a debug-only config key. */
 static int test_dump_config_key(void)
 {
-	ds45_config_t c;
+	npp_config_t c;
 
 	fake_reset_all();
-	ds45_config_defaults(&c);
+	npp_config_defaults(&c);
 	CHECK(c.dump_lv2 == 0);
 	fake_file_set("/c.txt", "DUMP_LV2 = 1\n");
-	ds45_config_load(&c, "/c.txt");
+	npp_config_load(&c, "/c.txt");
 	CHECK(c.dump_lv2 == 1);
 	return 0;
 }

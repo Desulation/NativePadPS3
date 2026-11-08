@@ -30,7 +30,7 @@ Nothing in this repository has been verified across firmwares or console models 
 * **Native internal Bluetooth** — connects to the PS3's built-in radio; no external dongle.
 * **USB and Bluetooth** — `MODE = AUTO` uses USB when cabled and Bluetooth otherwise.
 * **Physical PS / Home button** — no Select+Start style combinations.
-* **Controller support** — DualSense (`054c:0ce6`), DualSense Edge (`054c:0df2`), DualShock 4 v1/v2 (`054c:05c4`, `054c:09cc`); more can be declared in `ds45pad_devices.txt`.
+* **Controller support** — DualSense (`054c:0ce6`), DualSense Edge (`054c:0df2`), DualShock 4 v1/v2 (`054c:05c4`, `054c:09cc`); more can be declared in `nativepadps3_devices.txt`.
 * **Build from source** — no binaries are distributed here (see below).
 
 ---
@@ -68,13 +68,13 @@ It is controlled by two VSH-only keys (see the table below); like the rest of th
 
 Like the rest of the shim it needs `ENABLE_SHIM = 1`, exists only in debug VSH builds, is RAM-only and is DEX 4.92-only. Not verified on hardware: two DualSenses turned off at the same moment, and other triggers of the same console request (console shutdown, user switch); a DualSense is expected to power off there too, as a DualShock 3 does, but this was not tried.
 
-**Safety gate.** The shim patches live kernel code, so it is never installed on its own. It is enabled **only** when `ds45pad.txt` contains `ENABLE_SHIM = 1`, and it is built only into debug VSH builds. The way out of a hang is to remove that line (or the plugin) and reboot. Leave `ENABLE_SHIM` unset for normal use.
+**Safety gate.** The shim patches live kernel code, so it is never installed on its own. It is enabled **only** when `nativepadps3.txt` contains `ENABLE_SHIM = 1`, and it is built only into debug VSH builds. The way out of a hang is to remove that line (or the plugin) and reboot. Leave `ENABLE_SHIM` unset for normal use.
 
 ---
 
-## ⚙️ Configuration (`ds45pad.txt`)
+## ⚙️ Configuration (`nativepadps3.txt`)
 
-Edit `/dev_hdd0/plugins/ds45pad/ds45pad.txt`. Common options:
+Edit `/dev_hdd0/plugins/nativepadps3/nativepadps3.txt`. Common options:
 
 | Option | Default | Description |
 |---|---|---|
@@ -99,7 +99,7 @@ The configuration parser accepts a number of additional debug and shim-tuning ke
 
 ## 🎮 Adding third-party / clone controllers
 
-Edit `/dev_hdd0/plugins/ds45pad/ds45pad_devices.txt`:
+Edit `/dev_hdd0/plugins/nativepadps3/nativepadps3_devices.txt`:
 
 ```text
 # Format: VID, PID, MODEL   (MODEL = DUALSENSE or DS4)
@@ -115,17 +115,34 @@ Edit `/dev_hdd0/plugins/ds45pad/ds45pad_devices.txt`:
 
 This repository contains **no binaries** — build the plugin first (below). The [`ps3_ready/`](ps3_ready/) folder holds only the configuration `.txt` files.
 
-1. **Copy files** to `/dev_hdd0/plugins/ds45pad/` (via FTP through multiMAN / webMAN MOD, or a FAT32 USB drive):
-   * your build output `ds45pad_vsh.sprx`
-   * `ps3_ready/plugins/ds45pad/ds45pad.txt`
-   * `ps3_ready/plugins/ds45pad/ds45pad_devices.txt`
+1. **Copy files** to `/dev_hdd0/plugins/nativepadps3/` (create the folder first; via FTP through multiMAN / webMAN MOD, or a FAT32 USB drive):
+   * your build output `nativepadps3_vsh.sprx`
+   * `ps3_ready/plugins/nativepadps3/nativepadps3.txt`
+   * `ps3_ready/plugins/nativepadps3/nativepadps3_devices.txt`
 2. **Autoload:** add this line to `/dev_hdd0/boot_plugins.txt` (or `boot_plugins_nocobra.txt`), ending with a blank newline:
    ```text
-   /dev_hdd0/plugins/ds45pad/ds45pad_vsh.sprx
+   /dev_hdd0/plugins/nativepadps3/nativepadps3_vsh.sprx
    ```
 3. **Pair over Bluetooth** (first time): **Settings → Accessory Settings → Manage Bluetooth Devices → Register New Device**, then hold **Create (Share) + PS** on the DualSense until the light bar blinks rapidly, and select **Wireless Controller** (passkey `0000` if asked).
 4. **Reassign to Port 7** (passthrough path only): **Settings → Accessory Settings → Reassign Controllers**, change the controller to **7**. This keeps the dashboard from seeing double input while Syscall 573 maps the pad to Player 1 in games. *(The native DS3 route does not need this step.)*
 5. **Reboot**, enable HEN if on PS3HEN, and press **PS** to connect.
+
+### Upgrading from ds45pad
+
+This project used to be called `ds45pad`. Nothing breaks if you do not migrate:
+
+* The old folder `/dev_hdd0/plugins/ds45pad/` keeps working. When `/dev_hdd0/plugins/nativepadps3/` has no `nativepadps3.txt`, the plugin reads the old folder instead, and the boot trace shows `datadir_legacy`.
+* The plugin itself is new: build `nativepadps3_vsh.sprx` and put it where the old `ds45pad` plugin file was (or keep the old file name), then make sure `/dev_hdd0/boot_plugins.txt` names exactly one plugin path, the one you actually use.
+
+To migrate to the new names:
+
+1. Create `/dev_hdd0/plugins/nativepadps3/` and put `nativepadps3_vsh.sprx` there.
+2. Copy your config into it under the new name. Each old file below goes to the new name after the arrow:
+   * `ds45pad.txt` -> `nativepadps3.txt`
+   * `ds45pad_devices.txt` -> `nativepadps3_devices.txt` (optional, only if you edited it)
+   * `ds45pad_cal.txt` -> `nativepadps3_cal.txt` (optional, keeps your stick calibration)
+3. From then on the new folder wins and the old one is no longer read. The plugin never deletes anything; remove the old folder yourself whenever you like.
+4. In `/dev_hdd0/boot_plugins.txt`, **replace** the old plugin line with `/dev_hdd0/plugins/nativepadps3/nativepadps3_vsh.sprx`. Never keep both lines.
 
 ---
 
@@ -154,7 +171,7 @@ cd src
 .\build.ps1 -Variant vsh
 ```
 
-The signed plugin is written to `src/ds45pad_vsh.sprx`. The `game` variant builds without the DS3-route shim; only the VSH variants build it.
+The signed plugin is written to `src/nativepadps3_vsh.sprx`. The `game` variant builds without the DS3-route shim; only the VSH variants build it.
 
 ---
 

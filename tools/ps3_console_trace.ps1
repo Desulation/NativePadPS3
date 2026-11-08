@@ -4,7 +4,7 @@
     lines and the last shimdbg counter lines.
 
 .DESCRIPTION
-    The debug plugin appends a shimdbg line to /dev_hdd0/tmp/ds45pad_boot.txt on every
+    The debug plugin appends a shimdbg line to /dev_hdd0/tmp/nativepadps3_boot.txt on every
     housekeeping tick, so the counters survive a network drop. Fields: ev/en/in = hook
     entries, inds = input reads of a DualSense, padmiss = input pad-lookup misses,
     comp/en2 = start-ups/enables completed, xl = reports translated, ps = reads passed,

@@ -52,7 +52,7 @@ M64 = (1 << 64) - 1
 BASE = 0x8000000000A00000            # where the blob is "loaded"; any 8-aligned kernel-like value
 KERNEL_TOC = 0x80000000003759C0      # the caller's r2 (restored by the stubs before the tail call)
 STACK = 0x8000000010F0F000           # the entry r1 (16-aligned)
-# Offsets of orig_poweroff / orig_teardown in ds45_shim_data_t; pinned against the
+# Offsets of orig_poweroff / orig_teardown in npp_shim_data_t; pinned against the
 # real struct by the offsetof asserts in shim/entry.c.
 OFF_ORIG_POWEROFF, OFF_ORIG_TEARDOWN = 984, 992
 ORIG_POWEROFF = 0x8000000000102750   # kernel sender, as the plugin would store it

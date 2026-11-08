@@ -1,5 +1,5 @@
 /*
- * DS45PAD - minimal C runtime.
+ * NPP - minimal C runtime.
  *
  * The PRX is linked with -nodefaultlibs so it stays small and pulls nothing
  * unexpected into the VSH process. Only the handful of functions the plugin

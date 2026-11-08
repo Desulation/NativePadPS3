@@ -1,8 +1,8 @@
 # Compilando o plugin
 
-> **Já está compilado.** O `.sprx` assinado está em
-> `release/plugins/ds45pad/`. Este documento é para quando você quiser
-> recompilar depois de mexer no código.
+> **Nenhum binário é distribuído neste repositório.** A pasta `ps3_ready/` traz
+> só os arquivos `.txt` prontos para copiar; o `.sprx` assinado você compila
+> com os comandos abaixo (ou com `src/build.ps1`). Este documento explica como.
 
 ## Recompilar
 
@@ -11,9 +11,9 @@ cd src
 ./build.sh
 ```
 
-Sai `ds45pad_vsh.sprx`, já assinado e com o magic conferido. O script assume
+Sai `nativepadps3_vsh.sprx`, já assinado e com o magic conferido. O script assume
 o SDK em `C:/ps3sdk/cell` e as ferramentas em `C:/ps3sdk/tools`; se você mudar
-de lugar, exporte `CELL_SDK` e `DS45_TOOLS`.
+de lugar, exporte `CELL_SDK` e `NPP_TOOLS`.
 
 Ele não usa GNU make de propósito: o `make.exe` distribuído com o webMAN MOD é
 um binário de subsistema **GUI**, então no Git Bash não devolve saída nem
@@ -155,7 +155,7 @@ cd C:\Users\victo\Desktop\Geral\GOW\TestePlugin\src
 make
 ```
 
-Sai `ds45pad_vsh.sprx`.
+Sai `nativepadps3_vsh.sprx`.
 
 ### 6. Conferir o resultado
 
@@ -163,7 +163,7 @@ O arquivo tem que ter alguns dezenas de KB e começar com a assinatura `SCE\0`.
 Para checar:
 
 ```powershell
-Format-Hex -Path ds45pad_vsh.sprx -Count 4
+Format-Hex -Path nativepadps3_vsh.sprx -Count 4
 ```
 
 Deve mostrar `53 43 45 00`. Se mostrar `7F 45 4C 46` (`ELF`), o `scetool` não

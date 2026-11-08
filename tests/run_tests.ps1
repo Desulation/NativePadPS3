@@ -2,7 +2,7 @@
 #   pwsh tests/run_tests.ps1 [-Filter <substring of test name>]
 # Each tests/test_*.c is built with tests/fakes.c plus the src files named on
 # its first line:   /* SOURCES: a.c b.c */   (relative to src/, may be empty)
-# An optional second line adds compiler flags:   /* CFLAGS: -DDS45_DEBUG */
+# An optional second line adds compiler flags:   /* CFLAGS: -DNPP_DEBUG */
 param([string]$Filter = '')
 $ErrorActionPreference = 'Stop'
 
@@ -32,7 +32,7 @@ foreach ($t in $tests) {
 
     $exe = Join-Path $bin "$name.exe"
     if (Test-Path $exe) { Remove-Item $exe -Force }
-    $ccArgs = @('-std=c99', '-Wall', '-Wextra', '-Werror', '-DDS45_HOST_TEST', '-D_CRT_SECURE_NO_WARNINGS') + $extra +
+    $ccArgs = @('-std=c99', '-Wall', '-Wextra', '-Werror', '-DNPP_HOST_TEST', '-D_CRT_SECURE_NO_WARNINGS') + $extra +
             @('-I', (Join-Path $PSScriptRoot 'stubs'), '-I', (Join-Path $repo 'src'),
               '-I', $PSScriptRoot,
               $t.FullName, (Join-Path $PSScriptRoot 'fakes.c')) + $srcs +

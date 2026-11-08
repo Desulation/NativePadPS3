@@ -1,5 +1,5 @@
-#ifndef DS45_TEST_PAD_H
-#define DS45_TEST_PAD_H
+#ifndef NPP_TEST_PAD_H
+#define NPP_TEST_PAD_H
 #include <stdint.h>
 #define CELL_PAD_OK 0
 #define CELL_PAD_MAX_CODES 64

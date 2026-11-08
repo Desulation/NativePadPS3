@@ -1,5 +1,5 @@
 /*
- * DS45PAD - install the DS3-route kernel shim on a fingerprinted kernel.
+ * NPP - install the DS3-route kernel shim on a fingerprinted kernel.
  *
  * On a kernel that matches a table entry, kshim_install() places the
  * freestanding shim blob (src/shim_blob.h) at a fixed base in executable kernel
@@ -22,20 +22,20 @@
  *
  * Licensed under GPLv2 - see LICENSE.
  */
-#ifndef DS45_KSHIM_H
-#define DS45_KSHIM_H
+#ifndef NPP_KSHIM_H
+#define NPP_KSHIM_H
 
 #include <stdint.h>
 #include "kpatch.h"
 
-#define DS45_SHIM_PID_PATCHES     1   /* helper branch, always */
-#define DS45_SHIM_INLINE_PATCHES  2   /* inline words, only with SHIM_INLINE_PID = 1 */
-#define DS45_SHIM_OUTPUT_PATCHES  4   /* output call site, cap word, two TOC slots (SHIM_OUTPUT_HOOK) */
-#define DS45_SHIM_RECV_PATCHES    3   /* receive-limit words (SHIM_OUTPUT_HOOK, probe and full mode) */
-#define DS45_SHIM_POWEROFF_PATCHES 4  /* power-off hook sites (data-block sites 10-13; SHIM_POWEROFF_HOOK) */
+#define NPP_SHIM_PID_PATCHES     1   /* helper branch, always */
+#define NPP_SHIM_INLINE_PATCHES  2   /* inline words, only with SHIM_INLINE_PID = 1 */
+#define NPP_SHIM_OUTPUT_PATCHES  4   /* output call site, cap word, two TOC slots (SHIM_OUTPUT_HOOK) */
+#define NPP_SHIM_RECV_PATCHES    3   /* receive-limit words (SHIM_OUTPUT_HOOK, probe and full mode) */
+#define NPP_SHIM_POWEROFF_PATCHES 4  /* power-off hook sites (data-block sites 10-13; SHIM_POWEROFF_HOOK) */
 
 /* One firmware. The fingerprint is the same (fp_addr, fp_hash) scheme
- * ds45_kernel_t uses, so a row is only ever applied to the kernel it was
+ * npp_kernel_t uses, so a row is only ever applied to the kernel it was
  * researched against. The helper row is a BRANCH row (aimed at shim_pid_ok in the
  * blob when installed); the inline rows are WORD rows (a finished instruction
  * written as given).
@@ -66,9 +66,9 @@ typedef struct {
 	uint64_t pad_vtable;                        /* 0x800000000038CDC8 */
 	uint64_t pad_mgr;                           /* 0x80000000004A1CB8 */
 	uint64_t conn_tbl;                          /* 0x8000000000432690: Bluetooth connection table (7 entry pointers, by handle) */
-	const uint8_t *info_tmpl;                  /* DS45_SHIM_INFO_LEN bytes (facts note C1.5) */
-	ds45_kpatch_t pid_patches[DS45_SHIM_PID_PATCHES];
-	ds45_kpatch_t inline_patches[DS45_SHIM_INLINE_PATCHES];
+	const uint8_t *info_tmpl;                  /* NPP_SHIM_INFO_LEN bytes (facts note C1.5) */
+	npp_kpatch_t pid_patches[NPP_SHIM_PID_PATCHES];
+	npp_kpatch_t inline_patches[NPP_SHIM_INLINE_PATCHES];
 	/* The DS3-route output sites (data-block product-ID sites 3-6): [0] the call
 	 * site (BRANCHL, aimed at the blob's output entry at install), [1] the send
 	 * cap word (WORD), [2] and [3] the two TOC slots of the packet buffer (PTR rows,
@@ -78,7 +78,7 @@ typedef struct {
 	 * and only when orig_output is non-zero: the code address of the kernel's
 	 * Bluetooth output sender they lead to (0x10283C on DEX 4.92; 0 = none, every
 	 * output site off), which the output hook tail-calls. */
-	ds45_kpatch_t output_patches[DS45_SHIM_OUTPUT_PATCHES];
+	npp_kpatch_t output_patches[NPP_SHIM_OUTPUT_PATCHES];
 	/* The receive-limit words (data-block product-ID sites 7-9): three WORD rows,
 	 * each the `li r7,0x41` that sets the read limit (0x41) of a channel-1 receive
 	 * function of the Bluetooth transport, rewritten to `li r7,0x50` so the
@@ -90,7 +90,7 @@ typedef struct {
 	 * past the kernel's packet buffer. All three must be populated for such an
 	 * install, or it is refused. They are the last writes of the install (after the
 	 * redirects) and so the first reverts of an unload. */
-	ds45_kpatch_t recv_patches[DS45_SHIM_RECV_PATCHES];
+	npp_kpatch_t recv_patches[NPP_SHIM_RECV_PATCHES];
 	uint64_t orig_output;
 	/* Appended after orig_output so the built-in row's positional initializer
 	 * (kshim_table.c) still lines up; they default to zero there.
@@ -98,25 +98,25 @@ typedef struct {
 	 * BRANCHL at the power-off call, [1] and [3] BRANCHL and [2] a BRANCH at the
 	 * three teardown calls. Selected only with SHIM_POWEROFF_HOOK (and, for
 	 * [1..3], outside the act stage); an unselected row is never read or written. */
-	ds45_kpatch_t poweroff_patches[DS45_SHIM_POWEROFF_PATCHES];
+	npp_kpatch_t poweroff_patches[NPP_SHIM_POWEROFF_PATCHES];
 	/* The code addresses of the kernel's Bluetooth close-connection sender
 	 * (0x102750 on DEX 4.92) and of the pad teardown routine (0x1174FC), which the
 	 * power-off hooks tail-call; 0 = none (the site that needs it is then left
 	 * out). Carried into the data block (orig_poweroff, orig_teardown). */
 	uint64_t orig_poweroff;
 	uint64_t orig_teardown;
-} ds45_shim_kernel_t;
-extern const ds45_shim_kernel_t ds45_shim_table[];
-extern const int ds45_shim_table_count;
+} npp_shim_kernel_t;
+extern const npp_shim_kernel_t npp_shim_table[];
+extern const int npp_shim_table_count;
 
 typedef enum { KSHIM_OFF = 0, KSHIM_INSTALLED, KSHIM_ALREADY, KSHIM_NO_ENTRY, KSHIM_FAILED } kshim_result_t;
 
-/* Install over the built-in ds45_shim_table.
+/* Install over the built-in npp_shim_table.
  *   KSHIM_OFF       the ENABLE_SHIM gate is shut (g_cfg.enable_shim == 0, the
  *                   default): nothing was read, nothing written, nothing allocated.
  *   KSHIM_NO_ENTRY  no fingerprint matched; nothing read-modified, nothing written.
  *   KSHIM_ALREADY   the event, enable and input slots already point at one blob
- *                   carrying DS45_SHIM_MAGIC and this build's version; the existing
+ *                   carrying NPP_SHIM_MAGIC and this build's version; the existing
  *                   install is adopted and nothing is written.
  *   KSHIM_INSTALLED the shim is now installed.
  *   KSHIM_FAILED    a target was not as expected, the fixed exec region did not
@@ -134,8 +134,8 @@ kshim_result_t kshim_install(void);
 
 /* The same over a caller-supplied table (tab may be NULL, n may be 0); this is
  * what the host tests drive with a synthetic row. kshim_install() is exactly
- * kshim_install_from(ds45_shim_table, ds45_shim_table_count). */
-kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n);
+ * kshim_install_from(npp_shim_table, npp_shim_table_count). */
+kshim_result_t kshim_install_from(const npp_shim_kernel_t *tab, int n);
 
 /* Switch the three redirects back and revert the product-ID words, from the
  * journal. A fresh install journals what it wrote. An adopted one rebuilds the
@@ -162,10 +162,10 @@ kshim_result_t kshim_install_from(const ds45_shim_kernel_t *tab, int n);
 void kshim_unhook(void);
 void kshim_scrub(void);
 
-#ifdef DS45_DEBUG
+#ifdef NPP_DEBUG
 /* Debug tracing (design Amendment 3): the base of the installed shim data block
- * (g_base + DS45_SHIM_OFF_DATA), so the plugin's debug housekeeping can read the
- * diagnostic counters back with ds45_lv2_read at base + the ABI field offsets.
+ * (g_base + NPP_SHIM_OFF_DATA), so the plugin's debug housekeeping can read the
+ * diagnostic counters back with npp_lv2_read at base + the ABI field offsets.
  * Returns 1 and sets *data_base when a fresh or adopted install is live, 0
  * otherwise. Debug builds only. */
 int kshim_dbg_data_base(uint64_t *data_base);
@@ -192,7 +192,7 @@ int kshim_dbg_data_base(uint64_t *data_base);
  * is zeroed (best effort); *out is 0 unless the call was made. Debug builds only;
  * it installs nothing and the kernel is not otherwise touched. main.c traces the
  * result. */
-int kshim_exec_probe(const ds45_shim_kernel_t *k, uint64_t *out);
+int kshim_exec_probe(const npp_shim_kernel_t *k, uint64_t *out);
 #endif
 
-#endif /* DS45_KSHIM_H */
+#endif /* NPP_KSHIM_H */

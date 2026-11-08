@@ -3,16 +3,16 @@
 #include <stdio.h>
 #include <string.h>
 #include "fakes.h"
-#include "ds45pad.h"
+#include "npp.h"
 #include "hook.h"
 #include "sixaxis.h"
 #include "../shim/shim_abi.h"
 #include "../shim/ds3_report.h"
 
-/* util.c is linked for ds45_crc32; the rest of it needs these two. */
-ds45_pad_t g_pads[DS45_MAX_PADS];
+/* util.c is linked for npp_crc32; the rest of it needs these two. */
+npp_pad_t g_pads[NPP_MAX_PADS];
 
-void *ds45_resolve(const char *module, uint32_t fnid)
+void *npp_resolve(const char *module, uint32_t fnid)
 {
 	(void)module; (void)fnid;
 	return NULL;
@@ -85,9 +85,9 @@ static void ds3_neutral_basic(uint8_t e[DS3_REPORT_LEN])
 	e[30] = 0x05;
 }
 
-static ds45_shim_cfg_t cfg_plain(void)
+static npp_shim_cfg_t cfg_plain(void)
 {
-	ds45_shim_cfg_t c;
+	npp_shim_cfg_t c;
 
 	memset(&c, 0, sizeof(c));
 	c.sixaxis = 1;
@@ -103,7 +103,7 @@ static void set_sensor(uint8_t *e, int which, unsigned v)
 }
 
 /* Translate r and compare all 49 bytes with e, naming the first difference. */
-static int translates_to(const uint8_t *r, const ds45_shim_cfg_t *c,
+static int translates_to(const uint8_t *r, const npp_shim_cfg_t *c,
                          const uint8_t *e, const char *what)
 {
 	uint8_t out[DS3_REPORT_LEN];
@@ -156,7 +156,7 @@ static void seal_crc(uint8_t r[RPT_LEN])
 static int test_neutral(void)
 {
 	uint8_t r[RPT_LEN], out[DS3_REPORT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 
 	CHECK(DS3_REPORT_LEN == 49);
 
@@ -229,7 +229,7 @@ static void press_button(uint8_t *r, const struct button_case *k)
 static int test_buttons_each(void)
 {
 	uint8_t r[RPT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 	int i;
 
 	CHECK(N_BUTTONS == 17);
@@ -252,7 +252,7 @@ static int test_buttons_each(void)
 static int test_buttons_combined(void)
 {
 	uint8_t r[RPT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 
 	/* Cross + Triangle, L1, R3, Options and PS with the D-pad on up-right */
 	report_neutral(r);
@@ -275,7 +275,7 @@ static int test_hat_directions(void)
 	/* hat 0..7 run clockwise from up; 8 and above mean released */
 	static const uint8_t k_dirs[8] = { 0x10, 0x30, 0x20, 0x60, 0x40, 0xC0, 0x80, 0x90 };
 	uint8_t r[RPT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 	int hat, b;
 
 	for (hat = 0; hat < 16; hat++) {
@@ -296,7 +296,7 @@ static int test_hat_directions(void)
 static int test_triggers_analog(void)
 {
 	uint8_t r[RPT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 
 	/* The pressure bytes follow the analog travel, the digital bit follows
 	 * the DualSense's own digital L2 flag. */
@@ -329,7 +329,7 @@ static int test_triggers_analog(void)
 static int test_edge_extras_ignored(void)
 {
 	uint8_t r[RPT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 
 	report_neutral(r);
 	r[BTN(2)] = 0xF0;
@@ -344,36 +344,36 @@ static const struct {
 	int     out_byte;
 	uint8_t out_mask;
 	int     press;
-} k_target[DS45_MAP_MAX] = {
-	[DS45_MAP_NONE]     = { 0, 0x00,  0 },
-	[DS45_MAP_CROSS]    = { 3, 0x40, 24 },
-	[DS45_MAP_CIRCLE]   = { 3, 0x20, 23 },
-	[DS45_MAP_SQUARE]   = { 3, 0x80, 25 },
-	[DS45_MAP_TRIANGLE] = { 3, 0x10, 22 },
-	[DS45_MAP_L1]       = { 3, 0x04, 20 },
-	[DS45_MAP_R1]       = { 3, 0x08, 21 },
-	[DS45_MAP_L2]       = { 3, 0x01, 18 },
-	[DS45_MAP_R2]       = { 3, 0x02, 19 },
-	[DS45_MAP_L3]       = { 2, 0x02,  0 },
-	[DS45_MAP_R3]       = { 2, 0x04,  0 },
-	[DS45_MAP_START]    = { 2, 0x08,  0 },
-	[DS45_MAP_SELECT]   = { 2, 0x01,  0 },
-	[DS45_MAP_PS]       = { 4, 0x01,  0 },
-	[DS45_MAP_UP]       = { 2, 0x10, 14 },
-	[DS45_MAP_RIGHT]    = { 2, 0x20, 15 },
-	[DS45_MAP_DOWN]     = { 2, 0x40, 16 },
-	[DS45_MAP_LEFT]     = { 2, 0x80, 17 },
+} k_target[NPP_MAP_MAX] = {
+	[NPP_MAP_NONE]     = { 0, 0x00,  0 },
+	[NPP_MAP_CROSS]    = { 3, 0x40, 24 },
+	[NPP_MAP_CIRCLE]   = { 3, 0x20, 23 },
+	[NPP_MAP_SQUARE]   = { 3, 0x80, 25 },
+	[NPP_MAP_TRIANGLE] = { 3, 0x10, 22 },
+	[NPP_MAP_L1]       = { 3, 0x04, 20 },
+	[NPP_MAP_R1]       = { 3, 0x08, 21 },
+	[NPP_MAP_L2]       = { 3, 0x01, 18 },
+	[NPP_MAP_R2]       = { 3, 0x02, 19 },
+	[NPP_MAP_L3]       = { 2, 0x02,  0 },
+	[NPP_MAP_R3]       = { 2, 0x04,  0 },
+	[NPP_MAP_START]    = { 2, 0x08,  0 },
+	[NPP_MAP_SELECT]   = { 2, 0x01,  0 },
+	[NPP_MAP_PS]       = { 4, 0x01,  0 },
+	[NPP_MAP_UP]       = { 2, 0x10, 14 },
+	[NPP_MAP_RIGHT]    = { 2, 0x20, 15 },
+	[NPP_MAP_DOWN]     = { 2, 0x40, 16 },
+	[NPP_MAP_LEFT]     = { 2, 0x80, 17 },
 };
 
 static int test_map_touchpad_to_ps(void)
 {
 	uint8_t r[RPT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 
 	/* touchpad click mapped to PS: the PS bit, nothing else */
 	report_neutral(r);
 	r[BTN(2)] = 0x02;
-	c.map_touchpad = DS45_MAP_PS;
+	c.map_touchpad = NPP_MAP_PS;
 	ds3_neutral(want);
 	want[4] = 0x01;
 	CHECK(translates_to(r, &c, want, "touchpad -> PS"));
@@ -386,19 +386,19 @@ static int test_map_touchpad_to_ps(void)
 	/* and the Mute button is a different control with its own target */
 	r[BTN(2)] = 0x04;
 	CHECK(translates_to(r, &c, want, "mute with map_mute NONE"));
-	c.map_mute = DS45_MAP_PS;
+	c.map_mute = NPP_MAP_PS;
 	want[4] = 0x01;
 	CHECK(translates_to(r, &c, want, "mute -> PS"));
 
 	/* NONE means nothing */
 	report_neutral(r);
 	r[BTN(2)] = 0x02 | 0x04;
-	c.map_touchpad = c.map_mute = DS45_MAP_NONE;
+	c.map_touchpad = c.map_mute = NPP_MAP_NONE;
 	ds3_neutral(want);
 	CHECK(translates_to(r, &c, want, "both NONE"));
 
-	/* values that are not a ds45_map_t are ignored, not acted on */
-	c.map_touchpad = DS45_MAP_MAX;
+	/* values that are not a npp_map_t are ignored, not acted on */
+	c.map_touchpad = NPP_MAP_MAX;
 	c.map_mute = 200;
 	CHECK(translates_to(r, &c, want, "out of range targets"));
 	return 0;
@@ -409,8 +409,8 @@ static int test_map_every_target(void)
 	uint8_t r[RPT_LEN], want[DS3_REPORT_LEN];
 	int m;
 
-	for (m = DS45_MAP_CROSS; m < DS45_MAP_MAX; m++) {
-		ds45_shim_cfg_t c = cfg_plain();
+	for (m = NPP_MAP_CROSS; m < NPP_MAP_MAX; m++) {
+		npp_shim_cfg_t c = cfg_plain();
 
 		/* touchpad: the target's bit, and 255 on its pressure byte (the
 		 * analog triggers are at rest, so the 255 is the mapping's) */
@@ -426,7 +426,7 @@ static int test_map_every_target(void)
 		/* mute: same table */
 		report_neutral(r);
 		r[BTN(2)] = 0x04;
-		c.map_touchpad = DS45_MAP_NONE;
+		c.map_touchpad = NPP_MAP_NONE;
 		c.map_mute = (uint8_t)m;
 		CHECK(translates_to(r, &c, want, "mute -> target"));
 	}
@@ -436,14 +436,14 @@ static int test_map_every_target(void)
 static int test_map_over_trigger(void)
 {
 	uint8_t r[RPT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 
 	/* a mapped L2 reads full pressure even though the real trigger is only
 	 * part way down */
 	report_neutral(r);
 	r[BTN(2)] = 0x02;
 	r[BT(DS_C_L2)] = 0x10;
-	c.map_touchpad = DS45_MAP_L2;
+	c.map_touchpad = NPP_MAP_L2;
 	ds3_neutral(want);
 	want[3] = 0x01;
 	want[18] = 255;
@@ -458,7 +458,7 @@ static const int k_stick_out[4] = { 6, 7, 8, 9 };
 static int test_deadzone(void)
 {
 	uint8_t r[RPT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 	int a;
 
 	for (a = 0; a < 4; a++) {
@@ -532,7 +532,7 @@ static int test_deadzone(void)
 static int test_motion_scale(void)
 {
 	uint8_t r[RPT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 
 	/* 8192 counts is 1 g: 113 steps above the 512 rest value, 0x0271 */
 	report_neutral(r);
@@ -628,7 +628,7 @@ static int test_sixaxis_values(void)
 {
 	/* accel: 8192 counts per g in, 113 steps per g out, truncating toward
 	 * zero, then the percentage scale, then the optional inversion */
-	CHECK(DS45_SENSOR_CENTER == 512);
+	CHECK(NPP_SENSOR_CENTER == 512);
 	CHECK(sixaxis_from_accel(0, 100, 0) == 512);
 	CHECK(sixaxis_from_accel(8192, 100, 0) == 625);
 	CHECK(sixaxis_from_accel(-8192, 100, 0) == 399);
@@ -661,7 +661,7 @@ static int test_sixaxis_values(void)
 static int test_rejects_wrong_id_and_short(void)
 {
 	uint8_t r[128], out[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 	int id, len, i;
 
 	/* the shortest report that holds the status byte, the last field read */
@@ -712,7 +712,7 @@ static int test_rejects_wrong_id_and_short(void)
 static int test_in_place(void)
 {
 	uint8_t src[128], buf[128], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 	int n, i;
 
 	g_rng = 0x5EED0001u;
@@ -722,8 +722,8 @@ static int test_in_place(void)
 		src[0] = 0x31;
 		c.deadzone = (uint8_t)(rnd() % 30);
 		c.swap_xy = (uint8_t)(rnd() & 1);
-		c.map_touchpad = (uint8_t)(rnd() % DS45_MAP_MAX);
-		c.map_mute = (uint8_t)(rnd() % DS45_MAP_MAX);
+		c.map_touchpad = (uint8_t)(rnd() % NPP_MAP_MAX);
+		c.map_mute = (uint8_t)(rnd() % NPP_MAP_MAX);
 
 		CHECK(ds3_report_from_dualsense(src, 64, &c, want) == 0);
 		memcpy(buf, src, 64);
@@ -737,7 +737,7 @@ static int test_in_place(void)
 static int test_no_read_past_len(void)
 {
 	uint8_t tight[DS_BT_BODY_MIN], full[128], a[DS3_REPORT_LEN], b[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 	int i;
 
 	g_rng = 0xABCDEF01u;
@@ -769,7 +769,7 @@ static int test_fuzz(void)
 
 	g_rng = 0xD5C0FFEEu;
 	for (n = 0; n < 10000; n++) {
-		ds45_shim_cfg_t c;
+		npp_shim_cfg_t c;
 
 		len = (int)(rnd() % 129);                  /* 0..128 */
 		for (i = 0; i < 128; i++)
@@ -856,7 +856,7 @@ static void basic_neutral(uint8_t r[DS_BASIC_LEN])
 }
 
 /* Translate the basic report r and compare all 49 bytes with e. */
-static int basic_translates_to(const uint8_t *r, const ds45_shim_cfg_t *c,
+static int basic_translates_to(const uint8_t *r, const npp_shim_cfg_t *c,
                                const uint8_t *e, const char *what)
 {
 	uint8_t out[DS3_REPORT_LEN];
@@ -880,7 +880,7 @@ static int basic_translates_to(const uint8_t *r, const ds45_shim_cfg_t *c,
 static int test_basic_neutral(void)
 {
 	uint8_t r[DS_BASIC_LEN], out[DS3_REPORT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 	int i;
 
 	CHECK(DS_BASIC_REPORT_ID == 0x01);
@@ -921,7 +921,7 @@ static int test_basic_neutral(void)
 static int test_basic_buttons(void)
 {
 	uint8_t r[DS_BASIC_LEN], out[DS3_REPORT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 
 	/* Cross: its bit and its full pressure byte, nothing else */
 	basic_neutral(r);
@@ -974,14 +974,14 @@ static int test_basic_buttons(void)
 	r[7] = 0x02;
 	ds3_neutral_basic(want);
 	CHECK(basic_translates_to(r, &c, want, "basic touchpad, map NONE"));
-	c.map_touchpad = DS45_MAP_PS;
+	c.map_touchpad = NPP_MAP_PS;
 	want[4] = 0x01;
 	CHECK(basic_translates_to(r, &c, want, "basic touchpad -> PS"));
 
 	/* the rest of byte 7 is not a button (a DS4-style counter): it must not
 	 * reach the Mute mapping or anything else */
 	c = cfg_plain();
-	c.map_mute = DS45_MAP_PS;
+	c.map_mute = NPP_MAP_PS;
 	basic_neutral(r);
 	r[7] = 0xFC;
 	ds3_neutral_basic(want);
@@ -992,7 +992,7 @@ static int test_basic_buttons(void)
 static int test_basic_triggers(void)
 {
 	uint8_t r[DS_BASIC_LEN], out[DS3_REPORT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 
 	/* analog travel only: the pressure bytes, no digital bits */
 	basic_neutral(r);
@@ -1016,7 +1016,7 @@ static int test_basic_triggers(void)
 static int test_basic_refuses(void)
 {
 	uint8_t r[DS_BASIC_LEN], out[DS3_REPORT_LEN], ee[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 	int id, len;
 
 	memset(ee, 0xEE, sizeof(ee));
@@ -1058,7 +1058,7 @@ static int test_basic_refuses(void)
 static int test_basic_in_place(void)
 {
 	uint8_t src[DS3_REPORT_LEN], buf[DS3_REPORT_LEN], want[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 	int n, i;
 
 	g_rng = 0xBA51C001u;
@@ -1067,8 +1067,8 @@ static int test_basic_in_place(void)
 			src[i] = (uint8_t)rnd();
 		src[0] = DS_BASIC_REPORT_ID;
 		c.deadzone = (uint8_t)(rnd() % 30);
-		c.map_touchpad = (uint8_t)(rnd() % DS45_MAP_MAX);
-		c.map_mute = (uint8_t)(rnd() % DS45_MAP_MAX);
+		c.map_touchpad = (uint8_t)(rnd() % NPP_MAP_MAX);
+		c.map_mute = (uint8_t)(rnd() % NPP_MAP_MAX);
 
 		CHECK(ds3_report_from_dualsense_basic(src, DS3_REPORT_LEN, &c, want) == 0);
 		memcpy(buf, src, sizeof(buf));
@@ -1089,7 +1089,7 @@ static int test_basic_fuzz_all_lengths(void)
 		uint8_t *in = area + 0x41 - len;
 
 		for (n = 0; n < 1000; n++) {
-			ds45_shim_cfg_t c;
+			npp_shim_cfg_t c;
 
 			for (i = 0; i < (int)sizeof(area); i++)
 				area[i] = (uint8_t)rnd();
@@ -1157,7 +1157,7 @@ static int test_abi_layout(void)
 
 	/* "DS45SHM1", most significant byte first */
 	for (i = 0; i < 8; i++)
-		CHECK((uint8_t)(DS45_SHIM_MAGIC >> (56 - 8 * i)) == (uint8_t)"DS45SHM1"[i]);
+		CHECK((uint8_t)(NPP_SHIM_MAGIC >> (56 - 8 * i)) == (uint8_t)"DS45SHM1"[i]);
 	/* 10: the receive-side support (744 -> 880): pid_orig grown from 7 to 10
 	 * product-ID sites, which moves every field after it by 24 bytes, and the
 	 * 96-byte input bounce buffer and four debug counters appended last.
@@ -1172,141 +1172,141 @@ static int test_abi_layout(void)
 	 * appended after dbg_in_raw, and pid_orig grown from 10 to 14 product-ID sites
 	 * (sites 10-13 are the power-off patches), which moves every field after it by
 	 * 32 bytes: 952 -> 984, then 224 appended bytes: 1208. */
-	CHECK(DS45_SHIM_VERSION == 12);
-	CHECK(DS45_SHIM_INFO_LEN == 0x56);
+	CHECK(NPP_SHIM_VERSION == 12);
+	CHECK(NPP_SHIM_INFO_LEN == 0x56);
 
 	/* The plugin and the blob compile this header separately and meet in
 	 * memory, so these sizes and offsets are the contract (fixed-width fields
 	 * only, at their natural alignment). They were also checked against the
 	 * SDK's ppu-lv2-gcc with both the plugin's and the blob's flags. */
-	CHECK(sizeof(ds45_shim_cfg_t) == 14);
-	CHECK(offsetof(ds45_shim_cfg_t, deadzone) == 0);
-	CHECK(offsetof(ds45_shim_cfg_t, map_touchpad) == 1);
-	CHECK(offsetof(ds45_shim_cfg_t, map_mute) == 2);
-	CHECK(offsetof(ds45_shim_cfg_t, sixaxis) == 3);
-	CHECK(offsetof(ds45_shim_cfg_t, invert_g) == 8);
-	CHECK(offsetof(ds45_shim_cfg_t, accel_scale) == 10);
-	CHECK(offsetof(ds45_shim_cfg_t, gyro_scale) == 12);
+	CHECK(sizeof(npp_shim_cfg_t) == 14);
+	CHECK(offsetof(npp_shim_cfg_t, deadzone) == 0);
+	CHECK(offsetof(npp_shim_cfg_t, map_touchpad) == 1);
+	CHECK(offsetof(npp_shim_cfg_t, map_mute) == 2);
+	CHECK(offsetof(npp_shim_cfg_t, sixaxis) == 3);
+	CHECK(offsetof(npp_shim_cfg_t, invert_g) == 8);
+	CHECK(offsetof(npp_shim_cfg_t, accel_scale) == 10);
+	CHECK(offsetof(npp_shim_cfg_t, gyro_scale) == 12);
 
-	CHECK(offsetof(ds45_shim_data_t, magic) == 0);
-	CHECK(offsetof(ds45_shim_data_t, version) == 8);
-	CHECK(offsetof(ds45_shim_data_t, enabled) == 12);
-	CHECK(offsetof(ds45_shim_data_t, orig_event) == 16);
-	CHECK(offsetof(ds45_shim_data_t, orig_enable) == 24);
-	CHECK(offsetof(ds45_shim_data_t, orig_input) == 32);
-	CHECK(offsetof(ds45_shim_data_t, pad_vtable) == 40);
-	CHECK(offsetof(ds45_shim_data_t, pad_mgr) == 48);
-	CHECK(offsetof(ds45_shim_data_t, cfg) == 56);
-	CHECK(offsetof(ds45_shim_data_t, stat_completed) == 72);
-	CHECK(offsetof(ds45_shim_data_t, stat_enabled) == 76);
-	CHECK(offsetof(ds45_shim_data_t, stat_translated) == 80);
-	CHECK(offsetof(ds45_shim_data_t, stat_passed) == 84);
-	CHECK(offsetof(ds45_shim_data_t, info_tmpl) == 88);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->info_tmpl) == 0x58);
+	CHECK(offsetof(npp_shim_data_t, magic) == 0);
+	CHECK(offsetof(npp_shim_data_t, version) == 8);
+	CHECK(offsetof(npp_shim_data_t, enabled) == 12);
+	CHECK(offsetof(npp_shim_data_t, orig_event) == 16);
+	CHECK(offsetof(npp_shim_data_t, orig_enable) == 24);
+	CHECK(offsetof(npp_shim_data_t, orig_input) == 32);
+	CHECK(offsetof(npp_shim_data_t, pad_vtable) == 40);
+	CHECK(offsetof(npp_shim_data_t, pad_mgr) == 48);
+	CHECK(offsetof(npp_shim_data_t, cfg) == 56);
+	CHECK(offsetof(npp_shim_data_t, stat_completed) == 72);
+	CHECK(offsetof(npp_shim_data_t, stat_enabled) == 76);
+	CHECK(offsetof(npp_shim_data_t, stat_translated) == 80);
+	CHECK(offsetof(npp_shim_data_t, stat_passed) == 84);
+	CHECK(offsetof(npp_shim_data_t, info_tmpl) == 88);
+	CHECK(sizeof(((npp_shim_data_t *)0)->info_tmpl) == 0x58);
 	/* appended after info_tmpl: the product-ID sites' original qwords and
 	 * which of them the install applied (adoption rebuilds its journal) */
-	CHECK(DS45_SHIM_PID_SITES == 14);
-	CHECK(offsetof(ds45_shim_data_t, pid_orig) == 176);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->pid_orig) == 8 * DS45_SHIM_PID_SITES);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->pid_orig) == 8 * 14);
-	CHECK(offsetof(ds45_shim_data_t, pid_applied) == 288);
+	CHECK(NPP_SHIM_PID_SITES == 14);
+	CHECK(offsetof(npp_shim_data_t, pid_orig) == 176);
+	CHECK(sizeof(((npp_shim_data_t *)0)->pid_orig) == 8 * NPP_SHIM_PID_SITES);
+	CHECK(sizeof(((npp_shim_data_t *)0)->pid_orig) == 8 * 14);
+	CHECK(offsetof(npp_shim_data_t, pid_applied) == 288);
 	/* the debug diagnostic counters (Amendment 3), after pid_reserved (which
 	 * keeps the size a multiple of 8) */
-	CHECK(offsetof(ds45_shim_data_t, dbg_event_calls) == 296);
-	CHECK(offsetof(ds45_shim_data_t, dbg_enable_calls) == 300);
-	CHECK(offsetof(ds45_shim_data_t, dbg_input_calls) == 304);
-	CHECK(offsetof(ds45_shim_data_t, dbg_input_padmiss) == 308);
-	CHECK(offsetof(ds45_shim_data_t, dbg_event_ds) == 312);
-	CHECK(offsetof(ds45_shim_data_t, dbg_enable_ds) == 316);
-	CHECK(offsetof(ds45_shim_data_t, dbg_input_ds) == 320);
-	CHECK(offsetof(ds45_shim_data_t, dbg_last_pid) == 324);
-	CHECK(offsetof(ds45_shim_data_t, dbg_last_vtable) == 328);
+	CHECK(offsetof(npp_shim_data_t, dbg_event_calls) == 296);
+	CHECK(offsetof(npp_shim_data_t, dbg_enable_calls) == 300);
+	CHECK(offsetof(npp_shim_data_t, dbg_input_calls) == 304);
+	CHECK(offsetof(npp_shim_data_t, dbg_input_padmiss) == 308);
+	CHECK(offsetof(npp_shim_data_t, dbg_event_ds) == 312);
+	CHECK(offsetof(npp_shim_data_t, dbg_enable_ds) == 316);
+	CHECK(offsetof(npp_shim_data_t, dbg_input_ds) == 320);
+	CHECK(offsetof(npp_shim_data_t, dbg_last_pid) == 324);
+	CHECK(offsetof(npp_shim_data_t, dbg_last_vtable) == 328);
 	/* stage 1b stable identity, appended after dbg_last_vtable: the connection
 	 * table address, the on/off switch and three counters */
-	CHECK(offsetof(ds45_shim_data_t, conn_tbl) == 336);
-	CHECK(offsetof(ds45_shim_data_t, stable_id) == 344);
-	CHECK(offsetof(ds45_shim_data_t, dbg_id_bd) == 348);
-	CHECK(offsetof(ds45_shim_data_t, dbg_id_fallback) == 352);
-	CHECK(offsetof(ds45_shim_data_t, dbg_last_handle) == 356);
+	CHECK(offsetof(npp_shim_data_t, conn_tbl) == 336);
+	CHECK(offsetof(npp_shim_data_t, stable_id) == 344);
+	CHECK(offsetof(npp_shim_data_t, dbg_id_bd) == 348);
+	CHECK(offsetof(npp_shim_data_t, dbg_id_fallback) == 352);
+	CHECK(offsetof(npp_shim_data_t, dbg_last_handle) == 356);
 	/* the DS3-route output state, appended last: the original sender's address
 	 * (written from the firmware row), the mode, the report sequence counter,
 	 * the debug counters, the captured payload, the 78-byte DualSense report and
 	 * the moved 96-byte packet buffer (8-aligned); 304 -> 584 in version 8, 24
 	 * bytes later since version 10 grew pid_orig */
-	CHECK(offsetof(ds45_shim_data_t, orig_output) == 360);
-	CHECK(offsetof(ds45_shim_data_t, out_mode) == 368);
-	CHECK(offsetof(ds45_shim_data_t, out_seq) == 372);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_calls) == 376);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_ds) == 380);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_translated) == 384);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_passed) == 388);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_last_len) == 392);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_cap_len) == 396);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_cap) == 400);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_out_cap) == 64);
-	CHECK(offsetof(ds45_shim_data_t, out_buf) == 464);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->out_buf) == 80);
-	CHECK(offsetof(ds45_shim_data_t, pktbuf) == 544);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->pktbuf) == 96);
-	CHECK(offsetof(ds45_shim_data_t, pktbuf) % 8 == 0);
+	CHECK(offsetof(npp_shim_data_t, orig_output) == 360);
+	CHECK(offsetof(npp_shim_data_t, out_mode) == 368);
+	CHECK(offsetof(npp_shim_data_t, out_seq) == 372);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_calls) == 376);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_ds) == 380);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_translated) == 384);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_passed) == 388);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_last_len) == 392);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_cap_len) == 396);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_cap) == 400);
+	CHECK(sizeof(((npp_shim_data_t *)0)->dbg_out_cap) == 64);
+	CHECK(offsetof(npp_shim_data_t, out_buf) == 464);
+	CHECK(sizeof(((npp_shim_data_t *)0)->out_buf) == 80);
+	CHECK(offsetof(npp_shim_data_t, pktbuf) == 544);
+	CHECK(sizeof(((npp_shim_data_t *)0)->pktbuf) == 96);
+	CHECK(offsetof(npp_shim_data_t, pktbuf) % 8 == 0);
 	/* 9: the rumble-aware capture (debug only), appended after pktbuf: the pad
 	 * of the last motor-on payload (8-aligned), the on/off counts and lengths, the
 	 * off-capture armed flag, a reserved word that keeps the size a multiple of 8,
 	 * and the two 64-byte captures; 584 -> 744 in version 9, 24 bytes later since
 	 * version 10 */
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_pad) == 640);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_pad) % 8 == 0);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_count) == 648);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_len) == 652);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_count) == 656);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_len) == 660);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_armed) == 664);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_rsvd9) == 668);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_on_cap) == 672);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_out_on_cap) == 64);
-	CHECK(offsetof(ds45_shim_data_t, dbg_out_off_cap) == 736);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_out_off_cap) == 64);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_on_pad) == 640);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_on_pad) % 8 == 0);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_on_count) == 648);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_on_len) == 652);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_off_count) == 656);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_off_len) == 660);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_off_armed) == 664);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_rsvd9) == 668);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_on_cap) == 672);
+	CHECK(sizeof(((npp_shim_data_t *)0)->dbg_out_on_cap) == 64);
+	CHECK(offsetof(npp_shim_data_t, dbg_out_off_cap) == 736);
+	CHECK(sizeof(((npp_shim_data_t *)0)->dbg_out_off_cap) == 64);
 	/* 10: the input bounce buffer (8-aligned, zero at install; the blob reads the
 	 * DualSense's 79-byte full report into it) and four debug counters (bounce
 	 * reads, reads of 66-79 bytes, results dropped for not fitting, errors),
 	 * appended after dbg_out_off_cap: 744 -> 880 including the 24 bytes pid_orig
 	 * grew by (7 -> 10 sites) */
-	CHECK(offsetof(ds45_shim_data_t, inbuf) == 800);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->inbuf) == 96);
-	CHECK(offsetof(ds45_shim_data_t, inbuf) % 8 == 0);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_bounce) == 896);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_big) == 900);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_drop) == 904);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_err) == 908);
+	CHECK(offsetof(npp_shim_data_t, inbuf) == 800);
+	CHECK(sizeof(((npp_shim_data_t *)0)->inbuf) == 96);
+	CHECK(offsetof(npp_shim_data_t, inbuf) % 8 == 0);
+	CHECK(offsetof(npp_shim_data_t, dbg_in_bounce) == 896);
+	CHECK(offsetof(npp_shim_data_t, dbg_in_big) == 900);
+	CHECK(offsetof(npp_shim_data_t, dbg_in_drop) == 904);
+	CHECK(offsetof(npp_shim_data_t, dbg_in_err) == 908);
 	/* 11: the raw DualSense report capture (debug only), appended after dbg_in_err:
 	 * the captured length, a sequence counter and the first 64 bytes of the last
 	 * report before translation; 880 -> 952 */
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw_len) == 912);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw_seq) == 916);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw) == 920);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->dbg_in_raw) == 64);
-	CHECK(offsetof(ds45_shim_data_t, dbg_in_raw) + sizeof(((ds45_shim_data_t *)0)->dbg_in_raw) == 984);
+	CHECK(offsetof(npp_shim_data_t, dbg_in_raw_len) == 912);
+	CHECK(offsetof(npp_shim_data_t, dbg_in_raw_seq) == 916);
+	CHECK(offsetof(npp_shim_data_t, dbg_in_raw) == 920);
+	CHECK(sizeof(((npp_shim_data_t *)0)->dbg_in_raw) == 64);
+	CHECK(offsetof(npp_shim_data_t, dbg_in_raw) + sizeof(((npp_shim_data_t *)0)->dbg_in_raw) == 984);
 	/* 12: the power-off hook state, appended after dbg_in_raw (8-aligned) */
-	CHECK(offsetof(ds45_shim_data_t, orig_poweroff) == 984);
-	CHECK(offsetof(ds45_shim_data_t, orig_teardown) == 992);
-	CHECK(offsetof(ds45_shim_data_t, po_mode) == 1000);
-	CHECK(offsetof(ds45_shim_data_t, po_seq) == 1004);
-	CHECK(offsetof(ds45_shim_data_t, dbg_po_calls) == 1008);
-	CHECK(offsetof(ds45_shim_data_t, dbg_po_ds) == 1012);
-	CHECK(offsetof(ds45_shim_data_t, dbg_po_rewritten) == 1016);
-	CHECK(offsetof(ds45_shim_data_t, dbg_po_passed) == 1020);
-	CHECK(offsetof(ds45_shim_data_t, dbg_td_calls) == 1024);
-	CHECK(offsetof(ds45_shim_data_t, dbg_td_rsvd) == 1028);
-	CHECK(offsetof(ds45_shim_data_t, po_buf) == 1032);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->po_buf) == 48);
-	CHECK(offsetof(ds45_shim_data_t, po_ring) == 1080);
-	CHECK(sizeof(((ds45_shim_data_t *)0)->po_ring) == 128);
-	CHECK(offsetof(ds45_shim_data_t, orig_poweroff) % 8 == 0);
-	CHECK(offsetof(ds45_shim_data_t, orig_teardown) % 8 == 0);
-	CHECK(offsetof(ds45_shim_data_t, po_buf) % 8 == 0);
-	CHECK(offsetof(ds45_shim_data_t, po_ring) % 8 == 0);
-	CHECK(sizeof(ds45_shim_data_t) == 1208);
-	CHECK(sizeof(ds45_shim_data_t) % 8 == 0);
+	CHECK(offsetof(npp_shim_data_t, orig_poweroff) == 984);
+	CHECK(offsetof(npp_shim_data_t, orig_teardown) == 992);
+	CHECK(offsetof(npp_shim_data_t, po_mode) == 1000);
+	CHECK(offsetof(npp_shim_data_t, po_seq) == 1004);
+	CHECK(offsetof(npp_shim_data_t, dbg_po_calls) == 1008);
+	CHECK(offsetof(npp_shim_data_t, dbg_po_ds) == 1012);
+	CHECK(offsetof(npp_shim_data_t, dbg_po_rewritten) == 1016);
+	CHECK(offsetof(npp_shim_data_t, dbg_po_passed) == 1020);
+	CHECK(offsetof(npp_shim_data_t, dbg_td_calls) == 1024);
+	CHECK(offsetof(npp_shim_data_t, dbg_td_rsvd) == 1028);
+	CHECK(offsetof(npp_shim_data_t, po_buf) == 1032);
+	CHECK(sizeof(((npp_shim_data_t *)0)->po_buf) == 48);
+	CHECK(offsetof(npp_shim_data_t, po_ring) == 1080);
+	CHECK(sizeof(((npp_shim_data_t *)0)->po_ring) == 128);
+	CHECK(offsetof(npp_shim_data_t, orig_poweroff) % 8 == 0);
+	CHECK(offsetof(npp_shim_data_t, orig_teardown) % 8 == 0);
+	CHECK(offsetof(npp_shim_data_t, po_buf) % 8 == 0);
+	CHECK(offsetof(npp_shim_data_t, po_ring) % 8 == 0);
+	CHECK(sizeof(npp_shim_data_t) == 1208);
+	CHECK(sizeof(npp_shim_data_t) % 8 == 0);
 	return 0;
 }
 
@@ -1314,7 +1314,7 @@ static int test_abi_layout(void)
 /* The parser underneath: dualsense_parse() after the split                  */
 /* ------------------------------------------------------------------------ */
 
-static int same_state(const ds45_state_t *a, const ds45_state_t *b)
+static int same_state(const npp_state_t *a, const npp_state_t *b)
 {
 	int i;
 
@@ -1376,16 +1376,16 @@ static void place_bt(uint8_t b[RPT_LEN], const uint8_t c[DS_C_SIZE])
 	seal_crc(b);
 }
 
-static int check_known(const ds45_state_t *st)
+static int check_known(const npp_state_t *st)
 {
 	return st->valid == 1 && st->sticks_valid == 1 &&
 	       st->lx == 0x12 && st->ly == 0x34 && st->rx == 0x56 && st->ry == 0x78 &&
 	       st->l2 == 0x9A && st->r2 == 0xBC &&
-	       st->buttons == (DS45_B_RIGHT | DS45_B_DOWN |
-	                       DS45_B_SQUARE | DS45_B_CROSS | DS45_B_CIRCLE | DS45_B_TRIANGLE |
-	                       DS45_B_L1 | DS45_B_R1 | DS45_B_L2 | DS45_B_R2 |
-	                       DS45_B_SHARE | DS45_B_OPTIONS | DS45_B_L3 | DS45_B_R3 |
-	                       DS45_B_PS | DS45_B_TOUCHPAD | DS45_B_MUTE) &&
+	       st->buttons == (NPP_B_RIGHT | NPP_B_DOWN |
+	                       NPP_B_SQUARE | NPP_B_CROSS | NPP_B_CIRCLE | NPP_B_TRIANGLE |
+	                       NPP_B_L1 | NPP_B_R1 | NPP_B_L2 | NPP_B_R2 |
+	                       NPP_B_SHARE | NPP_B_OPTIONS | NPP_B_L3 | NPP_B_R3 |
+	                       NPP_B_PS | NPP_B_TOUCHPAD | NPP_B_MUTE) &&
 	       st->gyro[0] == -2 && st->gyro[1] == 0x1234 && st->gyro[2] == -32768 &&
 	       st->accel[0] == 8192 && st->accel[1] == -1 && st->accel[2] == 32767 &&
 	       st->touch[0].active == 1 && st->touch[0].id == 5 &&
@@ -1398,7 +1398,7 @@ static int check_known(const ds45_state_t *st)
 static int test_parse_fields(void)
 {
 	uint8_t c[DS_C_SIZE], u[64], b[RPT_LEN];
-	ds45_state_t st;
+	npp_state_t st;
 
 	common_known(c);
 	place_usb(u, c);
@@ -1406,11 +1406,11 @@ static int test_parse_fields(void)
 
 	/* the same block decodes the same through all three entry points */
 	memset(&st, 0xEE, sizeof(st));
-	CHECK(dualsense_parse(u, 64, DS45_LINK_USB, &st) == 0);
+	CHECK(dualsense_parse(u, 64, NPP_LINK_USB, &st) == 0);
 	CHECK(check_known(&st));
 
 	memset(&st, 0xEE, sizeof(st));
-	CHECK(dualsense_parse(b, RPT_LEN, DS45_LINK_BT, &st) == 0);
+	CHECK(dualsense_parse(b, RPT_LEN, NPP_LINK_BT, &st) == 0);
 	CHECK(check_known(&st));
 
 	memset(&st, 0xEE, sizeof(st));
@@ -1449,18 +1449,18 @@ static int test_parse_fields(void)
 	c[DS_C_BUTTONS + 0] = 0x00;                 /* hat 0, nothing else */
 	place_bt(b, c);
 	CHECK(dualsense_parse_bt_body(b, RPT_LEN, &st) == 0);
-	CHECK((st.buttons & (DS45_B_UP | DS45_B_RIGHT | DS45_B_DOWN | DS45_B_LEFT)) == DS45_B_UP);
+	CHECK((st.buttons & (NPP_B_UP | NPP_B_RIGHT | NPP_B_DOWN | NPP_B_LEFT)) == NPP_B_UP);
 	c[DS_C_BUTTONS + 0] = 0x08;
 	place_bt(b, c);
 	CHECK(dualsense_parse_bt_body(b, RPT_LEN, &st) == 0);
-	CHECK((st.buttons & (DS45_B_UP | DS45_B_RIGHT | DS45_B_DOWN | DS45_B_LEFT)) == 0);
+	CHECK((st.buttons & (NPP_B_UP | NPP_B_RIGHT | NPP_B_DOWN | NPP_B_LEFT)) == 0);
 	return 0;
 }
 
 static int test_parse_links_agree(void)
 {
 	uint8_t c[DS_C_SIZE], u[64], b[RPT_LEN], bad[RPT_LEN];
-	ds45_state_t su, sb, sbody;
+	npp_state_t su, sb, sbody;
 	int n, i, bit;
 
 	g_rng = 0x0DDBA11u;
@@ -1473,8 +1473,8 @@ static int test_parse_links_agree(void)
 			b[i] = (uint8_t)rnd();
 		seal_crc(b);
 
-		CHECK(dualsense_parse(u, 64, DS45_LINK_USB, &su) == 0);
-		CHECK(dualsense_parse(b, RPT_LEN, DS45_LINK_BT, &sb) == 0);
+		CHECK(dualsense_parse(u, 64, NPP_LINK_USB, &su) == 0);
+		CHECK(dualsense_parse(b, RPT_LEN, NPP_LINK_BT, &sb) == 0);
 		CHECK(dualsense_parse_bt_body(b, RPT_LEN, &sbody) == 0);
 		CHECK(same_state(&su, &sb));
 		CHECK(same_state(&sb, &sbody));
@@ -1489,7 +1489,7 @@ static int test_parse_links_agree(void)
 			memcpy(bad, b, RPT_LEN);
 			bad[i] ^= (uint8_t)(1u << bit);
 			sb.valid = 1;
-			CHECK(dualsense_parse(bad, RPT_LEN, DS45_LINK_BT, &sb) == -1);
+			CHECK(dualsense_parse(bad, RPT_LEN, NPP_LINK_BT, &sb) == -1);
 			CHECK(sb.valid == 0);
 		}
 	}
@@ -1498,15 +1498,15 @@ static int test_parse_links_agree(void)
 	CHECK(dualsense_parse_bt_body(bad, RPT_LEN, &sbody) == 0);
 
 	/* length and ID are exact for dualsense_parse, per link */
-	CHECK(dualsense_parse(b, RPT_LEN - 1, DS45_LINK_BT, &sb) == -1);
-	CHECK(dualsense_parse(b, RPT_LEN + 1, DS45_LINK_BT, &sb) == -1);
-	CHECK(dualsense_parse(u, 63, DS45_LINK_USB, &su) == -1);
-	CHECK(dualsense_parse(u, 65, DS45_LINK_USB, &su) == -1);
-	CHECK(dualsense_parse(u, 64, DS45_LINK_BT, &sb) == -1);       /* USB report on BT */
-	CHECK(dualsense_parse(b, RPT_LEN, DS45_LINK_USB, &su) == -1); /* BT report on USB */
-	CHECK(dualsense_parse(b, 0, DS45_LINK_BT, &sb) == -1);
-	CHECK(dualsense_parse(NULL, RPT_LEN, DS45_LINK_BT, &sb) == -1);
-	CHECK(dualsense_parse(b, RPT_LEN, DS45_LINK_BT, NULL) == -1);
+	CHECK(dualsense_parse(b, RPT_LEN - 1, NPP_LINK_BT, &sb) == -1);
+	CHECK(dualsense_parse(b, RPT_LEN + 1, NPP_LINK_BT, &sb) == -1);
+	CHECK(dualsense_parse(u, 63, NPP_LINK_USB, &su) == -1);
+	CHECK(dualsense_parse(u, 65, NPP_LINK_USB, &su) == -1);
+	CHECK(dualsense_parse(u, 64, NPP_LINK_BT, &sb) == -1);       /* USB report on BT */
+	CHECK(dualsense_parse(b, RPT_LEN, NPP_LINK_USB, &su) == -1); /* BT report on USB */
+	CHECK(dualsense_parse(b, 0, NPP_LINK_BT, &sb) == -1);
+	CHECK(dualsense_parse(NULL, RPT_LEN, NPP_LINK_BT, &sb) == -1);
+	CHECK(dualsense_parse(b, RPT_LEN, NPP_LINK_BT, NULL) == -1);
 	CHECK(dualsense_parse_bt_body(NULL, RPT_LEN, &sbody) == -1);
 	CHECK(dualsense_parse_bt_body(b, RPT_LEN, NULL) == -1);
 	return 0;
@@ -1520,7 +1520,7 @@ static int test_parse_links_agree(void)
 static uint8_t battery_byte_31(uint8_t status0)
 {
 	uint8_t r[RPT_LEN], out[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 
 	report_neutral(r);
 	r[BT(DS_C_STATUS)] = status0;
@@ -1532,7 +1532,7 @@ static uint8_t battery_byte_31(uint8_t status0)
 static int test_battery_basic(void)
 {
 	uint8_t r[DS_BASIC_LEN], out[DS3_REPORT_LEN];
-	ds45_shim_cfg_t c = cfg_plain();
+	npp_shim_cfg_t c = cfg_plain();
 	int i;
 
 	/* no battery data in the basic report: "full, not charging", never 0 or 0xEE */

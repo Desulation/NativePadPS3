@@ -1,5 +1,5 @@
 /*
- * DS45PAD - configuration file.
+ * NPP - configuration file.
  *
  * Plain "KEY = VALUE" lines, '#' starts a comment. Everything has a working
  * default, so a missing or partial file is not an error - the plugin simply
@@ -7,16 +7,16 @@
  */
 
 #include <string.h>
-#include <cell/pad.h>   /* CellPadData, needed by ds45pad.h */
+#include <cell/pad.h>   /* CellPadData, needed by npp.h */
 
-#include "ds45pad.h"
-#ifdef DS45_LV2DUMP
+#include "npp.h"
+#ifdef NPP_LV2DUMP
 #include "lv2.h"        /* the window CAPTURE_LV2 must fall inside */
 #endif
 
-ds45_config_t g_cfg;
+npp_config_t g_cfg;
 
-void ds45_config_defaults(ds45_config_t *c)
+void npp_config_defaults(npp_config_t *c)
 {
 	memset(c, 0, sizeof(*c));
 
@@ -25,10 +25,10 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->allow_insert_combo = 1;
 
 	/* AUTO mode: raw USB when cabled, otherwise Bluetooth passthrough */
-	c->mode             = DS45_MODE_AUTO;
-	c->pressure         = DS45_PRESSURE_DIGITAL;
+	c->mode             = NPP_MODE_AUTO;
+	c->pressure         = NPP_PRESSURE_DIGITAL;
 	c->pressure_ramp_ms = 200;
-	c->touch_mode       = DS45_TOUCH_OFF;
+	c->touch_mode       = NPP_TOUCH_OFF;
 
 	/* 10 ms, the value the reference plugin uses. 4 ms tracked the
 	 * controller's own report rate but cost noticeably more system time. */
@@ -47,25 +47,25 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->lightbar     = 1;
 	c->dim_lightbar = 1;
 
-	c->capability_mask = DS45_CAP_PS3_CONFORMITY | DS45_CAP_PRESS_MODE |
-	                     DS45_CAP_SENSOR_MODE | DS45_CAP_HP_ANALOG |
-	                     DS45_CAP_ACTUATOR;
+	c->capability_mask = NPP_CAP_PS3_CONFORMITY | NPP_CAP_PRESS_MODE |
+	                     NPP_CAP_SENSOR_MODE | NPP_CAP_HP_ANALOG |
+	                     NPP_CAP_ACTUATOR;
 	c->capability_shift = 1;
-	c->ldd_dev_type     = DS45_DEV_TYPE_LDD;
+	c->ldd_dev_type     = NPP_DEV_TYPE_LDD;
 
-	c->map_touchpad    = DS45_MAP_NONE;
-	c->map_mute        = DS45_MAP_NONE;
-	c->map_touch_left  = DS45_MAP_NONE;
-	c->map_touch_right = DS45_MAP_NONE;
-	c->map_fn_l        = DS45_MAP_NONE;
-	c->map_fn_r        = DS45_MAP_NONE;
-	c->map_paddle_l    = DS45_MAP_L1;
-	c->map_paddle_r    = DS45_MAP_R1;
+	c->map_touchpad    = NPP_MAP_NONE;
+	c->map_mute        = NPP_MAP_NONE;
+	c->map_touch_left  = NPP_MAP_NONE;
+	c->map_touch_right = NPP_MAP_NONE;
+	c->map_fn_l        = NPP_MAP_NONE;
+	c->map_fn_r        = NPP_MAP_NONE;
+	c->map_paddle_l    = NPP_MAP_L1;
+	c->map_paddle_r    = NPP_MAP_R1;
 
 	c->bt_source_port = -1;   /* auto-detect */
 	c->bt_ps_code     = -1;   /* unknown until measured */
 	c->bt_ps_mask     = 0;
-	c->bt_ps_combo    = DS45_PSCOMBO_SELECT_START;
+	c->bt_ps_combo    = NPP_PSCOMBO_SELECT_START;
 
 	c->spoof_pad_info = 1;
 	c->ps_only = 1;
@@ -74,8 +74,8 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->notify = 0;   /* the boot trace is the safe way to confirm loading */
 
 	/* The kernel shim patches live kernel code, so it is never installed unless
-	 * ds45pad.txt says ENABLE_SHIM = 1 - deploying the plugin cannot hang the
-	 * console by itself (see ds45pad.h). */
+	 * nativepadps3.txt says ENABLE_SHIM = 1 - deploying the plugin cannot hang the
+	 * console by itself (see npp.h). */
 	c->enable_shim = 0;
 	c->shim_inline_pid = 0;
 	c->probe_exec = 0;
@@ -87,7 +87,7 @@ void ds45_config_defaults(ds45_config_t *c)
 	c->shim_output_mode = 2;  /* full: rumble, player LEDs, light bar colour */
 	c->shim_poweroff_hook = 1; /* on by default; the mode below decides what it does */
 	c->shim_poweroff_mode = 1; /* act: "Turn off the controller" powers a DualSense off */
-#ifdef DS45_LV2DUMP
+#ifdef NPP_LV2DUMP
 	c->dump_lv2 = 0;
 	c->capture_off = 0;
 	c->capture_len = 0;
@@ -148,7 +148,7 @@ static int match(const char *val, const char *word)
 	return strcmp(val, word) == 0;
 }
 
-static void apply(ds45_config_t *c, const char *key, const char *val)
+static void apply(npp_config_t *c, const char *key, const char *val)
 {
 	int n;
 
@@ -159,13 +159,13 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 	} else if (match(key, "ALLOW_INSERT_COMBO")) {
 		if (parse_int(val, &n)) c->allow_insert_combo = n != 0;
 	} else if (match(key, "MODE")) {
-		if      (match(val, "USB"))  c->mode = DS45_MODE_USB;
-		else if (match(val, "BT"))   c->mode = DS45_MODE_BT;
-		else                         c->mode = DS45_MODE_AUTO;
+		if      (match(val, "USB"))  c->mode = NPP_MODE_USB;
+		else if (match(val, "BT"))   c->mode = NPP_MODE_BT;
+		else                         c->mode = NPP_MODE_AUTO;
 	} else if (match(key, "POLL_MS")) {
 		if (parse_int(val, &n) && n >= 1 && n <= 50) c->poll_ms = (uint32_t)n;
 	} else if (match(key, "MAX_PADS")) {
-		if (parse_int(val, &n) && n >= 1 && n <= DS45_MAX_PADS)
+		if (parse_int(val, &n) && n >= 1 && n <= NPP_MAX_PADS)
 			c->max_pads = (uint32_t)n;
 	} else if (match(key, "STICK_SATURATION")) {
 		/* Below 50 the clamp would eat most of the usable travel. */
@@ -177,14 +177,14 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 	} else if (match(key, "STICK_CALIBRATION")) {
 		c->stick_calibrate = match(val, "OFF") ? 0 : 1;
 	} else if (match(key, "PRESSURE")) {
-		c->pressure = match(val, "RAMP") ? DS45_PRESSURE_RAMP
-		                                 : DS45_PRESSURE_DIGITAL;
+		c->pressure = match(val, "RAMP") ? NPP_PRESSURE_RAMP
+		                                 : NPP_PRESSURE_DIGITAL;
 	} else if (match(key, "PRESSURE_RAMP_MS")) {
 		if (parse_int(val, &n) && n > 0) c->pressure_ramp_ms = (uint32_t)n;
 	} else if (match(key, "TOUCHPAD_MODE")) {
-		if      (match(val, "BUTTONS")) c->touch_mode = DS45_TOUCH_BUTTONS;
-		else if (match(val, "RSTICK"))  c->touch_mode = DS45_TOUCH_RSTICK;
-		else                            c->touch_mode = DS45_TOUCH_OFF;
+		if      (match(val, "BUTTONS")) c->touch_mode = NPP_TOUCH_BUTTONS;
+		else if (match(val, "RSTICK"))  c->touch_mode = NPP_TOUCH_RSTICK;
+		else                            c->touch_mode = NPP_TOUCH_OFF;
 	} else if (match(key, "SIXAXIS")) {
 		if (parse_int(val, &n)) c->sixaxis = n;
 	} else if (match(key, "ACCEL_SCALE")) {
@@ -216,32 +216,32 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		if (parse_int(val, &n) && n >= 0 && n <= 7)
 			c->ldd_dev_type = (uint32_t)n;
 	} else if (match(key, "MAP_TOUCHPAD")) {
-		c->map_touchpad = ds45_parse_map(val);
+		c->map_touchpad = npp_parse_map(val);
 	} else if (match(key, "MAP_MUTE")) {
-		c->map_mute = ds45_parse_map(val);
+		c->map_mute = npp_parse_map(val);
 	} else if (match(key, "MAP_TOUCH_LEFT")) {
-		c->map_touch_left = ds45_parse_map(val);
+		c->map_touch_left = npp_parse_map(val);
 	} else if (match(key, "MAP_TOUCH_RIGHT")) {
-		c->map_touch_right = ds45_parse_map(val);
+		c->map_touch_right = npp_parse_map(val);
 	} else if (match(key, "MAP_FN_L")) {
-		c->map_fn_l = ds45_parse_map(val);
+		c->map_fn_l = npp_parse_map(val);
 	} else if (match(key, "MAP_FN_R")) {
-		c->map_fn_r = ds45_parse_map(val);
+		c->map_fn_r = npp_parse_map(val);
 	} else if (match(key, "MAP_PADDLE_L")) {
-		c->map_paddle_l = ds45_parse_map(val);
+		c->map_paddle_l = npp_parse_map(val);
 	} else if (match(key, "MAP_PADDLE_R")) {
-		c->map_paddle_r = ds45_parse_map(val);
+		c->map_paddle_r = npp_parse_map(val);
 	} else if (match(key, "BT_SOURCE_PORT")) {
-		if (parse_int(val, &n) && n >= -1 && n < DS45_MAX_PORT_NUM)
+		if (parse_int(val, &n) && n >= -1 && n < NPP_MAX_PORT_NUM)
 			c->bt_source_port = n;
 	} else if (match(key, "BT_PS_CODE")) {
 		if (parse_int(val, &n) && n >= -1 && n < 64) c->bt_ps_code = n;
 	} else if (match(key, "BT_PS_MASK")) {
 		if (parse_int(val, &n) && n >= 0 && n <= 0xFFFF) c->bt_ps_mask = n;
 	} else if (match(key, "BT_PS_COMBO")) {
-		if      (match(val, "SELECT_START")) c->bt_ps_combo = DS45_PSCOMBO_SELECT_START;
-		else if (match(val, "L3_R3"))        c->bt_ps_combo = DS45_PSCOMBO_L3_R3;
-		else                                 c->bt_ps_combo = DS45_PSCOMBO_NONE;
+		if      (match(val, "SELECT_START")) c->bt_ps_combo = NPP_PSCOMBO_SELECT_START;
+		else if (match(val, "L3_R3"))        c->bt_ps_combo = NPP_PSCOMBO_L3_R3;
+		else                                 c->bt_ps_combo = NPP_PSCOMBO_NONE;
 	} else if (match(key, "SPOOF_PAD_INFO")) {
 		if (parse_int(val, &n)) c->spoof_pad_info = n;
 	} else if (match(key, "PS_ONLY")) {
@@ -250,7 +250,7 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		if (parse_int(val, &n)) c->diag = n;
 	} else if (match(key, "NOTIFY")) {
 		if (parse_int(val, &n)) c->notify = n;
-#ifndef DS45_GAME
+#ifndef NPP_GAME
 	} else if (match(key, "ENABLE_SHIM")) {
 		/* VSH builds only: the in-game build has no kernel shim, nor any of its
 		 * strings. Anything but a number leaves the gate shut. */
@@ -301,28 +301,28 @@ static void apply(ds45_config_t *c, const char *key, const char *val)
 		 * (1, act). */
 		if (parse_int(val, &n)) c->shim_poweroff_mode = n < 0 ? 0 : (n > 1 ? 1 : n);
 #endif
-#ifdef DS45_LV2DUMP
+#ifdef NPP_LV2DUMP
 	} else if (match(key, "DUMP_LV2")) {
 		if (parse_int(val, &n)) c->dump_lv2 = n;
 	} else if (match(key, "CAPTURE_LV2")) {
 		/* An offset into the 8 MiB window, on a doubleword boundary. */
 		if (parse_int(val, &n) && n >= 0 && (n & 7) == 0 &&
-		    (uint64_t)n < DS45_LV2_BOUND - DS45_LV2_BASE)
+		    (uint64_t)n < NPP_LV2_BOUND - NPP_LV2_BASE)
 			c->capture_off = (uint32_t)n;
 	} else if (match(key, "CAPTURE_LEN")) {
 		if (parse_int(val, &n) && n >= 0 && (n & 7) == 0 &&
-		    n <= DS45_CAPTURE_MAX_LEN)
+		    n <= NPP_CAPTURE_MAX_LEN)
 			c->capture_len = (uint32_t)n;
 	} else if (match(key, "CAPTURE_PTR")) {
 		/* The pointer qword itself: in the window, on a doubleword boundary. */
 		if (parse_int(val, &n) && n >= 0 && (n & 7) == 0 &&
-		    (uint64_t)n < DS45_LV2_BOUND - DS45_LV2_BASE)
+		    (uint64_t)n < NPP_LV2_BOUND - NPP_LV2_BASE)
 			c->capture_ptr = (uint32_t)n;
 #endif
 	}
 }
 
-int ds45_config_load(ds45_config_t *c, const char *path)
+int npp_config_load(npp_config_t *c, const char *path)
 {
 	/* Generous on purpose. An earlier 4 KB buffer silently swallowed
 	 * everything past byte 4095 of a config that had grown to 8 KB, so 34 of
@@ -333,16 +333,16 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	char *line;
 	int len, i;
 
-	len = ds45_read_file(path, text, sizeof(text) - 1);
+	len = npp_read_file(path, text, sizeof(text) - 1);
 	if (len <= 0) {
-		ds45_boot_mark("config_NOT_FOUND_using_defaults");
+		npp_boot_mark("config_NOT_FOUND_using_defaults");
 		return -1;
 	}
 	text[len] = 0;
 
-	ds45_boot_mark_hex("config_bytes", (uint32_t)len);
+	npp_boot_mark_hex("config_bytes", (uint32_t)len);
 	if (len >= (int)sizeof(text) - 1)
-		ds45_boot_mark("config_TRUNCATED_settings_lost");
+		npp_boot_mark("config_TRUNCATED_settings_lost");
 
 	line = text;
 	while (*line) {
@@ -398,28 +398,28 @@ int ds45_config_load(ds45_config_t *c, const char *path)
 	/* Echo back the settings that decide which code path runs at all, so the
 	 * boot trace shows what the plugin actually believes rather than what the
 	 * file says. */
-	ds45_boot_mark_hex("cfg_mode", (uint32_t)c->mode);
-	ds45_boot_mark_hex("cfg_insert_into_game", (uint32_t)c->insert_into_game);
-	ds45_boot_mark_hex("cfg_max_pads", c->max_pads);
-	ds45_boot_mark_hex("cfg_bt_source_port", (uint32_t)c->bt_source_port);
-	ds45_boot_mark_hex("cfg_ps_only", (uint32_t)c->ps_only);
-	ds45_boot_mark_hex("cfg_bt_ps_combo", (uint32_t)c->bt_ps_combo);
-#ifndef DS45_GAME
+	npp_boot_mark_hex("cfg_mode", (uint32_t)c->mode);
+	npp_boot_mark_hex("cfg_insert_into_game", (uint32_t)c->insert_into_game);
+	npp_boot_mark_hex("cfg_max_pads", c->max_pads);
+	npp_boot_mark_hex("cfg_bt_source_port", (uint32_t)c->bt_source_port);
+	npp_boot_mark_hex("cfg_ps_only", (uint32_t)c->ps_only);
+	npp_boot_mark_hex("cfg_bt_ps_combo", (uint32_t)c->bt_ps_combo);
+#ifndef NPP_GAME
 	/* The settings that let the plugin touch kernel memory: ENABLE_SHIM installs
 	 * the shim, and in a debug build PROBE_EXEC runs the executability pre-flight
 	 * (which also pokes the fixed region). Either being set is worth seeing in
 	 * the boot trace. */
-	ds45_boot_mark_hex("cfg_enable_shim", (uint32_t)c->enable_shim);
-	ds45_boot_mark_hex("cfg_shim_inline_pid", (uint32_t)c->shim_inline_pid);
-	ds45_boot_mark_hex("cfg_probe_exec", (uint32_t)c->probe_exec);
-	ds45_boot_mark_hex("cfg_shim_input_hook", (uint32_t)c->shim_input_hook);
-	ds45_boot_mark_hex("cfg_shim_event_hook", (uint32_t)c->shim_event_hook);
-	ds45_boot_mark_hex("cfg_shim_enable_hook", (uint32_t)c->shim_enable_hook);
-	ds45_boot_mark_hex("cfg_shim_stable_id", (uint32_t)c->shim_stable_id);
-	ds45_boot_mark_hex("cfg_shim_output_hook", (uint32_t)c->shim_output_hook);
-	ds45_boot_mark_hex("cfg_shim_output_mode", (uint32_t)c->shim_output_mode);
-	ds45_boot_mark_hex("cfg_shim_poweroff_hook", (uint32_t)c->shim_poweroff_hook);
-	ds45_boot_mark_hex("cfg_shim_poweroff_mode", (uint32_t)c->shim_poweroff_mode);
+	npp_boot_mark_hex("cfg_enable_shim", (uint32_t)c->enable_shim);
+	npp_boot_mark_hex("cfg_shim_inline_pid", (uint32_t)c->shim_inline_pid);
+	npp_boot_mark_hex("cfg_probe_exec", (uint32_t)c->probe_exec);
+	npp_boot_mark_hex("cfg_shim_input_hook", (uint32_t)c->shim_input_hook);
+	npp_boot_mark_hex("cfg_shim_event_hook", (uint32_t)c->shim_event_hook);
+	npp_boot_mark_hex("cfg_shim_enable_hook", (uint32_t)c->shim_enable_hook);
+	npp_boot_mark_hex("cfg_shim_stable_id", (uint32_t)c->shim_stable_id);
+	npp_boot_mark_hex("cfg_shim_output_hook", (uint32_t)c->shim_output_hook);
+	npp_boot_mark_hex("cfg_shim_output_mode", (uint32_t)c->shim_output_mode);
+	npp_boot_mark_hex("cfg_shim_poweroff_hook", (uint32_t)c->shim_poweroff_hook);
+	npp_boot_mark_hex("cfg_shim_poweroff_mode", (uint32_t)c->shim_poweroff_mode);
 #endif
 
 	return 0;

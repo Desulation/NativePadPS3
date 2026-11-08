@@ -8,7 +8,7 @@
     the plugin path in boot_plugins.txt. The person at the console still has
     to connect the Bluetooth pad and use it.
 
-    -Mode dump     DUMP_LV2 = 1 in ds45pad.txt. Waits for LV2 dumps A and B
+    -Mode dump     DUMP_LV2 = 1 in nativepadps3.txt. Waits for LV2 dumps A and B
                    (follow the toasts: A untouched, B with Cross held and the
                    left stick fully left) and downloads them.
     -Mode btcheck  Follows the boot trace until the passive cross-check
@@ -31,16 +31,16 @@ param(
     [Parameter(Mandatory)][ValidateSet('dump', 'btcheck')][string]$Mode,
     [Parameter(Mandatory)][string]$Ip,
     [Parameter(Mandatory)][string]$Dest,
-    [string]$Sprx = (Join-Path $PSScriptRoot '../src/ds45pad_vsh_debug.sprx'),
-    [string]$RemoteSprx = '/dev_hdd0/plugins/ds45pad_vsh_debug.sprx',
+    [string]$Sprx = (Join-Path $PSScriptRoot '../src/nativepadps3_vsh_debug.sprx'),
+    [string]$RemoteSprx = '/dev_hdd0/plugins/nativepadps3_vsh_debug.sprx',
     [int]$TimeoutMin = 15
 )
 $ErrorActionPreference = 'Stop'
 $ftp = "ftp://$Ip"
 $tmp = '/dev_hdd0/tmp'
 $stamp = [DateTime]::Now.ToString('yyyyMMdd-HHmmss')
-$dumpFiles = @('ds45pad_lv2.bin', 'ds45pad_lv2.txt', 'ds45pad_lv2_b.bin', 'ds45pad_lv2_b.txt')
-$trace = 'ds45pad_boot.txt'
+$dumpFiles = @('nativepadps3_lv2.bin', 'nativepadps3_lv2.txt', 'nativepadps3_lv2_b.bin', 'nativepadps3_lv2_b.txt')
+$trace = 'nativepadps3_boot.txt'
 
 function Say([string]$m) { Write-Output ("[{0}] {1}" -f [DateTime]::Now.ToString('HH:mm:ss'), $m) }
 
@@ -132,8 +132,8 @@ if ($Mode -eq 'dump') {
         foreach ($name in $dumpFiles) {
             if ($now.ContainsKey($name) -and -not $seen.ContainsKey($name)) { $seen[$name] = 1; Say "Appeared: $name" }
         }
-        $done = ($now['ds45pad_lv2.bin'] -eq 8388608) -and ($now['ds45pad_lv2_b.bin'] -eq 8388608) -and
-                $now.ContainsKey('ds45pad_lv2.txt') -and $now.ContainsKey('ds45pad_lv2_b.txt')
+        $done = ($now['nativepadps3_lv2.bin'] -eq 8388608) -and ($now['nativepadps3_lv2_b.bin'] -eq 8388608) -and
+                $now.ContainsKey('nativepadps3_lv2.txt') -and $now.ContainsKey('nativepadps3_lv2_b.txt')
         if ($done) { break }
         if ([DateTime]::Now -gt $deadline) { Say "Timed out after $TimeoutMin min; downloading what is there."; break }
         Start-Sleep -Seconds 5
@@ -153,7 +153,7 @@ if ($Mode -eq 'dump') {
 # cross-check state on every change (0 pending, 1 passed, 2 failed) and the
 # VSH sample count on every rescan.
 Say 'Console is back. Turn on the DualSense and use it: move both sticks, press buttons.'
-$out = "ds45pad_boot_btcheck_$stamp.txt"
+$out = "nativepadps3_boot_btcheck_$stamp.txt"
 $last = @{}
 $result = $null
 while ($true) {
