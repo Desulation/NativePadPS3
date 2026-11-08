@@ -607,20 +607,39 @@ class RealElfPoweroffTeardownStubTest(unittest.TestCase):
 
     def test_stub_entries_and_literals(self):
         with open(_REAL_ELF, "rb") as f:
-            p = shim_pack.pack(f.read())
+            data = f.read()
+        p = shim_pack.pack(data)
         entries = sorted([p.off_output, p.off_poweroff, p.off_teardown])
         self.assertEqual(len(set(entries)), 3)
         for e in (p.off_poweroff, p.off_teardown):
             self.assertEqual(e % 4, 0)
             self.assertEqual(struct.unpack(">I", p.blob[e:e + 4])[0],
                              0x7C0802A6)                  # mflr 0
-        # Between one stub's entry and the next stub's entry (or 0x300 bytes
-        # for the last) lies exactly one rebased word: that stub's literal.
+        # Between one stub's entry and the next stub's entry (for the last stub:
+        # the start of .opd, which follows all of .text) lies exactly one
+        # rebased word: that stub's literal.
+        opd_lo = _section_addr(data, ".opd")
+        self.assertGreater(opd_lo, entries[-1])
         for i, e in enumerate(entries):
-            hi = entries[i + 1] if i + 1 < len(entries) else e + 0x300
+            hi = entries[i + 1] if i + 1 < len(entries) else opd_lo
             lits = [r for r in p.relocs if e < r < hi]
             self.assertEqual(len(lits), 1, (hex(e), lits))
             self.assertEqual(lits[0] % 8, 0)
+
+
+def _section_addr(data, wanted):
+    """sh_addr of the named section of the ELF image `data` (blob offsets are
+    section addresses; the blob starts at the first byte of .text, address 0)."""
+    e_shoff = struct.unpack(">Q", data[0x28:0x30])[0]
+    e_shnum, e_shstrndx = struct.unpack(">HH", data[0x3C:0x40])
+    secs = [struct.unpack(">IIQQQQIIQQ", data[e_shoff + 64 * i:e_shoff + 64 * i + 64])
+            for i in range(e_shnum)]
+    stro = secs[e_shstrndx][4]
+    for f in secs:
+        end = data.index(b"\0", stro + f[0])
+        if data[stro + f[0]:end].decode() == wanted:
+            return f[3]
+    raise AssertionError("no section %s" % wanted)
 
 
 def _decode_branch(blob, at):
