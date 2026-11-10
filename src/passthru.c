@@ -487,7 +487,7 @@ int passthru_scan(void)
 		return 0;                    /* stays bound; retried next tick */
 
 	if (g_cfg.notify)
-		npp_notify("NativePadPS3 Bluetooth Attivo / Active");
+		npp_notify("NativePadPS3 Bluetooth Active");
 
 	return 1;
 }

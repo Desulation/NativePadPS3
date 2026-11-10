@@ -316,7 +316,7 @@ typedef struct {
 	int      bt_source_port;
 	/* Where the PS button lands inside the OEM pad report, if anywhere:
 	 * an index into CellPadData.button[] plus a bit mask, or -1 for "not
-	 * reported". Discovered with the diagnostic dump - docs/DIAGNOSTICO.md. */
+	 * reported". Discovered with the diagnostic dump - docs/DIAGNOSTICS.md. */
 	int      bt_ps_code;
 	int      bt_ps_mask;
 	npp_pscombo_t bt_ps_combo;

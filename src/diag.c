@@ -156,29 +156,29 @@ void diag_dump_ports(void)
 	int port;
 
 	if (cellPadGetInfo2(&info) != CELL_PAD_OK) {
-		diag_msg("cellPadGetInfo2 falhou");
+		diag_msg("cellPadGetInfo2 failed");
 		return;
 	}
 
 	if (!diag_claim())
 		return;
 
-	put("--- portas ---\n");
+	put("--- ports ---\n");
 	put("max="); put_dec((int)info.max_connect);
-	put(" conectados="); put_dec((int)info.now_connect);
+	put(" connected="); put_dec((int)info.now_connect);
 	put("\n");
 
 	for (port = 0; port < NPP_MAX_PORT_NUM; port++) {
 		if (!(info.port_status[port] & NPP_STATUS_CONNECTED))
 			continue;
 
-		put("porta "); put_dec(port);
+		put("port "); put_dec(port);
 		put("  status=0x");   put_hex(info.port_status[port], 4);
 		put("  setting=0x");  put_hex(info.port_setting[port], 4);
 		put("  cap=0x");      put_hex(info.device_capability[port], 4);
 		put("  type=");       put_dec((int)info.device_type[port]);
 		put(info.device_capability[port] & NPP_CAP_PS3_CONFORMITY
-		    ? "  [CONFORME]" : "  [GENERICO]");
+		    ? "  [CONFORMING]" : "  [GENERIC]");
 		put("\n");
 	}
 
@@ -203,7 +203,7 @@ static void dump_changes(const char *tag, int port, const CellPadData *data,
 			continue;
 
 		if (!changed) {
-			put(tag); put(" porta "); put_dec(port); put(":");
+			put(tag); put(" port "); put_dec(port); put(":");
 			changed = 1;
 		}
 
