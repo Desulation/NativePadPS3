@@ -8,7 +8,7 @@
  *   nativepadps3_game.sprx   loaded into a running game process (PS3MAPI or
  *                            Cobra). Corrects the stick response curve and
  *                            answers the game's cellPadGetInfo2 - see
- *                            docs/ARQUITETURA.md.
+ *                            docs/ARCHITECTURE.md.
  *                            Not a rumble build: rumble is out of scope.
  *
  * Licensed under GPLv2 - see LICENSE.
@@ -864,7 +864,7 @@ static void npp_thread(uint64_t arg)
 					bt_toast_shown = 1;
 					npp_notify(TOAST_BT_UNSUPPORTED);
 				} else {
-					npp_notify("NativePadPS3 Caricato / Loaded");
+					npp_notify("NativePadPS3 Loaded");
 				}
 				npp_boot_mark("notify_ok");
 			}
@@ -1017,7 +1017,7 @@ static void npp_stop_thread(uint64_t arg)
 	 * a plausible address is not necessarily a mapped one, so the walk can
 	 * fault. A notification cannot reach the screen from a game anyway. */
 	if (g_cfg.notify)
-		npp_notify("NativePadPS3 Disattivato / Unloaded");
+		npp_notify("NativePadPS3 Unloaded");
 #endif
 	sys_ppu_thread_exit(0);
 }

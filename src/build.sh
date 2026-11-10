@@ -16,7 +16,7 @@
 set -e
 
 # legacy variable name, one-cycle migration check; remove after the next release
-if [ -n "${DS45_TOOLS:-}" ] && [ -z "${NPP_TOOLS:-}" ]; then echo "ERRO: DS45_TOOLS was renamed NPP_TOOLS: set NPP_TOOLS to the same folder. No SPRX was built." >&2; exit 1; fi
+if [ -n "${DS45_TOOLS:-}" ] && [ -z "${NPP_TOOLS:-}" ]; then echo "ERROR: DS45_TOOLS was renamed NPP_TOOLS: set NPP_TOOLS to the same folder. No SPRX was built." >&2; exit 1; fi
 
 SDK="${CELL_SDK:-C:/ps3sdk/cell}"
 # NPP_TOOLS set: sign with scetool and retail keys (CEX CFW and HEN).
@@ -172,7 +172,7 @@ fi
 # nothing, and an unsigned module in boot_plugins.txt hangs HEN at boot.
 magic=$(od -A n -t x1 -N 4 "$OUT" | tr -d ' ')
 if [ "$magic" != "53434500" ]; then
-	echo "ERRO: $OUT nao comeca com SCE (magic=$magic) - NAO instale"
+	echo "ERROR: $OUT does not start with SCE (magic=$magic) - do NOT install"
 	exit 1
 fi
 

@@ -1,6 +1,6 @@
 #!/bin/bash
-# Uso: npp_build.sh <cartella_sorgenti> <vsh|game> <file_output.sprx>
-# Replica build.sh di NativePadPS3 su Linux: compilatore Cell SDK sotto Wine + scetool nativo.
+# Usage: npp_build.sh <source_folder> <vsh|game> <output_file.sprx>
+# Replicates NativePadPS3 build.sh on Linux: Cell SDK compiler under Wine + native scetool.
 set -e
 SRCDIR="$1"; MODE="$2"; OUT="$3"
 SDK=/tmp/ps3sdk
@@ -26,14 +26,14 @@ LDFLAGS="-mprx -zgenprx -zgenstub -ffunction-sections -fdata-sections"
 SCEFLAGS="-0 SELF -1 TRUE -s FALSE -2 0A -3 $AUTH -4 01000002 -5 APP -6 0003004000000000 -A 0001000000000000"
 
 cd "$SRCDIR"; mkdir -p obj; rm -f obj/*.o
-echo "compilando ($MODE)..."
+echo "compiling ($MODE)..."
 for f in $SRCS; do $WINE "$GCC" $CFLAGS -c "$f" -o "obj/${f%.c}.o"; done
-echo "linkando..."
+echo "linking..."
 $WINE "$GCC" $LDFLAGS obj/*.o -L "$LIBDIR" $LDLIBS -o obj/nativepadps3.sym
 echo "strip..."
 $WINE "$PRXSTRIP" --strip-debug --strip-section-header obj/nativepadps3.sym -o obj/nativepadps3.prx
-echo "assinando..."
+echo "signing..."
 PS3="$SCEDIR/data" "$SCEDIR/scetool" $SCEFLAGS -e obj/nativepadps3.prx "$OUT" > /dev/null
 magic=$(od -A n -t x1 -N 4 "$OUT" | tr -d ' ')
-[ "$magic" = "53434500" ] || { echo "ERRORE: $OUT non inizia con SCE ($magic)"; exit 1; }
+[ "$magic" = "53434500" ] || { echo "ERROR: $OUT does not start with SCE ($magic)"; exit 1; }
 echo "ok: $OUT ($(stat -c %s "$OUT") bytes)"

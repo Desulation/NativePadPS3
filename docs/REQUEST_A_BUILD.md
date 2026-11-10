@@ -1,20 +1,20 @@
-# Pedindo para alguém compilar
+# Asking someone to build it
 
-Compilar exige o Cell SDK, que é proprietário. Quem já tem o ambiente montado
-faz isso em segundos — e nos fóruns de PS3 tem bastante gente nessa situação.
+Building requires the Cell SDK, which is proprietary. Anyone who already has the
+environment set up can do it in seconds — and there are plenty of people in
+that situation on the PS3 forums.
 
-Abaixo tem um texto pronto para postar. Está em inglês porque PSX-Place e
-GBAtemp são internacionais.
+Below is a ready-to-post text.
 
-**Onde postar:** [PSX-Place](https://www.psx-place.com) (seção PS3
-Homebrew/Development) ou [GBAtemp](https://gbatemp.net) (PS3 hacking).
+**Where to post:** [PSX-Place](https://www.psx-place.com) (PS3
+Homebrew/Development section) or [GBAtemp](https://gbatemp.net) (PS3 hacking).
 
-Antes de postar, suba o projeto para algum lugar que dê para baixar — um repo
-no GitHub é o ideal, porque aí a pessoa clona e compila direto.
+Before posting, put the project somewhere it can be downloaded — a GitHub repo
+is ideal, because then the person can clone it and build directly.
 
 ---
 
-## Texto para copiar
+## Text to copy
 
 > **[Request] Build help: NativePadPS3 — DualShock 4 / DualSense VSH plugin**
 >
@@ -28,7 +28,7 @@ no GitHub é o ideal, porque aí a pessoa clona e compila direto.
 > toolchain be willing to compile it? The code is self-contained — 13 files, no
 > external dependencies beyond the SDK stubs.
 >
-> **Source:** `<link do seu repositório>`
+> **Source:** `<link to your repository>`
 >
 > **Build:**
 > ```
@@ -60,10 +60,10 @@ no GitHub é o ideal, porque aí a pessoa clona e compila direto.
 
 ---
 
-## Se pedirem alterações
+## If they ask for changes
 
-Se a pessoa relatar erro de compilação, me traga a saída exata do `make`. Erros
-de primeira compilação são esperados — o código nunca passou por um compilador,
-e os pontos mais prováveis (nomes de constantes do SDK que variam de versão, o
-header das macros de syscall) estão mapeados na tabela de erros comuns do
-[BUILD.md](BUILD.md#se-der-erro-de-compilação).
+If the person reports a build error, bring me the exact output of `make`.
+First-build errors are expected — the code has never been through a compiler,
+and the most likely trouble spots (SDK constant names that vary between
+versions, the syscall macro header) are mapped in the common-errors table in
+[BUILD.md](BUILD.md#common-errors).

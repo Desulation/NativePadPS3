@@ -133,7 +133,7 @@ endif
 	@# boot. Delete it rather than leave it lying around to be installed.
 	@magic=`od -A n -t x1 -N 4 $(SPRX) | tr -d ' '`; \
 	 if [ "$$magic" != "53434500" ]; then \
-	   echo "ERRO: $(SPRX) nao comeca com SCE (magic=$$magic) - NAO instale"; \
+	   echo "ERROR: $(SPRX) does not start with SCE (magic=$$magic) - do NOT install"; \
 	   rm -f $(SPRX); exit 1; \
 	 fi
 	@echo "ok: $(SPRX) assinado (magic SCE)"
