@@ -1,13 +1,19 @@
 #!/bin/bash
 # Usage: npp_build.sh <source_folder> <vsh|game> <output_file.sprx>
 # Replicates NativePadPS3 build.sh on Linux: Cell SDK compiler under Wine + native scetool.
+#
+# Override these for your environment (defaults shown in brackets):
+#   PS3SDK      Cell SDK root, containing host-win32/ and target/ppu/   [/opt/cell]
+#   SCEDIR      directory holding the `scetool` binary and its `data/`  [$HOME/scetool]
+#   WINEPREFIX  Wine prefix set up with the SDK's win32 toolchain       [$HOME/.wine-ps3]
+#   WINE        Wine executable                                         [wine, from PATH]
 set -e
 SRCDIR="$1"; MODE="$2"; OUT="$3"
-SDK=/tmp/ps3sdk
-SCEDIR=/tmp/claude-0/-home-claude/eb99eedb-7192-5b41-a036-a3ef28189405/scratchpad/scetool_run
-export WINEPREFIX=/tmp/claude-0/-home-claude/eb99eedb-7192-5b41-a036-a3ef28189405/scratchpad/wineprefix
+SDK="${PS3SDK:-/opt/cell}"
+SCEDIR="${SCEDIR:-$HOME/scetool}"
+export WINEPREFIX="${WINEPREFIX:-$HOME/.wine-ps3}"
 export WINEARCH=win32 WINEDEBUG=-all WINEDLLOVERRIDES="mscoree,mshtml=" DISPLAY=
-WINE=/usr/lib/wine/wine
+WINE="${WINE:-wine}"
 GCC="$SDK/host-win32/ppu/bin/ppu-lv2-gcc.exe"
 PRXSTRIP="$SDK/host-win32/bin/ppu-lv2-prx-strip.exe"
 INCLUDE="$SDK/target/ppu/include"; LIBDIR="$SDK/target/ppu/lib"
